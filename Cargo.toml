@@ -24,6 +24,8 @@ url = { version = "2", features = ["serde"] }
 http = "1"
 zeroize = "1"
 futures-core = "0.3"
+rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite_migration = "=2.5.0"
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls", "http2"] }
 thiserror = "2"
 anyhow = "1"
@@ -33,6 +35,7 @@ tracing = "0.1"
 neo-cdp = { path = "crates/neo-cdp" }
 neo-keys = { path = "crates/neo-keys" }
 neo-core = { path = "crates/neo-core" }
+neo-store = { path = "crates/neo-store" }
 jev-nav = { path = "crates/jev-nav" }
 metalcraft = { path = "../metalcraft", features = ["rig"] } # Remote cutover pin: rev 3f5e865eae51186882ff20604dbbf658f12d24af or tag v0.12.0.
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }

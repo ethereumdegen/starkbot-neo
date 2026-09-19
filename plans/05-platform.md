@@ -97,7 +97,7 @@ panic = "unwind"                # a panicking task must not take the desktop wor
 | HTTP / WS | `reqwest` (`rustls-tls`, `http2`, `multipart`, `stream`, `json`), `tokio-tungstenite` (streaming STT; CDP attach mode), `url`, `wiremock` (dev) |
 | macOS | `objc2` (+`exception`), `objc2-application-services` 0.3, `objc2-core-graphics`, `objc2-core-foundation`, `objc2-app-kit`, `objc2-av-foundation`, `objc2-foundation` |
 | Audio | `cpal` 0.18, `rubato` 5, `earshot`, `rtrb`, `hound` |
-| Storage | `rusqlite` 0.40 (`bundled`), `rusqlite_migration`, `zstd`, `uuid` (v7), `time` |
+| Storage | `rusqlite` 0.39 (`bundled`) + `rusqlite_migration` 2.5; 0.40 requires `rusqlite_migration` 2.6, whose MSRV is Rust 1.95 · `zstd`, `uuid` (v7), `time` |
 | Secrets | `keyring` 4.2 with feature **`apple-native-keyring-store`** (not in the defaults), `zeroize` |
 | Packs | `include_dir`, `jsonschema`, `semver`, `sha2`, `tar` + `flate2`, `notify` (also watches `soul.md`) |
 | Media / canvas | `degen-media-maker` (lib), `resvg` / `usvg` / `tiny-skia` / `fontdb`, `webp`, `image`; the HTML/CSS parser choice belongs to 11 |
