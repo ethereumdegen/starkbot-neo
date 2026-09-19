@@ -1,0 +1,6 @@
+target/
+.env
+*.png
+*.mp4
+spikes/out/
+!crates/hyper-canvas/fixtures/golden/*.png

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/neo-cdp", "crates/jev-nav", "spikes/s1-nav", "spikes/s7-render", "spikes/s7-webview"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.27"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+thiserror = "2"
+anyhow = "1"
+base64 = "0.22"
+tempfile = "3"
+tracing = "0.1"
+neo-cdp = { path = "crates/neo-cdp" }
+jev-nav = { path = "crates/jev-nav" }
+tauri = { version = "2.11.0", default-features = false, features = ["wry"] }
+tauri-build = "2.5.6"
+s7-render = { path = "spikes/s7-render" }
+command-fds = "0.3.3"

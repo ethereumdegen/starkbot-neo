@@ -1,0 +1,493 @@
+//! `CdpObserver`: observes and acts on one owned tab. Port of `browser.py`.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use neo_cdp::{CdpError, Page};
+use serde_json::{Value, json};
+
+use crate::policy::Action;
+
+/// Runs in the page; the only non-Rust code in this crate.
+pub const SNAPSHOT_JS: &str = include_str!("../js/snapshot.js");
+
+#[derive(Debug, thiserror::Error)]
+pub enum ObserveError {
+    /// The decision no longer refers to the observed page: observe again, decide again.
+    #[error("stale page: {0}")]
+    Stale(&'static str),
+    /// A mutation may already have happened; never retried blindly.
+    #[error("uncertain mutation: {0}")]
+    Uncertain(&'static str),
+    #[error(transparent)]
+    Cdp(#[from] CdpError),
+}
+
+fn context_lost(error: &CdpError) -> bool {
+    matches!(
+        error,
+        CdpError::Protocol { message, .. }
+            if message.contains("Cannot find context") || message.contains("Execution context was destroyed")
+    )
+}
+
+fn runtime_action(action: &Action) -> Action {
+    let mut runtime = action.clone();
+    if let Some(local_node) = action.get("local_node").cloned() {
+        runtime.insert("node".into(), local_node);
+    }
+    runtime
+}
+
+pub struct CdpObserver {
+    page: Page,
+    after_input: Option<Action>,
+    attachments: Vec<PathBuf>,
+    context_id: Option<u64>,
+    frame_contexts: HashMap<String, u64>,
+}
+
+impl CdpObserver {
+    pub fn new(page: Page) -> Self {
+        Self {
+            page,
+            after_input: None,
+            attachments: Vec::new(),
+            context_id: None,
+            frame_contexts: HashMap::new(),
+        }
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<PathBuf>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    pub fn page(&self) -> &Page {
+        &self.page
+    }
+
+    async fn context_id(&mut self) -> Result<u64, ObserveError> {
+        if let Some(context_id) = self.context_id {
+            return Ok(context_id);
+        }
+        let context_id = self.page.create_isolated_world("starkbot-neo").await?;
+        self.context_id = Some(context_id);
+        Ok(context_id)
+    }
+
+    async fn evaluate(&mut self, expression: &str) -> Result<Value, ObserveError> {
+        let context_id = self.context_id().await?;
+        match self
+            .page
+            .evaluate_in_context(context_id, expression, false)
+            .await
+        {
+            Err(error) if context_lost(&error) => {
+                self.context_id = None;
+                Err(ObserveError::Stale("document changed during evaluation"))
+            }
+            Err(CdpError::Exception(_)) => {
+                self.context_id = None;
+                Err(ObserveError::Stale("document changed during evaluation"))
+            }
+            other => Ok(other?),
+        }
+    }
+
+    async fn evaluate_action(
+        &mut self,
+        action: &Action,
+        expression: &str,
+        await_promise: bool,
+    ) -> Result<Value, ObserveError> {
+        if let Some(context_id) = action.get("context_id").and_then(Value::as_u64) {
+            return match self
+                .page
+                .evaluate_in_context(context_id, expression, await_promise)
+                .await
+            {
+                Err(error) if context_lost(&error) => {
+                    if let Some(frame_id) = action.get("frame_id").and_then(Value::as_str) {
+                        self.frame_contexts.remove(frame_id);
+                    }
+                    Err(ObserveError::Stale("frame changed during evaluation"))
+                }
+                Err(CdpError::Exception(_)) => {
+                    Err(ObserveError::Stale("frame changed during evaluation"))
+                }
+                other => Ok(other?),
+            };
+        }
+        let context_id = self.context_id().await?;
+        match self
+            .page
+            .evaluate_in_context(context_id, expression, await_promise)
+            .await
+        {
+            Err(error) if context_lost(&error) => {
+                self.context_id = None;
+                Err(ObserveError::Stale("document changed during evaluation"))
+            }
+            Err(CdpError::Exception(_)) => {
+                self.context_id = None;
+                Err(ObserveError::Stale("document changed during evaluation"))
+            }
+            other => Ok(other?),
+        }
+    }
+
+    /// One semantic snapshot merged from the top document and every CDP child frame.
+    async fn snapshot(&mut self) -> Result<Value, ObserveError> {
+        let mut root = self.evaluate(SNAPSHOT_JS).await?;
+        let frames = self.page.child_frames().await?;
+        let mut additions = Vec::new();
+        let mut frame_markers = Vec::new();
+        let mut frame_text = Vec::new();
+        let mut frame_guards = Vec::new();
+        let mut omitted = root["omitted_actions"].as_u64().unwrap_or(0);
+        let mut observed_frames = 0u64;
+
+        for (index, frame) in frames.iter().enumerate() {
+            let context_id = match self.frame_contexts.get(&frame.id).copied() {
+                Some(context_id) => context_id,
+                None => {
+                    let context_id = self
+                        .page
+                        .create_isolated_world_for_frame(
+                            &frame.id,
+                            &format!("starkbot-neo-frame-{}", frame.id),
+                        )
+                        .await?;
+                    self.frame_contexts.insert(frame.id.clone(), context_id);
+                    context_id
+                }
+            };
+            let mut child = match self
+                .page
+                .evaluate_in_context(context_id, SNAPSHOT_JS, false)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(CdpError::Exception(_)) => {
+                    self.frame_contexts.remove(&frame.id);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            observed_frames += 1;
+            omitted += child["omitted_actions"].as_u64().unwrap_or(0);
+            frame_markers.push(json!([&frame.id, child["marker"].clone()]));
+            if let Some(text) = child["text"].as_str() {
+                frame_text.push(text.to_owned());
+            }
+            let namespace = ((index as u64) + 1) << 32;
+            if let Some(guards) = child["guards"].as_object() {
+                for (local, guard) in guards {
+                    if let Ok(local) = local.parse::<u64>() {
+                        frame_guards.push(((namespace | local).to_string(), guard.clone()));
+                    }
+                }
+            }
+            let frame_page_key = child["page_key"].clone();
+            if let Some(actions) = child["actions"].as_array_mut() {
+                for candidate in actions {
+                    let local_node = candidate.get("node").and_then(Value::as_u64);
+                    let id = candidate
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    if local_node.is_none()
+                        && matches!(id.as_str(), "wait" | "scroll_down" | "scroll_up")
+                    {
+                        continue;
+                    }
+                    let Some(action) = candidate.as_object_mut() else {
+                        continue;
+                    };
+                    action.insert("context_id".into(), json!(context_id));
+                    action.insert("frame_id".into(), json!(&frame.id));
+                    action.insert("frame_page_key".into(), frame_page_key.clone());
+                    action.insert("frame_offset_x".into(), json!(frame.offset_x));
+                    action.insert("frame_offset_y".into(), json!(frame.offset_y));
+                    action.insert("id".into(), json!(format!("f{}_{}", index + 1, id)));
+                    if let Some(local_node) = local_node {
+                        action.insert("local_node".into(), json!(local_node));
+                        action.insert("node".into(), json!(namespace | local_node));
+                    }
+                    if let Some(rect) = action.get_mut("rect").and_then(Value::as_object_mut) {
+                        if let Some(x) = rect.get("x").and_then(Value::as_f64) {
+                            rect.insert("x".into(), json!(x + frame.offset_x));
+                        }
+                        if let Some(y) = rect.get("y").and_then(Value::as_f64) {
+                            rect.insert("y".into(), json!(y + frame.offset_y));
+                        }
+                    }
+                    for (field, offset) in [("x", frame.offset_x), ("y", frame.offset_y)] {
+                        if let Some(value) = action.get(field).and_then(Value::as_f64) {
+                            action.insert(field.into(), json!(value + offset));
+                        }
+                    }
+                    additions.push(Value::Object(action.clone()));
+                }
+            }
+        }
+
+        if let Some(actions) = root["actions"].as_array_mut() {
+            actions.extend(additions);
+        }
+        if let Some(guards) = root["guards"].as_object_mut() {
+            guards.extend(frame_guards);
+        }
+        let mut text = root["text"].as_str().unwrap_or_default().to_owned();
+        for child_text in frame_text {
+            text.push('\n');
+            text.push_str(&child_text);
+        }
+        root["text"] = json!(text.chars().take(6000).collect::<String>());
+        root["marker"] = json!([root["marker"].clone(), frame_markers]);
+        root["omitted_actions"] = json!(omitted);
+        root["signals"]["cross_origin_frames"] = json!(frames.len() as u64 - observed_frames);
+        Ok(root)
+    }
+
+    /// One atomic snapshot of the page's visible controls, values and text.
+    pub async fn observe(&mut self) -> Result<Value, ObserveError> {
+        if let Some(action) = self.after_input.take() {
+            let runtime = runtime_action(&action);
+            let _ = self
+                .evaluate_action(
+                    &action,
+                    &format!("({AFTER_INPUT_JS})({})", Value::Object(runtime.clone())),
+                    true,
+                )
+                .await;
+            if action.get("kind").and_then(Value::as_str) == Some("fill")
+                && action.get("contenteditable").and_then(Value::as_bool) == Some(true)
+            {
+                let node = runtime
+                    .get("node")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let expected = action
+                    .get("expected")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let verified = self
+                    .evaluate_action(
+                        &action,
+                        &format!("({VERIFY_TEXT_JS})({node},{})", json!(expected)),
+                        false,
+                    )
+                    .await
+                    .unwrap_or(json!(false));
+                if verified != json!(true) {
+                    return Err(ObserveError::Uncertain(
+                        "contenteditable text was not confirmed",
+                    ));
+                }
+            }
+            if action.get("kind").and_then(Value::as_str) == Some("click") {
+                if let Some(popup) = self.page.popup(Duration::ZERO).await? {
+                    popup.set_viewport(1120, 780, 1.0).await?;
+                    self.page = popup;
+                    self.context_id = None;
+                    self.frame_contexts.clear();
+                }
+            }
+        }
+        for attempt in 0..10 {
+            match self.snapshot().await {
+                Ok(Value::Null) | Err(ObserveError::Stale(_)) if attempt < 9 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok(Value::Null) => return Err(ObserveError::Stale("document is navigating")),
+                Ok(mut observation) => {
+                    if self.attachments.is_empty() {
+                        if let Some(actions) = observation["actions"].as_array_mut() {
+                            actions.retain(|action| action["kind"] != "upload");
+                        }
+                    }
+                    return Ok(observation);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ObserveError::Stale("page did not settle"))
+    }
+
+    /// Is the page still what the decision was made on? Click/select compare the target and
+    /// its nearby context; everything else compares the whole semantic marker.
+    pub async fn fresh(
+        &mut self,
+        observation: &Value,
+        action: Option<&Action>,
+    ) -> Result<bool, ObserveError> {
+        let kind = action
+            .and_then(|action| action.get("kind"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let (true, Some(node), Some(action)) = (
+            matches!(kind, "click" | "select"),
+            action
+                .and_then(|action| action.get("node"))
+                .and_then(Value::as_u64),
+            action,
+        ) {
+            let local_node = action
+                .get("local_node")
+                .and_then(Value::as_u64)
+                .unwrap_or(node);
+            let current = self
+                .evaluate_action(
+                    action,
+                    &format!(
+                        "(() => {{ const c=window.__jevFast; return c ? [c.pageKey(),c.guard(c.nodes.get({local_node}))] : null; }})()"
+                    ),
+                    false,
+                )
+                .await?;
+            let expected_page_key = action
+                .get("frame_page_key")
+                .unwrap_or(&observation["page_key"]);
+            let expected = json!([expected_page_key, observation["guards"][node.to_string()]]);
+            return Ok(current == expected);
+        }
+        let current = self.snapshot().await?;
+        Ok(current["marker"] == observation["marker"])
+    }
+
+    pub async fn act(
+        &mut self,
+        action: &Action,
+        observation: &Value,
+        text: Option<&str>,
+    ) -> Result<(), ObserveError> {
+        if !self.fresh(observation, Some(action)).await? {
+            return Err(ObserveError::Stale("page changed since this decision"));
+        }
+        let kind = action
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match kind {
+            "wait" => tokio::time::sleep(Duration::from_millis(100)).await,
+            "scroll" => {
+                let delta = action.get("delta").and_then(Value::as_f64).unwrap_or(560.0);
+                let x = action.get("x").and_then(Value::as_f64).unwrap_or(550.0);
+                let y = action.get("y").and_then(Value::as_f64).unwrap_or(650.0);
+                self.page.wheel(x, y, delta).await?;
+            }
+            "click" | "fill" | "select" => {
+                let runtime = runtime_action(action);
+                let target = self
+                    .evaluate_action(
+                        action,
+                        &format!("({RESOLVE_TARGET_JS})({})", Value::Object(runtime)),
+                        false,
+                    )
+                    .await;
+                let target = match (kind, target) {
+                    ("select", Err(_)) => {
+                        return Err(ObserveError::Uncertain(
+                            "dropdown execution was interrupted",
+                        ));
+                    }
+                    ("select", Ok(Value::Null)) => {
+                        return Err(ObserveError::Uncertain(
+                            "dropdown execution was not confirmed",
+                        ));
+                    }
+                    (_, Ok(Value::Null)) => {
+                        return Err(ObserveError::Stale("target changed or is covered"));
+                    }
+                    (_, other) => other?,
+                };
+                if kind != "select" {
+                    let offset_x = action
+                        .get("frame_offset_x")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    let offset_y = action
+                        .get("frame_offset_y")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    let x = target["x"].as_f64().unwrap_or(0.0) + offset_x;
+                    let y = target["y"].as_f64().unwrap_or(0.0) + offset_y;
+                    self.page.click(x, y).await?;
+                    if kind == "fill" {
+                        let value = text.unwrap_or_default();
+                        if action.get("contenteditable").and_then(Value::as_bool) == Some(true) {
+                            self.page.replace_text_multiline(value).await?;
+                        } else {
+                            self.page.replace_text(value).await?;
+                        }
+                    }
+                }
+            }
+            "upload" => {
+                let node = action
+                    .get("local_node")
+                    .or_else(|| action.get("node"))
+                    .and_then(Value::as_u64)
+                    .ok_or(ObserveError::Stale("file input has no observed node"))?;
+                if self.attachments.is_empty() {
+                    return Err(ObserveError::Stale("no attachment was supplied"));
+                }
+                let context_id = match action.get("context_id").and_then(Value::as_u64) {
+                    Some(context_id) => context_id,
+                    None => self.context_id().await?,
+                };
+                self.page
+                    .set_file_input_files(context_id, node, &self.attachments)
+                    .await?;
+            }
+            "press" => {
+                let key = action
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .ok_or(ObserveError::Stale("key target is missing"))?;
+                self.page.press_key(key).await?;
+            }
+            _ => return Err(ObserveError::Stale("unknown action kind")),
+        }
+        let mut recorded = action.clone();
+        if kind == "fill" {
+            recorded.insert("expected".into(), json!(text.unwrap_or_default()));
+        }
+        self.after_input = (kind != "wait").then_some(recorded);
+        Ok(())
+    }
+}
+
+const RESOLVE_TARGET_JS: &str = r#"action => window.__jevFast?.resolve(action) ?? null"#;
+
+const AFTER_INPUT_JS: &str = r#"action => new Promise(resolve => {
+  const field=window.__jevFast?.nodes.get(action.node);
+  const autocomplete=action.kind==='fill' && field?.getAttribute('role')==='combobox';
+  let frames=0,stopped=false;
+  const finish=()=>{stopped=true;resolve(true)};
+  setTimeout(finish,autocomplete ? 200 : 50);
+  const ready=()=>{
+    if (stopped) return;
+    const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'').split(/\s+/).filter(Boolean);
+    const owner=field?.ownerDocument||document,root=field?.getRootNode?.()||owner;
+    const roots=ids.length ? ids.map(id=>root.getElementById?.(id)||owner.getElementById(id)).filter(Boolean) : [root];
+    const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
+    if (++frames>=2 && (!autocomplete || options.some(e=>{
+      const r=e.getBoundingClientRect();
+      return r.width && r.height && r.bottom>0 && r.top<(e.ownerDocument.defaultView?.innerHeight||innerHeight) &&
+        e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+    }))) finish();
+    else requestAnimationFrame(ready);
+  };
+  requestAnimationFrame(ready);
+})"#;
+
+const VERIFY_TEXT_JS: &str = r#"(node,expected) => {
+  const e=window.__jevFast?.nodes.get(node);
+  const normalise=value=>String(value||'').replace(/\s+/g,' ').trim();
+  return !!e?.isConnected && normalise(e.innerText).includes(normalise(expected));
+}"#;

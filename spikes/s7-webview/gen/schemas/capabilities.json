@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Core capability for the local engine-drift spike.","local":true,"windows":["main"],"permissions":["core:default"]}}

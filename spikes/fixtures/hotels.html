@@ -1,0 +1,26 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Stayfinder — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:760px}label{display:block;margin:10px 0}
+.card{border:1px solid #ccc;border-radius:8px;padding:12px;margin:10px 0}.hidden{display:none}</style></head>
+<body><h1>Stayfinder</h1>
+<form id="f"><label>Destination <input id="dest" type="text" placeholder="City"></label>
+<label>Style <select id="style"><option value="">Any</option><option>Design</option><option>Budget</option><option>Family</option></select></label>
+<label><input id="free" type="checkbox"> Free cancellation</label>
+<button type="submit">Search</button></form>
+<p id="status" aria-live="polite">Enter a destination to search.</p>
+<div id="results"></div>
+<div id="detail" class="hidden"><h2 id="dname"></h2><p id="dmeta"></p></div>
+<script>
+const hotels=[{n:'Casa Flora',c:'Lisbon',s:'Design',f:true},{n:'Hotel Alfama',c:'Lisbon',s:'Budget',f:true},
+{n:'The Lumiares',c:'Lisbon',s:'Design',f:false},{n:'Porto Bay',c:'Porto',s:'Design',f:true}];
+document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();
+ const c=dest.value.trim().toLowerCase(),s=style.value,f=free.checked;
+ const hits=hotels.filter(h=>h.c.toLowerCase()===c&&(!s||h.s===s)&&(!f||h.f));
+ status.textContent=`${hits.length} stays in ${dest.value} · style: ${s||'any'} · free cancellation: ${f?'yes':'no'}`;
+ results.innerHTML='';detail.classList.add('hidden');
+ for(const h of hits){const d=document.createElement('div');d.className='card';
+  d.innerHTML=`<a href="#" data-n="${h.n}">${h.n}</a> — ${h.s}${h.f?' · free cancellation':''}`;results.append(d);}
+});
+results.addEventListener('click',e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
+ dname.textContent=a.dataset.n;dmeta.textContent='Property page · '+status.textContent;detail.classList.remove('hidden');
+ document.title=a.dataset.n+' — Stayfinder';});
+</script></body></html>
