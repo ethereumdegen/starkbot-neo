@@ -52,9 +52,9 @@ Two wire formats, both stateless:
 | Thought streaming | `response.reasoning_summary_text.delta` (prose guide says `response.reasoning.delta` — handle both) | `reasoning` deltas |
 | Rust support | rig's OpenAI Responses client pointed at the OpenRouter base URL — *unverified* | **rig has an OpenRouter provider; chat-only; already round-trips `reasoning_details`** (0.37 tests show it) |
 
-→ **Plan: OpenRouter goes through rig's OpenRouter chat provider.** metalcraft 0.12 generalises `ReasoningItem { id, encrypted }` into an opaque provider-tagged blob (`Responses{id, encrypted, summary}` | `ChatDetails(Vec<Value>)`) so both replay shapes survive `AgentState`. That is upstream item #6. `rig` is now 0.42 in the local metalcraft 0.12 tree; the OpenRouter-specific opaque replay shape remains unimplemented.
+→ **Rejected integration sketch (preserved as research):** an OpenRouter path would have gone through rig's OpenRouter chat provider and required metalcraft 0.12 to generalise `ReasoningItem { id, encrypted }` into an opaque provider-tagged blob (`Responses{id, encrypted, summary}` | `ChatDetails(Vec<Value>)`). The provider decision is now **no OpenRouter** (00 K2); this is design input for StarkRouter's replay contract only.
 
-Request shape for every Sol call via OpenRouter:
+The request shape that was evaluated:
 
 ```json
 { "model": "~openai/gpt-sol-latest",

@@ -174,14 +174,15 @@ Escalation: navigator `BLOCKED` with a reason in {captcha, bot check, login wall
 
 ### 5.1 Loop
 
-`metalcraft::create_react_agent_with_options` on rig's OpenAI **Responses** model `gpt-5.6-sol` (via `InferenceProvider`, 08):
+`AgentRuntime::run` (08) owns the provider-specific turn loop. `MetalcraftRuntime<OpenAiInference>` uses `metalcraft::create_react_agent_with_options` on rig's OpenAI **Responses** model `gpt-5.6-sol`; `CodexRuntime` uses the official Codex app-server with a connected ChatGPT account. Both expose the identical `ToolDispatcher`, gates, trace stream and terminal outcomes:
 
-- `tool_choice: Required`, `terminal_tools: ["finish", "fail"]` — Sol never ends a task with free text; a `finish` that returns an error (Finish gate bounce) loops back, which metalcraft's terminal-tool rule already does.
-- `reasoning_effort`: `low` (orchestration, questions), `medium` (design/media routes). Setting.
-- Request params through 0.12's `additional_params`: `parallel_tool_calls: false`, `store: false`, `include: ["reasoning.encrypted_content"]`, `reasoning.summary: "auto"`, `prompt_cache_key: "neo:<tool-profile>:<prefix-hash>"`.
-- `Executor::max_steps` is set high (1,000); real limits are the StepGuard's, so a cap ends as `RunOutcome::Interrupted` with state, never as `Err(StepLimitExceeded)` without it.
-- `StepObserver` → trace; `LlmResponseHook` → usage → spend meter + `Thought` items; `LlmCallHook` → debug dump in `neo run --dump-context`; `Checkpointer` → `SqliteCheckpointer` (inspection only, never resume).
-- OpenAI's built-in `computer` tool is not used (P10: no screenshot automation).
+- Metalcraft: `tool_choice: Required`, `terminal_tools: ["finish", "fail"]` — Sol never ends a task with free text; a `finish` that returns an error (Finish gate bounce) loops back, which metalcraft's terminal-tool rule already does.
+- Codex: one app-server thread per task; the snapshotted tool profile is registered as dynamic tools. Agent messages and dynamic-tool calls map into the same loop; command execution, file changes, MCP/apps and unknown effect items are protocol errors (08).
+- `reasoning_effort`: `low` (orchestration, questions), `medium` (design/media routes). Setting, mapped to the selected runtime's supported effort values.
+- Metalcraft request params through 0.12's `additional_params`: `parallel_tool_calls: false`, `store: false`, `include: ["reasoning.encrypted_content"]`, `reasoning.summary: "auto"`, `prompt_cache_key: "neo:<tool-profile>:<prefix-hash>"`. Codex owns its protocol/session replay; neo never extracts its auth or emulates that wire protocol.
+- `Executor::max_steps` is set high (1,000) for metalcraft; app-server turn limits are likewise above Neo's caps. Real limits are the StepGuard's, so a cap ends as `RunOutcome::Interrupted` with state, never as a provider-local limit without it.
+- Provider events → the same trace and usage sink: metalcraft `StepObserver` / `LlmResponseHook` / `LlmCallHook`; Codex thread/turn/item notifications. Usage → spend/allowance meter + `Thought` items; debug dumps are metadata/redacted protocol events only. `SqliteCheckpointer` remains inspection only, never resume.
+- OpenAI's built-in `computer` tool and Codex's built-in local tools are not used (P10: no screenshot automation; all effects go through Starkbot tools).
 
 ### 5.2 System prompt (stable prefix, in this order)
 
@@ -423,8 +424,8 @@ pub enum TaskError { ScreenLocked, Interrupted, Cancelled, UserActive, CapSteps,
 | `Blocked{other}` / `VerificationFailed` | "I couldn't get this done: <reason>." (+ "Nothing was sent or deleted." only when the trace has no approved outward or destructive action) |
 | `OffTask` | "What I saw kept pulling away from your request, so I stopped." |
 | `Denied` / `ConfirmTimeout` | "I didn't do <what> — it wasn't approved." |
-| `JevDown` / `ProviderDown` | "TypeSafe / OpenAI isn't responding. The queue is paused and will resume by itself." |
-| `KeyMissing` / `PermissionMissing` | "I need <key / permission>. Open Settings → <tab>." |
+| `JevDown` / `ProviderDown` | "TypeSafe / <selected inference runtime> isn't responding. The affected queue work is paused and will resume by itself." |
+| `KeyMissing` / `AccountMissing` / `PermissionMissing` | "I need <key / connection / permission>. Open Settings → <tab>." |
 | `ObserverLost` · `Internal` | "I lost the connection to Chrome / the app." · "Something broke on my side. The trace has the details." |
 
 Tool-level failures are returned to Sol as values; only executor-level failures end a task. Messages never include page text.
@@ -451,7 +452,7 @@ Tool-level failures are returned to Sol as values; only executor-level failures 
 | M | Delivers (this doc) | Accepted when |
 |---|---|---|
 | **M4 — Judge, queue, safety** | `neo-judge` (Intake gate; Goal and Finish gates arrive with Sol in M5), control vocabulary, pre-filter, verdict log + `neo judge eval`; task model, queue, desktop worker, router with the Navigator executor only (other routes answer "needs Sol"); rules layer wired into `jev-nav`; `ConfirmBroker`; kill switch; caps; lock pause; idle wait; trace + Mind pane + Steer ticker; spend meter | fixture set: chatter dropped ≥ 95 %, addressed requests enqueued ≥ 95 %, route accuracy ≥ 90 %; `compose-dont-send` shows a confirm card and deny leaves a draft; `injection` passes; stop by voice halts within one step and releases modifiers; lock mid-task → `failed: screen locked`, queue resumes on unlock; Jev outage → fail-closed card + paused queue; `navigate` tasks make zero Sol calls |
-| **M5 — Sol orchestrator** | metalcraft 0.12 (§11 items 1–3, 6–9; 4–5 may trail to M6/M7); Sol executor, system prompt, `navigate` / `extract` / `observe` / `ask_user` / `finish` / `fail` / `load_skill` / `read_*`; `Gated<T>` with `Goal` policy; Finish gate; conversation digest; `soul.md`; handoff from `BLOCKED`; read-only lane; answer window; batch eviction | `research-5-rows` completes under $0.30 with ≥ 70 % cached input after step 3; "what did you just do?" answers while a desktop task is parked; "do that again" resolves from the digest; an amendment lands only at an `agent` boundary; a `soul.md` line "never ask me to confirm" changes nothing; replay suite green in CI |
+| **M5 — Sol orchestrator** | `AgentRuntime`; `MetalcraftRuntime<OpenAiInference>` and `CodexRuntime` (§11 items 1–3, 6–9; 4–5 may trail to M6/M7); Sol executor, system prompt, `navigate` / `extract` / `observe` / `ask_user` / `finish` / `fail` / `load_skill` / `read_*`; `Gated<T>` with `Goal` policy; Finish gate; conversation digest; `soul.md`; handoff from `BLOCKED`; read-only lane; answer window; batch eviction | the same `research-5-rows` and injection fixtures pass through both runtimes; the API-key run completes under $0.30 with ≥ 70 % cached input after step 3; the ChatGPT run reports plan allowance rather than invented USD; "what did you just do?" answers while a desktop task is parked; "do that again" resolves from the digest; an amendment lands only at an `agent` boundary; a `soul.md` line "never ask me to confirm" changes nothing; app-server forbidden-item fixtures interrupt before any effect; replay suite green in CI |
 | **M11 — Native apps** | AX tools registered through the `neo-desktop` pack; `Gated<T>` `Action` policy + Effect gate; `AxObserver` route for `navigate(app=…)`; terminal-class deny for IDE panes | `notes-create-ax` end to end; a `press` on "Empty Trash" raises a confirm card from the rules layer alone with Jev offline; Terminal is refused with a clear message; every scenario passes with all app profiles removed (P9) |
 
 `Gated<T>` itself lands in M5 (Goal policy), gains `Spend` in M6 and `Action` for `call_pack_tool` in M9; M11 adds the AX tools behind it.

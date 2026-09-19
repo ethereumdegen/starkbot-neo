@@ -20,7 +20,7 @@ starkbot-neo/
 |---|---|
 | `neo-core` | Shared vocabulary as types: ids (UUIDv7), `Task`, `Message`, `Utterance`, `TraceItem`, `AppEvent`, `Settings` (+ defaults, validation, patch), errors, the three provider traits with `ModelRef` / `Endpoint` / `Usage` (08), the model registry's pure logic (classify, resolve, hide-list) and the `PriceTable` type. No I/O beyond serde. |
 | `neo-store` | The only crate that speaks SQL: connection setup + pragmas, the writer actor and read pool, migrations, typed repositories per table group, retention/pruning, zstd for large bodies, backup-before-migrate. |
-| `neo-keys` | Keychain read/write/delete, the `Secret` newtype, `KeyAccount`, `KeyStatus`, the `KeyValidator` trait, env fallback. The only place a secret string exists. Leaf crate: no `neo-*` dependencies, no HTTP, no vendor URLs. |
+| `neo-keys` | Keychain read/write/delete, the `Secret` newtype, `KeyAccount`, `KeyStatus`, the `KeyValidator` trait, env fallback. The only place a **Starkbot-owned** secret string exists; the external Codex helper owns its separate ChatGPT credentials. Leaf crate: no `neo-*` dependencies, no HTTP, no vendor URLs. |
 | `jev-nav` | The navigator: `wire` (the one TypeSafe client — A6), `policy`, `rules`, `text` helper, `Observer` trait, `web/` (`CdpObserver`), `ax/` (`AxObserver`, feature `ax`). Standalone and publishable: depends on no `neo-*` crate except `neo-ax` under `ax`. |
 | `neo-ax` | macOS accessibility actor for native apps (one run-loop thread, batched fetch, refs, diffs, input). Also home of the two small macOS modules everything needs earlier: `perm` (Accessibility trust, M1) and `session` (lock / display sleep / user activity, M4). No `neo-*` dependencies. |
 | `neo-voice` | Capture, VAD, segmenter, STT, TTS, duplex gate, mic permission (`perm`), and the `OpenAiSpeech` provider impl. |
@@ -30,7 +30,7 @@ starkbot-neo/
 | `neo-media` | Adapter over the `degen-media-maker` lib: media tools, `MediaBackend` wiring (`fal`, `quiver`), spend estimates, studio index, fal/Quiver `KeyValidator`s. |
 | `neo-canvas` | The hypercanvas document: HTML/CSS frames, node tree, ops + transactions, per-author undo, tokens, knobs, pins, storage inside the studio folder. |
 | `neo-canvas-agent` | Canvas tools for Sol, outline/look, micro-edit policy, region workers, browser-engine render for export and critique. |
-| `neo-agent` | Queue worker, router, Sol orchestrator on `metalcraft`, tools, `Gated<T>`, caps, trace, spend meter, the `OpenAiInference` provider impl, and **`Runtime`** — the one facade (`start`, commands in, `AppEvent` stream out) that both binaries drive. |
+| `neo-agent` | Queue worker, router, `AgentRuntime`, `MetalcraftRuntime<OpenAiInference>`, `CodexRuntime` + helper supervisor, Sol tools, `Gated<T>`, caps, trace, spend/allowance meter, and **`Runtime`** — the one facade (`start`, commands in, `AppEvent` stream out) that both binaries drive. |
 | `neo-cli` | The `neo` binary: every subsystem headless (`doctor`, `keys`, `models`, `voice`, `nav`, `judge`, `run`, `pack`, `media`, `canvas`, `scenario`) plus hidden `neo dev …` maintenance commands (export bindings, capture fixtures, seed DBs). |
 | `src-tauri` | Tauri app shell only: typed command/event bridge over `Runtime`; one main-thread `panels::PanelController` owning all NSPanel/AppKit state and activation-policy transitions; normal windows, tray, global shortcuts, updater, single-instance, autostart, notifications. No product logic. |
 
@@ -43,13 +43,13 @@ neo-voice, neo-packs, neo-media, neo-canvas ─▶ neo-core, neo-store, neo-keys
 neo-extension-host ─▶ neo-core
 neo-judge ─▶ jev-nav, neo-core, neo-store, neo-keys
 neo-canvas-agent ─▶ neo-canvas, neo-media, neo-judge, jev-nav
-neo-agent ─▶ all of the above (+ metalcraft, rig)
+neo-agent ─▶ all of the above (+ metalcraft, rig; supervises the bundled Codex helper over stdio)
 neo-cli, src-tauri ─▶ neo-agent
 ```
 
 Rules (checked in review; 1, 3, 4 also by CI):
 1. **Nothing below `src-tauri` depends on Tauri** (`cargo tree -p <crate> -i tauri` must be empty for every crate but `src-tauri`). The whole product runs headless in `neo`.
-2. **Secrets only in `neo-keys`.** `Secret`'s inner string is private; `Secret::expose()` is on `clippy.toml`'s `disallowed-methods` and is `#[allow]`ed at exactly four call sites: provider impls building an auth header, `jev-nav` credential adapter in `neo-judge`, the pack HTTP runner's `$VAR` expansion, and the rig client constructor in `neo-agent`. Headers carrying a key are `HeaderValue::set_sensitive(true)`.
+2. **Starkbot-owned secrets only in `neo-keys`.** `Secret`'s inner string is private; `Secret::expose()` is on `clippy.toml`'s `disallowed-methods` and is `#[allow]`ed at exactly four call sites: provider impls building an auth header, `jev-nav` credential adapter in `neo-judge`, the pack HTTP runner's `$VAR` expansion, and the rig client constructor in `neo-agent`. Headers carrying a key are `HeaderValue::set_sensitive(true)`. The Codex helper's separate ChatGPT tokens never cross its local stdio protocol.
 3. **No vendor URL outside a provider impl** (or, for packs, outside pack data). CI greps for `api.openai.com`, `typesafe.ai`, `fal.run`, `quiver.ai` outside the allow-listed modules.
 4. **No Python, no shell agent surface**: no `.py` file, no `python` invocation anywhere in the repo or CI (a CI step fails on either).
 5. `neo-core` does no I/O; `neo-store` is the only SQL; `src-tauri` and `ui/` hold no secrets and no logic. Provider impls and HTTP clients take `{ base_url, credential }` from their provider object (08); tests point them at `wiremock`.
@@ -137,6 +137,9 @@ One **writer actor** (a dedicated thread owning the only read-write connection, 
 ```sql
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;   -- created_by_version, last_opened_by_version, last_prune_at, last_backup_at
 CREATE TABLE settings (section TEXT PRIMARY KEY, value TEXT NOT NULL CHECK (json_valid(value)), updated_at INTEGER NOT NULL) STRICT;
+CREATE TABLE provider_accounts (                                           -- redacted status only; credentials remain in provider-owned Keychain storage
+  provider TEXT PRIMARY KEY, connected INTEGER NOT NULL, email TEXT, plan_type TEXT, workspace TEXT,
+  allowance TEXT CHECK (json_valid(allowance)), updated_at INTEGER NOT NULL) STRICT;
 CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT, started_at INTEGER NOT NULL, ended_at INTEGER,
   digest TEXT, digest_upto_seq INTEGER NOT NULL DEFAULT 0) STRICT;         -- digest = the ~1.5k-token carry-over for Sol
 CREATE TABLE utterances (
@@ -162,7 +165,7 @@ CREATE TABLE tasks (
   route TEXT NOT NULL CHECK (route IN ('navigate','design','media','multi','question','routine')), routine_ref TEXT,   -- question = the intent's own route; routine + routine_ref 'pack-id/name' = `routine:<name>`
   lane TEXT NOT NULL CHECK (lane IN ('desktop','readonly','canvas')),       -- A10 concurrency
   status TEXT NOT NULL CHECK (status IN ('queued','running','needs_confirm','waiting_user','done','failed','cancelled')),
-  paused_reason TEXT CHECK (paused_reason IN ('queue_paused','screen_locked','display_asleep','user_active','daily_cap','jev_outage','key_invalid','offline')),
+  paused_reason TEXT CHECK (paused_reason IN ('queue_paused','screen_locked','display_asleep','user_active','daily_cap','jev_outage','key_invalid','inference_unavailable','offline')),
   fail_code TEXT, error TEXT, summary TEXT, say TEXT,                       -- fail_code: screen_locked | interrupted | step_cap | wall_cap | spend_cap | blocked | killed | …
   position REAL NOT NULL, persona TEXT, studio_id TEXT, target_app TEXT, start_url TEXT,
   pack_set TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(pack_set)),         -- enabled packs snapshotted at start (tool list never changes mid-task)
@@ -223,11 +226,12 @@ CREATE TABLE spend_events (
   id TEXT PRIMARY KEY, at INTEGER NOT NULL, day TEXT NOT NULL, task_id TEXT REFERENCES tasks ON DELETE SET NULL,
   kind TEXT NOT NULL CHECK (kind IN ('sol','text_helper','stt','tts','jev','fal','quiver','pack')),
   provider TEXT NOT NULL, model TEXT, units TEXT NOT NULL CHECK (json_valid(units)),   -- tokens in/out/cached, audio seconds, chars, images, video seconds
-  usd REAL NOT NULL, exact INTEGER NOT NULL) STRICT;                        -- exact = 0 → Estimated
-CREATE TABLE spend_daily (day TEXT NOT NULL, kind TEXT NOT NULL, usd REAL NOT NULL, calls INTEGER NOT NULL, PRIMARY KEY (day, kind)) STRICT, WITHOUT ROWID;  -- upserted with spend_events; the daily cap reads only this
-CREATE TABLE models (provider TEXT NOT NULL, id TEXT NOT NULL, use_case TEXT NOT NULL, capabilities TEXT NOT NULL CHECK (json_valid(capabilities)),
+  usd REAL, pricing TEXT NOT NULL CHECK (pricing IN ('exact','estimated','unpriced')),
+  CHECK ((pricing = 'unpriced' AND usd IS NULL) OR (pricing <> 'unpriced' AND usd >= 0))) STRICT;
+CREATE TABLE spend_daily (day TEXT NOT NULL, kind TEXT NOT NULL, usd REAL NOT NULL, calls INTEGER NOT NULL, PRIMARY KEY (day, kind)) STRICT, WITHOUT ROWID;  -- priced events only; ChatGPT allowance is in provider_accounts
+CREATE TABLE models (provider TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'global', id TEXT NOT NULL, use_case TEXT NOT NULL, capabilities TEXT NOT NULL CHECK (json_valid(capabilities)),
   price TEXT CHECK (json_valid(price)), price_source TEXT, hidden INTEGER NOT NULL DEFAULT 0,
-  first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (provider, id)) STRICT;   -- registry cache; serves until a refresh lands
+  first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (provider, scope, id)) STRICT;   -- scope hashes account/workspace; registry cache serves until refresh
 CREATE TABLE studios (                                                      -- an index only; the folder is the truth, rebuilt on open
   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, take_count INTEGER NOT NULL DEFAULT 0, last_take TEXT,
   frame_count INTEGER NOT NULL DEFAULT 0, brand TEXT CHECK (json_valid(brand)), missing INTEGER NOT NULL DEFAULT 0,
@@ -255,7 +259,7 @@ One typed `Settings` struct in `neo-core`, one row per section in `settings`. Mi
 | `identity` | `name` | `"Stark"` |
 | `listen` | `enabled` (restored) · `addressing` · `push_to_talk` · `mic_device` | `true` · `open` · `false` · system default |
 | `voice` | `tts_enabled` · `tts_voice` · `speak` · `duplex` · `keep_recordings` | `false` · `marin` · `questions_only` · `auto` · `false` |
-| `models` | `inference` · `text_helper` · `stt` · `stt_live` · `tts` · `sol_effort` | `sol-latest` (today `gpt-5.6-sol`) · `gpt-5.6-luna` (reasoning off) · `gpt-transcribe` · off (`gpt-live-transcribe`) · `gpt-4o-mini-tts` · `low` |
+| `models` | `inference` (`ModelRef`) · `text_helper` (`ModelRef`) · `stt` · `stt_live` · `tts` · `sol_effort` | onboarding writes `{provider: chatgpt-codex | openai, id: sol-latest}` · same provider's lowest-cost/fastest strict-JSON model (prefer eligible `luna`, reasoning off) · `gpt-transcribe` · off (`gpt-live-transcribe`) · `gpt-4o-mini-tts` · `low` |
 | `intake` | `enqueue_at` · `offer_at` | 0.70 · 0.40 |
 | `safety` | `confirm_at` (outward / destructive / spends) · `on_task_floor` · `confirm_timeout_s` · `confirm_labels` | 0.40 · 0.30 (twice → `BLOCKED`) · 120 (= deny) · the global list (03) |
 | `caps` (K5) | `usd_per_task` · `usd_media_call_confirm` · `usd_per_day` · `sol_steps` · `nav_actions` · `nav_decisions` · `wall_minutes` | **1.00** · **0.25** · **10.00** · 40 · 60 · 120 · 10 |
@@ -266,26 +270,27 @@ One typed `Settings` struct in `neo-core`, one row per section in `settings`. Mi
 ## 6. Keys (`neo-keys`)
 
 - **Store**: Keychain generic-password items, service `com.starkbot.neo`, this device only, not iCloud-synced *(verify `keyring` 4.2 exposes the accessibility attribute; otherwise set it through `security-framework`)*. Keychain ACLs bind to the code-signing requirement — one more reason for a stable Developer ID from day one; ad-hoc rebuilds re-prompt every time.
-- **Accounts are an open set**: `openai`, `typesafe` (core, K1) · `FAL_KEY`, `QUIVERAI_API_KEY` (media enablement) · any `requires_env` name a pack declares · later `starkrouter`. Pack accounts are the env name itself, so two packs that both declare `FAL_KEY` share one item — but only after the consent screen says *"share your existing FAL_KEY with <pack>"*. The core accounts are not env-style names, so no pack can name them. `$VAR` expands only for names the pack declares, and only into requests to that integration's `allowed_hosts`.
+- **Direct-key accounts are an open set**: `openai`, `typesafe` (core, K1) · `FAL_KEY`, `QUIVERAI_API_KEY` (media enablement) · any `requires_env` name a pack declares · later `starkrouter`. Pack accounts are the env name itself, so two packs that both declare `FAL_KEY` share one item — but only after the consent screen says *"share your existing FAL_KEY with <pack>"*. The core accounts are not env-style names, so no pack can name them. `$VAR` expands only for names the pack declares, and only into requests to that integration's `allowed_hosts`. **ChatGPT is not a `neo-keys` account**: the official Codex helper owns that login in its dedicated Keychain namespace (08).
 - **`Secret`**: private `String`, `Zeroize` on drop, `Debug`/`Display` print `Secret(•••• last4)`, no `Serialize`, no `Clone` outside the crate (`Arc<Secret>` is shared). `expose()` is clippy-disallowed except at the four sites in §1 rule 2. Secrets are read once and cached in-process so the Keychain is not hit per request.
-- **Flow**: UI `set_key(account, value)` → Rust validates → Keychain → `pack_keys` status row → webview is told only `missing | present | invalid | unchecked | limited`. A key is never echoed back, never logged, never placed in argv (`neo keys set <account>` reads stdin with echo off), never accepted from voice or from a task.
+- **Direct-key flow**: UI `set_key(account, value)` → Rust validates → Keychain → `pack_keys` status row → webview is told only `missing | present | invalid | unchecked | limited`. A key is never echoed back, never logged, never placed in argv (`neo keys set <account>` reads stdin with echo off), never accepted from voice or from a task.
 - **Validation = one authenticated call, made by the provider impl** (so `neo-keys` holds no URL) through `trait KeyValidator { async fn validate(&self, s: &Secret) -> KeyStatus }`:
 
 | Account | Call | Reading |
 |---|---|---|
-| `openai` | `GET {base}/models` | 200 → `present`; also require a `*-sol` id and `gpt-transcribe` in the list, else `limited` (project-scoped key); 401 → `invalid` |
+| `openai` | `GET {base}/models` | 200 → `present`; if models needed by the configured API inference or speech use cases are absent → `limited`; 401 → `invalid` |
 | `typesafe` | `jev-nav::wire::ping()` — one minimal `yes_no` head | 200 + a valid answer → `present`; 401/403 → `invalid` |
 | `FAL_KEY` | any authenticated fal GET | **401 → `invalid`**; a 403 from the usage endpoint is normal and counts as `present` |
 | `QUIVERAI_API_KEY` | authenticated model-list GET *(verify endpoint)* | 401 → `invalid` |
 | pack keys | the pack's `key_help.validate` (method, url, ok statuses); the host must be in `allowed_hosts` | none declared → `unchecked` |
 
-  Network errors, 429 and 5xx → `unchecked`: the key is stored and retried. Re-validation: app start, every 24 h, and immediately on any 401 from that provider (the queue pauses with `paused_reason = key_invalid`).
-- **Env fallback**: `KeySource::KeychainThenEnv` reads `OPENAI_API_KEY`, `TYPESAFE_API_KEY`, `FAL_KEY` (`FAL_API_KEY`), `QUIVERAI_API_KEY` (`QUIVER_API_KEY`). `neo` always uses it; the app uses it only under `cfg!(debug_assertions)`. A release app never reads a key from the environment.
+  Network errors, 429 and 5xx → `unchecked`: the key is stored and retried. Re-validation: app start, every 24 h, and immediately on any 401 from that provider (only the capabilities using it pause with `paused_reason = key_invalid`).
+- **ChatGPT account flow**: `CodexSupervisor` launches the pinned helper with a dedicated `CODEX_HOME`, asks app-server to start login, and opens the returned URL. Codex stores/refreshes its tokens. Neo persists redacted `{connected, email?, plan_type?, workspace?, updated_at}` only and consumes account/rate-limit events; tokens never cross into SQLite, app events, logs, diagnostics or the webview. Disconnect calls app-server logout, never deletes unrelated Codex sessions.
+- **Env fallback**: `KeySource::KeychainThenEnv` reads `OPENAI_API_KEY`, `TYPESAFE_API_KEY`, `FAL_KEY` (`FAL_API_KEY`), `QUIVERAI_API_KEY` (`QUIVER_API_KEY`). `neo` always uses it; the app uses it only under `cfg!(debug_assertions)`. A release app never reads a key from the environment. There is no ChatGPT env/token fallback.
 
 ## 7. Model registry
 
-- **Refresh**: on start (non-blocking — the `models` table serves until the fetch lands), every 6 h, on key change, on Settings → Models → Refresh, and at once when any call returns model-not-found.
-- **Classification** of `GET /models` ids (a provider that returns capabilities, i.e. StarkRouter, overrides the patterns):
+- **Refresh**: on start (non-blocking — the `models` table serves until the fetch lands), every 6 h, on key/account change, on Settings → Models → Refresh, and at once when any call returns model-not-found. API runtimes fetch their `/models`; `chatgpt-codex` uses app-server's model catalog. Cache rows include runtime/provider and account/workspace scope so one catalog never leaks into another.
+- **Classification** of raw API `GET /models` ids (a provider that returns capabilities, including Codex/StarkRouter catalogs, overrides the patterns):
 
 | Use case | Pattern |
 |---|---|
@@ -294,9 +299,9 @@ One typed `Settings` struct in `neo-core`, one row per section in `settings`. Mi
 | TTS | `-tts(-\|$)` |
 | never offered | hide-list `whisper-1`, `gpt-4o-transcribe*`, `gpt-4o-mini-transcribe*`, `tts-1*` (K3); `gpt-image*`, `dall-e*` (K4); everything unclassified |
 
-- **`sol-latest`** = the undated `gpt-*-sol` id with the highest version, compared as numeric tuples (`5.10 > 5.9`); previews and dated snapshots are excluded. Settings store the symbolic value; the UI shows the resolved id beside it. A changed resolution applies from the next task and posts one `notice` message ("Sol is now …") with the new price.
-- A saved id that disappears from the list raises a warning in Settings and falls back to the use case's default; a hidden id can never be selected, even by editing the DB (validated at load). Every use case holds a `ModelRef { provider, id }` (08), never a bare string.
-- **Prices are read live, never compiled in** (K3). `PriceTable` sources, in order: (1) provider-reported — exact `usage.cost` and `/models` prices from StarkRouter, per-endpoint prices from fal; (2) a dated `prices.json` fetched from the release host every 24 h, signed with the updater key and cached; (3) none → the call is recorded with units only, spend shows "unpriced", and the dollar caps fall back to the step and wall caps. Everything from (2) is `Usage::Estimated` and the UI labels it so.
+- **`sol-latest` is runtime-scoped**. For raw API catalogs it means the undated `gpt-*-sol` id with the highest version, compared as numeric tuples (`5.10 > 5.9`); previews and dated snapshots are excluded. For Codex it means the highest eligible Sol model the connected account's catalog marks available. Settings store the symbolic value plus runtime; the UI shows the resolved id beside it. A changed resolution applies from the next task and posts one `notice` message ("Sol is now …") with new API price or current plan-allowance state.
+- A saved id that disappears from its selected runtime raises a warning in Settings and falls back to that runtime/use case's default; a hidden id can never be selected, even by editing the DB (validated at load). Every use case holds a runtime/provider plus model id, never a bare string.
+- **API prices are read live, never compiled in** (K3). `PriceTable` sources, in order: (1) provider-reported — exact `usage.cost` and `/models` prices from StarkRouter, per-endpoint prices from fal; (2) a dated `prices.json` fetched from the release host every 24 h, signed with the updater key and cached; (3) none → the call is recorded with units only, spend shows "unpriced", and the dollar caps fall back to the step and wall caps. Everything from (2) is `Usage::Estimated` and the UI labels it so. **ChatGPT allowance is never converted to dollars**: Codex calls are `Usd::Unpriced`, and its percentage/reset windows are displayed separately.
 
 ## 8. Permissions and session state
 
@@ -324,7 +329,7 @@ Policy (P7): `locked ∨ display_asleep ∨ ¬on_console` → queue pauses (`pau
 
 ## 9. Signing, notarization, updates
 
-- **Identity**: `bundle.macOS.signingIdentity = "Developer ID Application: …"`, hardened runtime, universal binary (`--target universal-apple-darwin`), **not sandboxed**, `app.macOSPrivateApi = true`. Minimum macOS 14 *(D)*. `neo` ships inside the bundle as a Tauri `externalBin`, signed with the same identity.
+- **Identity**: `bundle.macOS.signingIdentity = "Developer ID Application: …"`, hardened runtime, universal binary (`--target universal-apple-darwin`), **not sandboxed**, `app.macOSPrivateApi = true`. Minimum macOS 14 *(D)*. `neo` and the pinned official Codex helper ship inside the bundle as signed nested executables; release CI verifies each architecture, upstream commit, SHA-256 and Apache-2.0 notices before signing.
 - **`entitlements.plist`** (release) — exactly two keys:
 
 ```xml
@@ -334,10 +339,10 @@ Policy (P7): `locked ∨ display_asleep ∨ ¬on_console` → queue pauses (`pau
 </dict></plist>
 ```
 
-  Deliberately absent: `app-sandbox`, `cs.allow-unsigned-executable-memory`, `cs.disable-library-validation`, `cs.allow-dyld-environment-variables`, `automation.apple-events`, `device.camera`. `entitlements.debug.plist` adds only `com.apple.security.get-task-allow` (notarization rejects it, so it never reaches a release).
-- **Notarization**: on tags only, with an App Store Connect API key (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) → `notarytool` → staple the `.app` and the DMG. Gate: `spctl -a -vv` and `stapler validate` in CI.
+  Deliberately absent: `app-sandbox`, `cs.allow-unsigned-executable-memory`, `cs.disable-library-validation`, `cs.allow-dyld-environment-variables`, `automation.apple-events`, `device.camera`. `entitlements.debug.plist` adds only `com.apple.security.get-task-allow` (notarization rejects it, so it never reaches a release). The Codex helper is signed with hardened runtime and no broader entitlement; its empty working directory, read-only sandbox and protocol deny rules are application controls, not substitutes for signing.
+- **Notarization**: on tags only, with an App Store Connect API key (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) → `notarytool` → staple the `.app` and the DMG. Gate: `spctl -a -vv`, nested `codesign --verify --deep --strict`, and `stapler validate` in CI.
 - **DMG**: Tauri's bundler, background + Applications alias. First launch outside `/Applications` offers to move itself (TCC and the updater both want a stable path).
-- **Updater**: `tauri signer generate` keypair; the public key in `tauri.conf.json`; the private key + password in CI secrets **and two offline backups — losing it strands every install**. Static `latest.json` + `.app.tar.gz` + `.sig` on the release host. Check on launch and every 24 h; download in the background; **install only when no task is running, the queue is empty or paused, and no confirm is pending**, then relaunch restoring Listen. Same Developer ID + bundle id ⇒ TCC grants and Keychain access survive updates.
+- **Updater**: `tauri signer generate` keypair; the public key in `tauri.conf.json`; the private key + password in CI secrets **and two offline backups — losing it strands every install**. Static `latest.json` + `.app.tar.gz` + `.sig` on the release host. Check on launch and every 24 h; download in the background; **install only when no task is running, the queue is empty or paused, no confirm is pending, and the Codex helper has exited**, then relaunch restoring Listen. Same Developer ID + bundle id ⇒ TCC grants and Keychain access survive updates.
 - **Single instance**: `tauri-plugin-single-instance` registered first; a second launch focuses `main` and exits. **Autostart**: `tauri-plugin-autostart` (LaunchAgent), off by default; a login launch starts hidden with the pill, restoring the last Listen state.
 
 ## 10. Dev workflow
@@ -348,7 +353,7 @@ Policy (P7): `locked ∨ display_asleep ∨ ¬on_console` → queue pauses (`pau
 | **`cargo tauri dev`** | UI work with hot reload | same as above; panels and permissions prompts are not representative |
 | **Signed debug build** (`cargo tauri build --debug`, Developer ID, copied to `/Applications`) | anything touching TCC, Keychain ACLs, NSPanels over fullscreen, updater, autostart | the real grant; survives rebuilds because the code requirement is stable |
 
-**`neo doctor`** (also the Settings → Doctor tab; exit code ≠ 0 on any red): macOS version and arch · running from `/Applications`? · signature: identity, team id, hardened runtime, entitlements match the expected two · Accessibility `granted / stale` (+ the `tccutil` line) · `CGPreflightPostEventAccess` · Microphone status · input device present and default sample rate · Keychain read/write round-trip · each key's `KeyStatus` · OpenAI reachable, `/models` latency, `sol-latest` resolution, configured ids present and not hidden · TypeSafe reachable + `ping` latency · `prices.json` age and signature · DB opens, `user_version`, `integrity_check`, WAL size, free disk · `worker.lock` holder · Chrome found, version, managed profile launches with a debugging pipe · session state readable (lock, display, idle) · secure input currently on? · `ffmpeg` on PATH (media) · fonts present · enabled packs validate, missing pack keys · updater endpoint reachable and public key present · log dir writable.
+**`neo doctor`** (also the Settings → Doctor tab; exit code ≠ 0 on any red): macOS version and arch · running from `/Applications`? · signature: identity, team id, hardened runtime, entitlements match the expected two · nested Codex helper present, expected version/hash/license, signature valid, app-server initializes and reports a compatible protocol · ChatGPT account `connected / signed out / rate limited` plus redacted plan/workspace and reset (never tokens) · Accessibility `granted / stale` (+ the `tccutil` line) · `CGPreflightPostEventAccess` · Microphone status · input device present and default sample rate · Keychain read/write round-trip · each direct key's `KeyStatus` · OpenAI reachable, `/models` latency, API `sol-latest` resolution, configured ids present and not hidden · TypeSafe reachable + `ping` latency · `prices.json` age and signature · DB opens, `user_version`, `integrity_check`, WAL size, free disk · `worker.lock` holder · Chrome found, version, managed profile launches with a debugging pipe ·…
 
 ## 11. Observability
 
@@ -364,11 +369,12 @@ Policy (P7): `locked ∨ display_asleep ∨ ¬on_console` → queue pauses (`pau
 | **Prompt injection via page / screen text** | page text is data in a delimited field, never instructions (rule block in every request); model output is only ever an index into observed controls; `on_task` head (< 0.30 twice → `BLOCKED`); deterministic confirm labels + `outward` / `destructive` / `spends` heads → confirm card; the bot works only in tabs it opened; no shell, no file tools, terminal-class apps denied (P3); injection fixtures gate every release |
 | **Malicious pack** | packs are data, nothing executes; validation + consent screen (domains, keys, mutating tools, routine steps, policies); `allowed_hosts` enforced on the parsed URL, no redirects; `$VAR` only for the pack's own declared names; policies tighten-only; skill text is advice that still passes every gate; sha256 in `neo.lock`, updates show a consent diff |
 | **Malicious component** | never loaded in-process: exact-hash `wasm32-wasip2` runs in `neo-extension-host`; no ambient WASI files, sockets, env or processes; no Keychain/Tauri/macOS handles; narrow consented WIT imports only; all proposed actions return to `Gated<T>`; fuel/epoch/memory/byte/concurrency limits; crash or trap disables the component without taking down the app |
-| **Key exfiltration** | Keychain only; `Secret` redaction + clippy-fenced `expose()`; the webview sees status only and has no HTTP capability to vendor hosts (CSP + Tauri capabilities allow IPC only); keys never typed, spoken, shown or sent in a task; secure fields never read; no key in argv, logs, diagnostics or crash output |
+| **Key exfiltration** | Direct keys: Keychain only; `Secret` redaction + clippy-fenced `expose()`; the webview sees status only and has no HTTP capability to vendor hosts (CSP + Tauri capabilities allow IPC only); keys never typed, spoken, shown or sent in a task; secure fields never read; no key in argv, logs, diagnostics or crash output. ChatGPT: only the official helper handles tokens in its dedicated Keychain/CODEX_HOME; Neo accepts redacted account events and never reads credential files or protocol fields carrying tokens. |
+| **Compromised / incompatible Codex helper** | release manifest pins upstream source commit, archive SHA-256, generated protocol schema and Apache-2.0 notices; nested code is Developer-ID signed and verified before launch; stdio only, dedicated empty cwd/home, read-only sandbox, no inherited secrets, minimal environment; message size/depth/time limits; unknown methods and any command/file/MCP/app/permission item interrupt the turn; crash/protocol mismatch disables only the ChatGPT runtime |
 | **Mis-hearing** | pre-intake filter → Jev intake with an "enqueue?" band (0.40–0.70) → every outward / destructive / spending step still confirms; heard text is always visible and one click to undo or cancel; local `stop` vocabulary and the kill hotkey work with no network; typed and spoken tasks get identical gates |
-| **Runaway spend** | per-task cap, per-media-call confirm, daily cap (K5) — enforced from `spend_daily` before each paid call, with the estimate in the action sentence; step / decision / wall caps as the backstop when a price is unknown; pacing guard per origin; StarkRouter later adds server-side per-key limits |
-| **Supply chain** | `Cargo.lock` + `pnpm-lock.yaml` committed; `cargo deny` (advisories, licences, bans, sources) and `cargo audit` in CI; git dependencies pinned by rev; hardened runtime with library validation on; updater artifacts signed with the offline-backed key, `prices.json` with the same key; Developer ID + notarization. Data packs execute no code. M10 components install only immutable reviewed bytes pinned by exact source commit + content hash and run only in the sandboxed extension host; native dylibs, executables and install hooks are refused. |
-| **Unattended Mac · provider outage** | P7 policy (§8), fail-closed on unreadable session state · risk decisions fail closed (→ confirm or pause), intake fails open to the UI ("enqueue?"), banner + `paused_reason` |
+| **Runaway spend / allowance** | priced calls: per-task cap, per-media-call confirm, daily cap (K5), enforced from `spend_daily` before each paid call; step / decision / wall caps backstop unknown prices. ChatGPT included-plan work is never represented as $0: the same non-dollar caps apply and app-server rate-window exhaustion hard-stops new work. No automatic switch to a billable API key. Pacing guard per origin; StarkRouter later adds server-side per-key limits |
+| **Supply chain** | `Cargo.lock` + `pnpm-lock.yaml` committed; `cargo deny` (advisories, licences, bans, sources) and `cargo audit` in CI; git dependencies pinned by rev; Codex manifest/checksum/schema/licence verified; hardened runtime with library validation on; updater artifacts signed with the offline-backed key, `prices.json` with the same key; Developer ID + notarization. Data packs execute no code. M10 components install only immutable reviewed bytes pinned by exact source commit + content hash and run only in the sandboxed extension host; native dylibs, executables and install hooks are refused. |
+| **Unattended Mac · provider outage** | P7 policy (§8), fail-closed on unreadable session state · risk decisions fail closed (→ confirm or pause), intake fails open to the UI ("enqueue?"), banner + capability-scoped `paused_reason` |
 
 ## 13. Tests — Rust only
 
@@ -401,12 +407,12 @@ On every push and PR: `cargo fmt --check` → `cargo clippy --workspace --all-ta
 | 1 | **Complete locally:** repo, workspace `Cargo.toml` (lints, profiles, shared deps), pinned toolchain, `deny.toml`, CI skeleton; `neo-keys` + `neo-core`: UUIDv7 ids, errors, validated `Settings` + defaults, `AppEvent`, `ModelRef` / `Endpoint` / `Usage`, provider traits | `fmt`, strict workspace `clippy`, and all workspace tests pass |
 | 2 | `neo-store`: pragmas, writer actor + read pool, `0001_init.sql` (the full schema above), settings repo + merge-patch, backup-before-migrate | migration + settings tests pass; seed DB v1 committed |
 | 3 | `neo-keys` complete: `Secret`, accounts, Keychain store, `KeyValidator`, `KeySource`; `neo keys set / status / rm` | Keychain round-trip; redaction tests |
-| 4 | `OpenAiInference::list_models` + validator; `jev-nav::wire` promoted from the M0 spike with `ping`; registry (classify, resolve, hide-list, `models` cache); price fetch; `neo models` | both keys validate; `sol-latest` resolves; hidden ids never listed |
-| 5 | `neo-ax::perm`, `neo-voice::perm`; `neo doctor` with the §10 list (media / Chrome checks report "not yet") | doctor is correct in all four TCC states |
-| 6 | Tauri scaffold: `tauri.conf.json`, `Info.plist` strings, both entitlements files, plugins (single-instance first), Developer ID wired; signed debug build into `/Applications` | **Accessibility grant and Keychain access survive three rebuilds** |
-| 7 | `Runtime` facade stub in `neo-agent`; `tauri-specta` bridge: `get_bootstrap`, settings, keys, models, permissions, `AppEvent` emitter; bindings drift check in CI | UI receives typed events from Rust |
-| 8 | UI shell: four Vite entries (three as stubs), store + `useAppEvents`, onboarding 1–6 against real checks, `KeyField`, `PermissionRow` | fresh user account completes onboarding |
-| 9 | Settings: Keys, Models, General, Doctor; revoked-permission re-gating; updater keypair generated and backed up twice; tag workflow: sign → notarize → staple → DMG → `latest.json` | a tagged build installs on a second Mac and passes `spctl` |
+| 4 | `OpenAiInference::list_models` + validator; pinned Codex app-server manifest/checksum/license + `CodexSupervisor` initialization/account/login/logout/rate-limit client (no agent turns yet); `jev-nav::wire` promoted from the M0 spike with `ping`; registry for both runtime catalogs (classify, resolve, hide-list, `models` cache); price fetch; `neo models` / `neo account` | API keys validate; Codex conformance fixture logs in without exposing a token; both runtime catalogs resolve `sol-latest`; hidden ids never listed |
+| 5 | `neo-ax::perm`, `neo-voice::perm`; `neo doctor` with the §10 list (media / Chrome checks report "not yet") | doctor is correct in all four TCC states and all Codex states (missing helper, signed out, connected, limited) |
+| 6 | Tauri scaffold: `tauri.conf.json`, `Info.plist` strings, both entitlements files, plugins (single-instance first), Developer ID wired; bundle and sign `neo` + Codex nested helper; signed debug build into `/Applications` | **Accessibility grant and direct-key Keychain access survive three rebuilds**; Codex's dedicated account survives and no token appears in app storage |
+| 7 | `Runtime` facade stub in `neo-agent`; `AgentRuntime` interface with provider stubs (real turn loops land M5); `tauri-specta` bridge: `get_bootstrap`, settings, direct keys, ChatGPT account/login events, models, permissions, `AppEvent` emitter; bindings drift check in CI | UI receives typed events from Rust; account snapshots are redacted |
+| 8 | UI shell: four Vite entries (three as stubs), store + `useAppEvents`, onboarding 1–6 against real checks, inference choice / Connect ChatGPT / `KeyField` / typed-only branch / `PermissionRow` | fresh user account completes onboarding through either inference path |
+| 9 | Settings: Connections & Keys, Models, General, Doctor; revoked-permission/account re-gating; updater keypair generated and backed up twice; tag workflow: dependency manifest check → sign nested code → notarize → staple → DMG → `latest.json` | a tagged build installs on a second Mac, connects ChatGPT in its own Codex home, and passes `spctl` |
 | 10 | hardening: update from build N to N+1 keeps grants; diagnostics bundle; migration-from-seed test; leftovers | M1 exit: every line above still green, CI green |
 
 Day 6 onward is blocked by open item 1 (the Developer ID). Days 1–5 are not.

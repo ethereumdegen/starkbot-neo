@@ -24,9 +24,9 @@ file wins and the doc is wrong. Dated 2026-09-18. `U` = decided by the user,
 
 | # | Decision | By |
 |---|---|---|
-| K1 | Required keys at onboarding: **OpenAI** and **TypeSafe AI** (Jev). Optional, collected by the media enablement flow: **fal.ai** (`FAL_KEY`) and **QuiverAI** (`QUIVERAI_API_KEY`). Any pack may declare more via `requires_env`. All in the macOS Keychain; never in the webview; never entered by voice. | U |
-| K2 | **No OpenRouter.** Later: **StarkRouter**, the user's own gateway fronting OpenAI + fal + Quiver → one key. Until then, direct vendor keys. Provider traits keep the seam (08). | U |
-| K3 | Per-use-case model defaults, each user-selectable: inference **`gpt-5.6-sol`** (symbolic `sol-latest` = highest-versioned `gpt-*-sol` from `/v1/models`); fast text helper **`gpt-5.6-luna`**, reasoning off; STT **`gpt-transcribe`**; streaming STT option `gpt-live-transcribe`; TTS **`gpt-4o-mini-tts`**, voice `marin`. Deprecated ids (`whisper-1`, `gpt-4o-transcribe*`, `tts-1*`) are hidden. Prices are read live, never hard-coded. | U (+D) |
+| K1 | Required at onboarding: **one inference connection** — Connect ChatGPT through the official Codex app-server *or* provide an **OpenAI API key** — plus **TypeSafe AI** (Jev). An OpenAI API key is separately required for speech, so a ChatGPT-only user starts typed-only until adding one. Optional media keys: **fal.ai** (`FAL_KEY`) and **QuiverAI** (`QUIVERAI_API_KEY`). Any pack may declare more via `requires_env`. Direct keys live in Neo's macOS Keychain; Codex owns ChatGPT tokens in its dedicated Keychain entry. No credential reaches the webview or voice path. | U (+D) |
+| K2 | **No OpenRouter.** Inference has two first-class paths: eligible ChatGPT plan allowance through the pinned official Codex app-server, or usage-billed OpenAI API through metalcraft/rig. No private ChatGPT protocol, token copying or silent fallback between them. Later: **StarkRouter**, the user's own gateway fronting OpenAI API + fal + Quiver → one key; it remains separate from ChatGPT subscription access. Provider/runtime traits keep the seam (08). | U (+D) |
+| K3 | Per-use-case defaults, each user-selectable: inference **runtime chosen at onboarding** and symbolic **`sol-latest`** resolved inside that runtime; fast text helper uses the same runtime's lowest-cost/fastest strict-JSON-capable model, preferring an eligible **luna** model with reasoning off; API speech defaults remain **`gpt-transcribe`**, optional `gpt-live-transcribe`, and **`gpt-4o-mini-tts`** voice `marin`. Deprecated API ids (`whisper-1`, `gpt-4o-transcribe*`, `tts-1*`) are hidden. API prices are read live, never hard-coded; ChatGPT allowance is shown as rate windows, never fictitious USD. | U (+D) |
 | K4 | **No OpenAI image generation.** Images/video/SVG come only from the media backends (fal, Quiver; StarkRouter later). | U |
 | K5 | Spend defaults: **$1.00 per task** for ordinary tasks; **design and media tasks get a higher per-task cap (default $5.00)** because page builds and shoot-outs legitimately cost more; **$0.25 per media call before a confirm**; **$10.00 per day** overall. Caps are deterministic arithmetic in Rust (a `SpendGuard`), not a Jev judgment. All configurable in Settings → Safety. | U |
 
@@ -41,7 +41,7 @@ file wins and the doc is wrong. Dated 2026-09-18. `U` = decided by the user,
 | A5 | **Native apps use the same navigator policy** through an `AxObserver` over `neo-ax` (objc2 AX bindings, one run-loop actor thread, batched attribute fetch). Safari/Firefox/Electron go this way too. | D |
 | A6 | **One TypeSafe wire client** (raw `reqwest`, structured state, object criteria, `model` field) lives in `jev-nav::wire` and is used by every Jev caller. The `jev` crate is not a dependency (its `State`/criteria types are too narrow). | D |
 | A7 | **Routing**: Jev intake classifies each utterance/message by *intent* (`new_task · amend · answer · question · cancel · chatter`) and new tasks by *route* (`navigate · design · media · multi · routine:<name>`). `navigate` goes straight to the navigator with **zero Sol calls**; `design`/`media`/`multi`/`question` start Sol. | D |
-| A8 | **Sol = orchestrator + creative**, run on `metalcraft` (≥ 0.12) + `rig`: multi-stage tasks as a sequence of `navigate(goal)` calls, `extract`, answering questions, writing long-form copy, art direction and visual critique, and recovery when the navigator returns `BLOCKED`. Fine-grained AX tools behind `Gated<T>` remain as Sol's manual fallback for native apps. | U (+D) |
+| A8 | **Sol = orchestrator + creative** behind `AgentRuntime`: either `metalcraft` (≥ 0.12) + `rig` on a direct OpenAI API key, or `CodexRuntime` on the official app-server with an eligible ChatGPT account. Both dispatch the same Starkbot tools through the same gates: multi-stage tasks as a sequence of `navigate(goal)` calls, `extract`, answering questions, writing long-form copy, art direction and visual critique, and recovery when the navigator returns `BLOCKED`. Fine-grained AX tools behind `Gated<T>` remain as Sol's manual fallback for native apps. | U (+D) |
 | A9 | **Safety is layered and cheap**: deterministic rules (deny / must-confirm lists, secure fields, deny-listed apps/origins) → Jev safety heads in the *same* request as the decision (`outward`, `destructive`, `spends`, `on_task`) → human confirm card. Jev outages fail **closed** for risk. Screen/page text is data, never instructions. CAPTCHAs, bot checks, login walls, account creation → `BLOCKED`; the bot never tries to pass them. | D |
 | A10 | One **queue**, one **desktop worker** (FIFO; one desktop = one actor). Read-only `question` tasks and **canvas work may run concurrently** with each other, never with a task that is acting on the desktop in the same app. | D |
 | A11 | **Packs** = the Axoniac agent-pack format (data only: JSON + Markdown), shared with metalcraft-agent / starfire / degen-tools, plus a neo-only `desktop/` folder (native-app hints, **routines**, tighten-only policies). Built-in capabilities ship as embedded packs. Pack HTTP tools sit behind three fixed meta-tools so Sol's tool list never changes mid-task. Any pack with `requires_env` gets the same generic enablement flow. | U (+D) |
@@ -51,6 +51,7 @@ file wins and the doc is wrong. Dated 2026-09-18. `U` = decided by the user,
 | A15 | UI: React + TS + Vite in the webview, DRY components + hooks, types generated from Rust. Two modes of the main window — **Assist** (Conversation · Queue · Mind) and **Design** (Hypercanvas) — sharing the always-present listening bar. Overlay mechanics live only in `src-tauri::panels` behind one main-thread `PanelController`, using `tauri-nspanel` pinned to revision `c9ec2130422200f0863b23dfdad02b133a529b07`: `pill` and click-through `ring` are never-key NSPanels under `Prohibited`; `quick-entry` is a separate key-capable NSPanel under `Accessory`; `main` / `design` use `Regular`. Every activation-policy transition reapplies intended panel visibility. | U (+D, proven S6) |
 | A16 | Storage: SQLite (`rusqlite`, WAL) for app state; a **studio** is a plain folder (`studio.json`, `takes.jsonl`, `takes/`, `canvas/`, `exports/`) readable by the `dmm` CLI. | D |
 | A17 | **Extensions use Omarchy-class ergonomics without Omarchy's trust model.** Packs remain portable, declarative data. An optional code tier is a signed or exact-hash-pinned `wasm32-wasip2` component run by a separate `neo-extension-host`: no ambient filesystem, network, environment, subprocess, Keychain or macOS APIs; every host capability is declared, consented and revocable, and every proposed desktop/browser/spend action re-enters `Gated<T>`. Namespaced ids, built-in/user discovery, enable/disable, clone-and-edit, hot reload in developer mode, update diffs, rollback and a community catalog match Omarchy's workflow. Native dylibs and unsandboxed in-process plugins are never loaded. | U (+D) |
+| A18 | **Users may connect an eligible ChatGPT plan for Sol inference through OpenAI's official Codex app-server.** Neo ships a pinned, signed Codex helper and drives its documented stdio JSON-RPC auth/thread surface; Codex owns browser OAuth, refresh and Keychain credentials. Starkbot tools enter as client-executed dynamic tools and still pass `Gated<T>`. No token copying, private endpoint calls or silent fallback to billable API usage. ChatGPT access does not cover Jev, speech, fal or Quiver; direct keys remain supported. | U (+D) |
 
 ## Vocabulary (use these words exactly)
 
@@ -61,7 +62,7 @@ file wins and the doc is wrong. Dated 2026-09-18. `U` = decided by the user,
 ```
 neo-core            shared types, events, settings, provider traits, price table
 neo-store           rusqlite + migrations
-neo-keys            Keychain; the only place a secret string exists
+neo-keys            Keychain; the only place a Starkbot-owned secret string exists (Codex owns its separate ChatGPT credentials)
 jev-nav             navigator: wire (TypeSafe client), policy, rules, text helper, Observer trait, web/ (CDP), ax/ (feature)
 neo-ax              macOS accessibility actor (native apps)
 neo-voice           capture, VAD, segmenter, STT, TTS, duplex gate
@@ -71,7 +72,7 @@ neo-extension-host  separate Wasmtime component process; capability broker and r
 neo-media           adapter over the degen-media-maker lib: tools, backends, spend estimates
 neo-canvas          hypercanvas document: HTML/CSS frames, node tree, ops, undo, tokens, knobs, pins, storage
 neo-canvas-agent    canvas tools for Sol, outline/look, micro-edit policy, region workers
-neo-agent           queue worker, router, Sol orchestrator on metalcraft, tools, Gated<T>, caps, trace
+neo-agent           queue worker, router, AgentRuntime (metalcraft/OpenAI + Codex app-server), Sol tools, Gated<T>, caps, trace
 neo-cli             `neo` binary
 src-tauri           the app shell
 ui/                 React (entries: main, pill, ring, quick-entry)
@@ -84,11 +85,11 @@ Upstream crates we change: **metalcraft → 0.12** (reasoning summaries, image p
 | M | Name | Core of it |
 |---|---|---|
 | M0 | Spikes | Rust CDP attach + snapshot + one multi-head Jev request; managed-Chrome launch; earshot → `gpt-transcribe`; Luna text-helper latency; metalcraft + Sol + reasoning replay; NSPanel over fullscreen; canvas frame HTML → CDP screenshot fidelity |
-| M1 | Shell | workspace, Tauri app, signing, Keychain, onboarding, permissions, model registry, store, typed bridge, `neo doctor` |
+| M1 | Shell | workspace, Tauri app, signing, Keychain, Connect ChatGPT account bridge, OpenAI-key alternative, onboarding, permissions, runtime-scoped model registry, store, typed bridge, `neo doctor` |
 | M2 | Ears + Conversation | capture → VAD → STT, listening bar, tray, Conversation thread + composer + quick entry |
 | M3 | Navigator (web) | `jev-nav` core + `CdpObserver` → reference parity; then iframes, shadow roots, upload, contenteditable, new tabs |
 | M4 | Judge, queue, safety | intake + routing, queue + worker, rules, safety heads, confirm cards, kill switch, caps, lock pause, trace + Mind pane |
-| M5 | Sol orchestrator | metalcraft 0.12, `navigate` / `extract` / `ask_user`, questions, conversation digest, `soul.md` |
+| M5 | Sol orchestrator | `AgentRuntime`; metalcraft 0.12 OpenAI-key runtime + official Codex app-server ChatGPT runtime; `navigate` / `extract` / `ask_user`, questions, conversation digest, `soul.md` |
 | M6 | Media engine | dmm lib split, `neo-media`, backends, enablement flow, quality pipeline, spend gate |
 | M7 | Hypercanvas I | document + ops + canvas UI; Graphic / Set / Board frames; takes as nodes; agent passes; pins, knobs, micro-edits; exports |
 | M8 | Hypercanvas II | Web frames: breakpoints, components, CDP checks, code export, import-from-URL, handoff bundle |
@@ -102,7 +103,6 @@ Upstream crates we change: **metalcraft → 0.12** (reasoning summaries, image p
 ## Still open (needs the user)
 
 1. Apple Developer team / signing identity for `com.starkbot.neo` — blocks M1.
-2. Personal tool vs public product — sets how much polish M14 needs.
-3. Repo home (account, private/public).
-4. Default pack registry: axoniac.com or a registry yet to be built.
-5. OK to cut metalcraft 0.12, split degen-media-maker into lib + bin, and reserve `desktop/` plus `component/` paths in the shared pack format.
+2. Public-product launch identity: final product URL, support/privacy URLs and publisher display name.
+3. Default pack registry: axoniac.com or a registry yet to be built.
+4. OK to cut metalcraft 0.12, split degen-media-maker into lib + bin, and reserve `desktop/` plus `component/` paths in the shared pack format.
