@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the NSPanel spike windows",
+  "windows": ["pill", "ring", "quick-entry"],
+  "permissions": ["core:default"]
+}

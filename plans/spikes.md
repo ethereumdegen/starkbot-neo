@@ -99,7 +99,23 @@ Not implemented or run.
 
 ## S6 — non-activating NSPanel
 
-Not implemented or run.
+Command: `cargo run -p s6-panel`. The spike is a real Tauri 2.11 application using `tauri-nspanel` at pinned revision `c9ec2130422200f0863b23dfdad02b133a529b07`. It launched managed Chrome through the production `neo-cdp` pipe transport, put Chrome in macOS fullscreen, and exercised the panels with real HID mouse and keyboard events.
+
+| Check | Observed result |
+|---|---|
+| Passive surfaces above fullscreen Chrome | pill visible at level 101; ring visible at level 25 |
+| Focus after showing pill + ring | Chrome remained frontmost; neither panel was key or capable of becoming key |
+| Ring click-through | a real system click crossed the full-display ring and incremented Chrome's fixture counter |
+| Clickable pill | a real system click reached the pill; Chrome remained frontmost and the pill remained non-key |
+| Quick entry | the dedicated key-capable panel became key under `Accessory`, received `neo`, hid, restored `Prohibited`, and returned focus to Chrome |
+| Lifecycle | hide/show passed; after a `Regular → Prohibited` policy cycle the passive panels were explicitly re-shown and remained healthy |
+| Permission-free evidence | native `WKWebView.takeSnapshot` captures of `pill` and `ring` succeeded; no desktop capture or Screen Recording permission was used |
+
+The machine-readable result is `spikes/out/s6-panel/report.json`; the native surface captures are `pill.png` and `ring.png` beside it. One measured run passed all 12 checks in 10,173 ms.
+
+Decision: ship this shape. `pill` and `ring` use a panel subclass whose `canBecomeKeyWindow` is always false, borderless `nonactivatingPanel`, `fullScreenAuxiliary + canJoinAllSpaces + stationary + ignoresCycle`, `hidesOnDeactivate(false)`, and `Prohibited` activation policy while no normal window is open. The ring additionally ignores mouse events. `quick-entry` is a separate subclass that can become key; opening it switches to `Accessory`, and closing it restores the previous application and `Prohibited`. `main` or `design` uses `Regular`.
+
+Important lifecycle finding: changing activation policy can order passive panels out. The shell's panel controller must treat every policy transition as a visibility transition and explicitly re-show the surfaces that should remain visible. Panel snapshots for regression evidence must use the owned WKWebViews' snapshot API, never `screencapture`.
 
 ## S7 — canvas rendering
 

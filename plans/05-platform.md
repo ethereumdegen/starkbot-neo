@@ -31,7 +31,7 @@ starkbot-neo/
 | `neo-canvas-agent` | Canvas tools for Sol, outline/look, micro-edit policy, region workers, browser-engine render for export and critique. |
 | `neo-agent` | Queue worker, router, Sol orchestrator on `metalcraft`, tools, `Gated<T>`, caps, trace, spend meter, the `OpenAiInference` provider impl, and **`Runtime`** — the one facade (`start`, commands in, `AppEvent` stream out) that both binaries drive. |
 | `neo-cli` | The `neo` binary: every subsystem headless (`doctor`, `keys`, `models`, `voice`, `nav`, `judge`, `run`, `pack`, `media`, `canvas`, `scenario`) plus hidden `neo dev …` maintenance commands (export bindings, capture fixtures, seed DBs). |
-| `src-tauri` | Tauri app shell only: typed command/event bridge over `Runtime`, windows and NSPanels, tray, global shortcuts, updater, single-instance, autostart, notifications. No product logic. |
+| `src-tauri` | Tauri app shell only: typed command/event bridge over `Runtime`; one main-thread `panels::PanelController` owning all NSPanel/AppKit state and activation-policy transitions; normal windows, tray, global shortcuts, updater, single-instance, autostart, notifications. No product logic. |
 
 **Allowed dependency direction** (`A ─▶ B` = A may depend on B; nothing points the other way):
 
@@ -91,7 +91,7 @@ panic = "unwind"                # a panicking task must not take the desktop wor
 
 | Area | Crates |
 |---|---|
-| App shell | `tauri` 2.11 (`tray-icon`, `macos-private-api`); plugins `global-shortcut` 2.3, `updater` 2.10, `single-instance` 2.4, `autostart` 2.5, `log` 2.9, `notification` 2.3; `tauri-nspanel` (git, branch `v2.1`, pinned by rev) |
+| App shell | `tauri` 2.11 (`tray-icon`, `macos-private-api`); plugins `global-shortcut` 2.3, `updater` 2.10, `single-instance` 2.4, `autostart` 2.5, `log` 2.9, `notification` 2.3; `tauri-nspanel` git revision `c9ec2130422200f0863b23dfdad02b133a529b07` (the S6-proven `v2.1` code; never float the branch) |
 | Bridge | `tauri-specta` =2.0.0-rc.25 + matching `specta` (exact pins); fallback if the rc bites: `ts-rs` + one hand-written `api.ts` |
 | Sol · Jev | `metalcraft` 0.11 → **0.12** (feature `rig`), `rig` pinned 0.37 (upstream 0.42; the bump rides in metalcraft 0.12) · Jev needs none: `jev-nav::wire` is raw `reqwest` and **the `jev` crate is not a dependency** (A6) |
 | HTTP / WS | `reqwest` (`rustls-tls`, `http2`, `multipart`, `stream`, `json`), `tokio-tungstenite` (streaming STT; CDP attach mode), `url`, `wiremock` (dev) |
@@ -303,7 +303,7 @@ One typed `Settings` struct in `neo-core`, one row per section in `settings`. Mi
 | **Microphone** | requested (onboarding 4) | `AVCaptureDevice authorizationStatusForMediaType:` / `requestAccessForMediaType:` via `objc2-av-foundation` in `neo-voice::perm`; `NSMicrophoneUsageDescription`; entitlement `com.apple.security.device.audio-input`. Denied → deep link `x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone` |
 | **Accessibility** | requested (onboarding 5) | `AXIsProcessTrustedWithOptions(prompt)` once, then poll `AXIsProcessTrusted()` each second while the screen is open; deep link `…?Privacy_Accessibility`; `CGPreflightPostEventAccess()` for posting. Needed for native apps, `CGEvent` input and the kill switch's modifier release — not for CDP |
 | Documents / Desktop / Downloads folder | prompted by macOS itself on first touch | non-sandboxed apps get a Files-and-Folders prompt: add `NSDocumentsFolderUsageDescription` (studios), `NSDesktopFolderUsageDescription`, `NSDownloadsFolderUsageDescription` (exports). Open/save panels need nothing |
-| Screen Recording | **never requested** (P10) | export and critique renders come from the browser engine over CDP / `WKWebView`, not from screen capture |
+| Screen Recording | **never requested** (P10) | export and critique renders come from the browser engine over CDP / `WKWebView`; panel regression artifacts use the owned WKWebViews' native snapshot API, never desktop capture or `screencapture` |
 | Input Monitoring | **never requested** | we post events, we never tap them; global hotkeys go through `tauri-plugin-global-shortcut` (Carbon hotkeys, no TCC) |
 | Apple Events / Automation | **never requested** | no AppleScript, no `osascript`; no `NSAppleEventsUsageDescription`, no `automation.apple-events` entitlement |
 
@@ -414,7 +414,7 @@ Day 6 onward is blocked by open item 1 (the Developer ID). Days 1–5 are not.
 |---|---|
 | No signing identity yet → TCC and Keychain churn poisons the dev loop | days 1–5 need none; the CLI loop uses terminal grants + env keys; do not start M2 UI work on ad-hoc builds |
 | `tauri-specta` is an rc | exact pins; the bridge is one module; `ts-rs` fallback costs about a day |
-| `tauri-nspanel` is a git dependency | pin by rev; vendor if it goes stale; M0 spike proves panels over fullscreen first |
+| `tauri-nspanel` has no crates.io release | revision `c9ec213…` is pinned and S6 proves panels over fullscreen; vendor that revision if upstream goes stale |
 | Lock / screensaver notifications are undocumented | three independent signals, a pre-task `CGDisplayIsAsleep` check, fail-closed default |
 | No vendor price API for OpenAI | signed `prices.json` until StarkRouter reports exact cost; step and wall caps always apply |
 | `~/Documents` triggers a Files-and-Folders prompt at first studio creation | usage strings explain it; if the prompt is declined, studios fall back to `Application Support/…/studios/` and the UI says where |
