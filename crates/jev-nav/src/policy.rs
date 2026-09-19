@@ -116,10 +116,10 @@ pub fn action_space(actions: &[Action]) -> ActionSpace {
         });
         let element = &mut elements[position];
         let index = (position + 1).to_string();
-        if let Some(Value::Array(operations)) = element.get_mut("operations") {
-            if !operations.iter().any(|o| o == operation.name()) {
-                operations.push(json!(operation.name()));
-            }
+        if let Some(Value::Array(operations)) = element.get_mut("operations")
+            && !operations.iter().any(|o| o == operation.name())
+        {
+            operations.push(json!(operation.name()));
         }
         let mut target = index.clone();
         if operation == Operation::Select {

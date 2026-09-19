@@ -1,0 +1,3 @@
+disallowed-methods = [
+  { path = "neo_keys::Secret::expose", reason = "Secrets may only be exposed at audited provider credential boundaries." },
+]

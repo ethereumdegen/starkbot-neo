@@ -144,7 +144,9 @@ async fn main() -> anyhow::Result<()> {
 
     let text = std::env::var("OPENAI_API_KEY").ok().map(|key| {
         let model = std::env::var("TEXT_MODEL").unwrap_or_else(|_| "gpt-5.6-luna".into());
-        let mut helper = OpenAiTextHelper::new(key, model);
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        let mut helper = OpenAiTextHelper::new(key, model, base_url);
         helper.extra = json!({ "reasoning_effort": std::env::var("TEXT_REASONING").unwrap_or_else(|_| "none".into()) });
         helper
     });
@@ -152,8 +154,15 @@ async fn main() -> anyhow::Result<()> {
         println!("OPENAI_API_KEY not set — the run will stop at the first TYPE_TEXT.");
     }
 
+    let typesafe_endpoint = std::env::var("TYPESAFE_ENDPOINT")
+        .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into());
+    let typesafe_model = std::env::var("TYPESAFE_MODEL").unwrap_or_else(|_| "jev-latest".into());
     println!("\ngoal: {goal}\n");
-    let mut navigator = Navigator::new(observer, TypeSafe::new(typesafe_key), text);
+    let mut navigator = Navigator::new(
+        observer,
+        TypeSafe::new(typesafe_key, typesafe_endpoint, typesafe_model),
+        text,
+    );
     let config = RunConfig {
         goal: goal.to_owned(),
         safety_heads: safety,

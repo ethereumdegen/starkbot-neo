@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Jev-driven navigator: a Rust port of browser-use/jev-ultrafast (MIT). One TypeSafe request per step picks operation + target."
 
+[lints]
+workspace = true
+
 [dependencies]
 neo-cdp.workspace = true
 tokio.workspace = true

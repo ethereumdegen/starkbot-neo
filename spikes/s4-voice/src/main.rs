@@ -372,7 +372,7 @@ fn capture_room(seconds: u64) -> anyhow::Result<Capture> {
     let supported = device.default_input_config()?;
     let sample_rate = supported.sample_rate();
     let channels = supported.channels();
-    let config: StreamConfig = supported.clone().into();
+    let config: StreamConfig = supported.into();
     let capacity = sample_rate as usize * seconds as usize + sample_rate as usize;
     let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(capacity);
     let overflow_count = Arc::new(AtomicU64::new(0));
@@ -644,7 +644,7 @@ async fn transcribe(client: &reqwest::Client, model: &str, wav: Vec<u8>) -> anyh
     if !status.is_success() {
         bail!("transcription failed ({status}): {body}");
     }
-    Ok(serde_json::from_str(&body).context("invalid transcription JSON")?)
+    serde_json::from_str(&body).context("invalid transcription JSON")
 }
 
 fn percentile(values: &[u128], quantile: f64) -> u128 {

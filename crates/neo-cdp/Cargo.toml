@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Minimal Chrome DevTools Protocol client: launch a managed Chrome, flat sessions, evaluate, input, capture."
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio.workspace = true
 tokio-tungstenite.workspace = true

@@ -447,10 +447,10 @@ impl Page {
         self.context_sessions.lock().await.clear();
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
-            if let Ok(state) = self.evaluate("document.readyState").await {
-                if state == "complete" {
-                    return Ok(());
-                }
+            if let Ok(state) = self.evaluate("document.readyState").await
+                && state == "complete"
+            {
+                return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

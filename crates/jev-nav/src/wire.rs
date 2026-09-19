@@ -6,9 +6,6 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-pub const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
-pub const DEFAULT_MODEL: &str = "jev-latest";
-
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
     #[error("model connection failed; no action executed")]
@@ -83,16 +80,17 @@ pub struct TypeSafe {
 }
 
 impl TypeSafe {
-    pub fn new(key: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(25))
-            .build()
-            .expect("http client");
+    pub fn new(
+        key: impl Into<String>,
+        endpoint: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        let http = reqwest::Client::new();
         Self {
             http,
             key: key.into(),
-            endpoint: ENDPOINT.into(),
-            model: DEFAULT_MODEL.into(),
+            endpoint: endpoint.into(),
+            model: model.into(),
         }
     }
 
@@ -109,6 +107,7 @@ impl TypeSafe {
                 .http
                 .post(&self.endpoint)
                 .bearer_auth(&self.key)
+                .timeout(Duration::from_secs(25))
                 .json(&body)
                 .send()
                 .await

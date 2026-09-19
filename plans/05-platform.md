@@ -395,7 +395,7 @@ On every push and PR: `cargo fmt --check` → `cargo clippy --workspace --all-ta
 
 | Day | Work | Green when |
 |---|---|---|
-| 1 | repo, workspace `Cargo.toml` (lints, profiles, shared deps), toolchain, `deny.toml`, CI skeleton; `neo-keys` + `neo-core` skeletons: ids, errors, `Settings` + defaults, `AppEvent`, `ModelRef` / `Endpoint` / `Usage`, provider traits | `fmt`, `clippy`, empty tests pass in CI |
+| 1 | **Complete locally:** repo, workspace `Cargo.toml` (lints, profiles, shared deps), pinned toolchain, `deny.toml`, CI skeleton; `neo-keys` + `neo-core`: UUIDv7 ids, errors, validated `Settings` + defaults, `AppEvent`, `ModelRef` / `Endpoint` / `Usage`, provider traits | `fmt`, strict workspace `clippy`, and all workspace tests pass |
 | 2 | `neo-store`: pragmas, writer actor + read pool, `0001_init.sql` (the full schema above), settings repo + merge-patch, backup-before-migrate | migration + settings tests pass; seed DB v1 committed |
 | 3 | `neo-keys` complete: `Secret`, accounts, Keychain store, `KeyValidator`, `KeySource`; `neo keys set / status / rm` | Keychain round-trip; redaction tests |
 | 4 | `OpenAiInference::list_models` + validator; `jev-nav::wire` promoted from the M0 spike with `ping`; registry (classify, resolve, hide-list, `models` cache); price fetch; `neo models` | both keys validate; `sol-latest` resolves; hidden ids never listed |

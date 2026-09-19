@@ -289,13 +289,13 @@ impl CdpObserver {
                     ));
                 }
             }
-            if action.get("kind").and_then(Value::as_str) == Some("click") {
-                if let Some(popup) = self.page.popup(Duration::ZERO).await? {
-                    popup.set_viewport(1120, 780, 1.0).await?;
-                    self.page = popup;
-                    self.context_id = None;
-                    self.frame_contexts.clear();
-                }
+            if action.get("kind").and_then(Value::as_str) == Some("click")
+                && let Some(popup) = self.page.popup(Duration::ZERO).await?
+            {
+                popup.set_viewport(1120, 780, 1.0).await?;
+                self.page = popup;
+                self.context_id = None;
+                self.frame_contexts.clear();
             }
         }
         for attempt in 0..10 {
@@ -305,10 +305,10 @@ impl CdpObserver {
                 }
                 Ok(Value::Null) => return Err(ObserveError::Stale("document is navigating")),
                 Ok(mut observation) => {
-                    if self.attachments.is_empty() {
-                        if let Some(actions) = observation["actions"].as_array_mut() {
-                            actions.retain(|action| action["kind"] != "upload");
-                        }
+                    if self.attachments.is_empty()
+                        && let Some(actions) = observation["actions"].as_array_mut()
+                    {
+                        actions.retain(|action| action["kind"] != "upload");
                     }
                     return Ok(observation);
                 }

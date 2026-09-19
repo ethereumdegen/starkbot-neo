@@ -1,11 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/neo-cdp", "crates/jev-nav", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
+members = ["crates/*", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
+
+[workspace.lints]
+rust = { unsafe_code = "deny", unused_must_use = "deny" }
+clippy = { unwrap_used = "deny", expect_used = "warn", dbg_macro = "deny", print_stdout = "deny", disallowed_methods = "deny", await_holding_lock = "deny" }
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -14,6 +18,12 @@ async-trait = "0.1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+time = { version = "0.3", features = ["serde", "formatting"] }
+url = { version = "2", features = ["serde"] }
+http = "1"
+zeroize = "1"
+futures-core = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls", "http2"] }
 thiserror = "2"
 anyhow = "1"
@@ -21,6 +31,8 @@ base64 = "0.22"
 tempfile = "3"
 tracing = "0.1"
 neo-cdp = { path = "crates/neo-cdp" }
+neo-keys = { path = "crates/neo-keys" }
+neo-core = { path = "crates/neo-core" }
 jev-nav = { path = "crates/jev-nav" }
 metalcraft = { path = "../metalcraft", features = ["rig"] } # Remote cutover pin: rev 3f5e865eae51186882ff20604dbbf658f12d24af or tag v0.12.0.
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
@@ -40,3 +52,30 @@ earshot = "1.2"
 hound = "3.5"
 rtrb = "0.4"
 rubato = "5"
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.rubato]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.earshot]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+split-debuginfo = "packed"
+panic = "unwind"

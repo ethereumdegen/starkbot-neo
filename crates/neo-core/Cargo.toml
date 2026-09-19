@@ -1,0 +1,22 @@
+[package]
+name = "neo-core"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared, I/O-free domain vocabulary for Starkbot Neo."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures-core.workspace = true
+http.workspace = true
+neo-keys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+uuid.workspace = true

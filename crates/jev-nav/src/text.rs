@@ -57,15 +57,16 @@ pub struct OpenAiTextHelper {
 }
 
 impl OpenAiTextHelper {
-    pub fn new(key: impl Into<String>, model: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(25))
-            .build()
-            .expect("http client");
+    pub fn new(
+        key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        let http = reqwest::Client::new();
         Self {
             http,
             key: key.into(),
-            base_url: "https://api.openai.com/v1".into(),
+            base_url: base_url.into(),
             model: model.into(),
             extra: json!({}),
         }
@@ -91,6 +92,7 @@ impl OpenAiTextHelper {
                 self.base_url.trim_end_matches('/')
             ))
             .bearer_auth(&self.key)
+            .timeout(Duration::from_secs(25))
             .json(&body)
             .send()
             .await
