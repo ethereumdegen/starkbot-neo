@@ -1,6 +1,6 @@
 # 02 — Voice (`neo-voice`)
 
-Crate `neo-voice`. Milestones **M2 — ears** (capture → VAD → STT → Conversation) and **M11 — voice out** (TTS, duplex, spoken questions, voice confirms). Pure Rust, no Tauri dependency; the whole pipeline runs headless under `neo voice …`.
+Crate `neo-voice`. Milestones **M2 — ears** (capture → VAD → STT → Conversation) and **M12 — voice out** (TTS, duplex, spoken questions, voice confirms). Pure Rust, no Tauri dependency; the whole pipeline runs headless under `neo voice …`.
 
 Voice is the primary input (P4). **Always-on listening is the default, with open addressing** (P5): no wake word — every utterance heard while Listen is on is eligible, and Jev intake decides what it was. Push-to-talk and name-required are off-by-default settings. The bot can talk back, off by default, **questions only** when on (P6).
 
@@ -12,7 +12,7 @@ cpal input (native rate, f32)            ← real-time callback: copy only
         ├─ downmix → rubato Fft 48k→16k
         ├─ level meter (RMS/peak, 30 Hz) ───────────────▶ mic_levels channel → waveform
         ├─ earshot VAD (256-sample / 16 ms frames)
-        ├─ duplex gate (M11: discards while the bot is speaking through speakers)
+        ├─ duplex gate (M12: discards while the bot is speaking through speakers)
         └─ segmenter ─▶ Utterance { id, pcm16k, started_at, dur } ─▶ tokio
                            │ HearingStarted / HearingEnded (instant, local)
                            └─ Transcriber ─▶ Transcript
@@ -164,7 +164,7 @@ One `ListenState`, owned here, mirrored by the listening bar, tray, pill and qui
 | `Spoke` | event | `{ text, truncated, task_id? }` |
 | `Health.mic` | event field | device name, ring overflows, STT error streak |
 
-## Text-to-speech (M11; optional, off by default)
+## Text-to-speech (M12; optional, off by default)
 
 `POST /v1/audio/speech`, **`gpt-4o-mini-tts`**, voice **`marin`** (`cedar` alt), `response_format: "pcm"` = 24 kHz s16le mono headerless, chunked. `tts-1*` ids are hidden (K3).
 
@@ -180,7 +180,7 @@ One `ListenState`, owned here, mirrored by the listening bar, tray, pill and qui
 |---|---|---|
 | **Half-duplex gate** (default) | output is speakers | while TTS plays **+ 200 ms tail**, frames are discarded before the segmenter. No voice barge-in; the kill hotkey, pill and UI stop button interrupt speech. |
 | **Full duplex + barge-in** | output device is **headphones** | mic stays live; 200 ms of sustained speech → `player.stop()`, and the utterance proceeds normally. |
-| **AEC** (later, opt-in) | speakers + barge-in wanted | `sys-voice` (Apple VoiceProcessingIO; system output is the echo reference automatically) — caveats: **ducks other audio, ~2 s init stall, weak Bluetooth volume**. Alternative: `webrtc-audio-processing` 2.x with TTS frames as the render reference (a C++ build in the bundle). Neither is in M11. |
+| **AEC** (later, opt-in) | speakers + barge-in wanted | `sys-voice` (Apple VoiceProcessingIO; system output is the echo reference automatically) — caveats: **ducks other audio, ~2 s init stall, weak Bluetooth volume**. Alternative: `webrtc-audio-processing` 2.x with TTS frames as the render reference (a C++ build in the bundle). Neither is in M12. |
 
 **Headphones detection** (`devices.rs`, CoreAudio properties cpal does not expose): built-in output with data source `hdpn` → headphones; transport Bluetooth / BluetoothLE → assumed headphones *(verify: Bluetooth speakers are misdetected)*; USB, HDMI, DisplayPort, AirPlay, built-in speaker → speakers. The user can override per device, remembered by device UID. Re-evaluated on every output-device change, mid-sentence included.
 
@@ -271,7 +271,7 @@ Fixtures are recorded with `neo voice record` — an explicit CLI act, the only 
 7. Unplugging the mic → `MIC LOST` → automatic recovery on re-plug; zero ring overflows in a 1 h soak.
 8. No audio file exists on disk after a session with the debug toggle off (test asserts on the app-data dir).
 
-**M11 — voice out**
+**M12 — voice out**
 1. TTS off by default; when on, only `ask_user` and confirm lines are spoken by default.
 2. First audio < 500 ms p50; `stop()` (kill switch, cancel, lock) silences < 100 ms.
 3. Speakers: a 10-question session yields **zero** self-heard utterances. Headphones: auto-detected, barge-in stops speech < 250 ms.
@@ -289,6 +289,6 @@ Fixtures are recorded with `neo voice record` — an explicit CLI act, the only 
 | 550 ms hangover cuts slow talkers | tunable; interrupted speech returns from `Hangover` to `Speech`; fixture boundaries and slow-speech recordings gate release |
 | Bluetooth mic degrades headphone audio | avoid-Bluetooth-mic default |
 | Headphones misdetected → bot hears itself | self-echo filter behind the gate; per-device override |
-| VoiceProcessingIO side effects | AEC stays opt-in and out of M11 |
+| VoiceProcessingIO side effects | AEC stays opt-in and out of M12 |
 | A stale "yes" approves the wrong card | exact forms, 600 ms rule, click-only for `destructive`/`spends` |
 | `tauri dev` mic attribution confusion | `neo doctor` names the attributed process |

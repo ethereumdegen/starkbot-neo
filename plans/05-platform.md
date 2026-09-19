@@ -9,7 +9,7 @@ starkbot-neo/
   Cargo.toml  rust-toolchain.toml  deny.toml  clippy.toml  .github/workflows/
   crates/
     neo-keys/  neo-core/  neo-store/  jev-nav/  neo-ax/  neo-voice/  neo-judge/  neo-packs/
-    neo-media/  neo-canvas/  neo-canvas-agent/  neo-agent/  neo-cli/
+    neo-media/  neo-canvas/  neo-canvas-agent/  neo-extension-host/  neo-agent/  neo-cli/
   src-tauri/          the app shell (tauri.conf.json, Info.plist, entitlements*.plist, capabilities/)
   ui/                 React + TS + Vite (entries: main, pill, ring, quick-entry); pnpm
   fixtures/           eval JSONL, raw AX trees, WAVs, fixture sites, recorded sessions, injection pages, seed DBs per schema version
@@ -26,6 +26,7 @@ starkbot-neo/
 | `neo-voice` | Capture, VAD, segmenter, STT, TTS, duplex gate, mic permission (`perm`), and the `OpenAiSpeech` provider impl. |
 | `neo-judge` | Intake, routing, routine match, gates and micro-edit calls built on `jev-nav::wire`; the verdict log (`jev_verdicts`) and human-signal backfill; the eval harness; the TypeSafe `KeyValidator`. |
 | `neo-packs` | Pack bundle read/validate, registry of enabled packs, HTTP tool runner, routines, install + `neo.lock`, consent summary, the generic enablement flow and data-driven key validation. |
+| `neo-extension-host` | Separate subprocess containing Wasmtime's WASI component runtime, WIT bindings, capability broker, quotas and the framed RPC boundary to `neo-agent`. Components get no ambient WASI resources; the host never links Tauri or `neo-keys`. |
 | `neo-media` | Adapter over the `degen-media-maker` lib: media tools, `MediaBackend` wiring (`fal`, `quiver`), spend estimates, studio index, fal/Quiver `KeyValidator`s. |
 | `neo-canvas` | The hypercanvas document: HTML/CSS frames, node tree, ops + transactions, per-author undo, tokens, knobs, pins, storage inside the studio folder. |
 | `neo-canvas-agent` | Canvas tools for Sol, outline/look, micro-edit policy, region workers, browser-engine render for export and critique. |
@@ -39,6 +40,7 @@ starkbot-neo/
 neo-store ─▶ neo-core ─▶ neo-keys (leaf)
 jev-nav (standalone) ──feature ax──▶ neo-ax (standalone)
 neo-voice, neo-packs, neo-media, neo-canvas ─▶ neo-core, neo-store, neo-keys        (neo-media ─▶ degen-media-maker)
+neo-extension-host ─▶ neo-core
 neo-judge ─▶ jev-nav, neo-core, neo-store, neo-keys
 neo-canvas-agent ─▶ neo-canvas, neo-media, neo-judge, jev-nav
 neo-agent ─▶ all of the above (+ metalcraft, rig)
@@ -361,10 +363,11 @@ Policy (P7): `locked ∨ display_asleep ∨ ¬on_console` → queue pauses (`pau
 |---|---|
 | **Prompt injection via page / screen text** | page text is data in a delimited field, never instructions (rule block in every request); model output is only ever an index into observed controls; `on_task` head (< 0.30 twice → `BLOCKED`); deterministic confirm labels + `outward` / `destructive` / `spends` heads → confirm card; the bot works only in tabs it opened; no shell, no file tools, terminal-class apps denied (P3); injection fixtures gate every release |
 | **Malicious pack** | packs are data, nothing executes; validation + consent screen (domains, keys, mutating tools, routine steps, policies); `allowed_hosts` enforced on the parsed URL, no redirects; `$VAR` only for the pack's own declared names; policies tighten-only; skill text is advice that still passes every gate; sha256 in `neo.lock`, updates show a consent diff |
+| **Malicious component** | never loaded in-process: exact-hash `wasm32-wasip2` runs in `neo-extension-host`; no ambient WASI files, sockets, env or processes; no Keychain/Tauri/macOS handles; narrow consented WIT imports only; all proposed actions return to `Gated<T>`; fuel/epoch/memory/byte/concurrency limits; crash or trap disables the component without taking down the app |
 | **Key exfiltration** | Keychain only; `Secret` redaction + clippy-fenced `expose()`; the webview sees status only and has no HTTP capability to vendor hosts (CSP + Tauri capabilities allow IPC only); keys never typed, spoken, shown or sent in a task; secure fields never read; no key in argv, logs, diagnostics or crash output |
 | **Mis-hearing** | pre-intake filter → Jev intake with an "enqueue?" band (0.40–0.70) → every outward / destructive / spending step still confirms; heard text is always visible and one click to undo or cancel; local `stop` vocabulary and the kill hotkey work with no network; typed and spoken tasks get identical gates |
 | **Runaway spend** | per-task cap, per-media-call confirm, daily cap (K5) — enforced from `spend_daily` before each paid call, with the estimate in the action sentence; step / decision / wall caps as the backstop when a price is unknown; pacing guard per origin; StarkRouter later adds server-side per-key limits |
-| **Supply chain** | `Cargo.lock` + `pnpm-lock.yaml` committed; `cargo deny` (advisories, licences, bans, sources) and `cargo audit` in CI; git dependencies pinned by rev; hardened runtime with library validation on; updater artifacts signed with the offline-backed key, `prices.json` with the same key; Developer ID + notarization; no runtime code download, no plugins that execute |
+| **Supply chain** | `Cargo.lock` + `pnpm-lock.yaml` committed; `cargo deny` (advisories, licences, bans, sources) and `cargo audit` in CI; git dependencies pinned by rev; hardened runtime with library validation on; updater artifacts signed with the offline-backed key, `prices.json` with the same key; Developer ID + notarization. Data packs execute no code. M10 components install only immutable reviewed bytes pinned by exact source commit + content hash and run only in the sandboxed extension host; native dylibs, executables and install hooks are refused. |
 | **Unattended Mac · provider outage** | P7 policy (§8), fail-closed on unreadable session state · risk decisions fail closed (→ confirm or pause), intake fails open to the UI ("enqueue?"), banner + `paused_reason` |
 
 ## 13. Tests — Rust only

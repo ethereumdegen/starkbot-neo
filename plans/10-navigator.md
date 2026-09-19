@@ -289,7 +289,7 @@ Freshness is **semantic, not mutation-counting**: `Fresh::Full` re-runs the snap
 
 Still out: canvas-rendered UIs and closed shadow roots → `BLOCKED`.
 
-## 12. `AxObserver` — native apps, same policy (M10)
+## 12. `AxObserver` — native apps, same policy (M11)
 
 Built on a pruned `neo-ax` snapshot (01) of the target app's focused window plus any sheet/dialog. It produces the identical `Observation`, so policy, wire, rules, safety and events are unchanged.
 
@@ -364,7 +364,7 @@ TypeSafe returns token counts without a dollar amount → the spend meter shows 
 | **M3a** core + `CdpObserver` | `wire`, `policy`, `rules`, `text`, loop, `CdpObserver`, Stark's Chrome lifecycle, `verify`, `neo nav "<goal>" --url … [--step] [--reference]`, StepEvents as JSON lines | all ported + new offline tests green; Chrome guard tests green; hotel fixture, Wikipedia and Flights pass the **parity gate**; safety heads computed and logged (confirm auto-denies in the CLI unless `--yes`) |
 | **M3b** beyond the reference | §11 items 1–5, then 6–8 | each new fixture passes with independent verification; compose-don't-send works live on LinkedIn, X, Gmail; an upload of a media export lands on a fixture and one live site |
 | *(M4, M5 — other docs)* | confirm cards, kill switch, lock pause wired to `ConfirmGate`/`RunControl` (03/04); Sol's `navigate` + escalation handling | injection fixture never acts; "Send" always pauses; `BLOCKED` reaches Sol with the §8 payload |
-| **M10** `AxObserver` | §12 over `neo-ax`, `MENU`, `PRESS_KEY`, native addendum | by goal alone, with all app hints removed: a note created in Notes, a rename in Finder, a System Settings search; the same offline suite passes against a mock AX observer; deny-listed apps refuse |
+| **M11** `AxObserver` | §12 over `neo-ax`, `MENU`, `PRESS_KEY`, native addendum | by goal alone, with all app hints removed: a note created in Notes, a rename in Finder, a System Settings search; the same offline suite passes against a mock AX observer; deny-listed apps refuse |
 
 ## 17. Risks
 

@@ -1,6 +1,6 @@
 # 01 — Accessibility layer (`neo-ax`) — native apps only
 
-Crate `neo-ax`, milestone **M10**. Pure Rust, macOS only, **no Tauri and no `neo-*` dependency** (`jev-nav`'s `ax` feature depends on it, and `jev-nav` is publishable on its own). It is the only code in the product that touches the macOS Accessibility (AX) API or posts `CGEvent`s.
+Crate `neo-ax`, milestone **M11**. Pure Rust, macOS only, **no Tauri and no `neo-*` dependency** (`jev-nav`'s `ax` feature depends on it, and `jev-nav` is publishable on its own). It is the only code in the product that touches the macOS Accessibility (AX) API or posts `CGEvent`s.
 
 ## Scope
 
@@ -16,7 +16,7 @@ Consequences, all firm:
 - `AXEnhancedUserInterface` is **never set on any app**. Its costs (breaks Rectangle/Magnet window positioning and animation, can replay stray keystrokes when the AX client disconnects) are avoided entirely. There is no set/clear bookkeeping and no crash marker.
 - For a Chrome-family bundle id, `neo-ax` returns only what the browser exposes unprompted (window chrome) and `AxObserver::observe` fails with `use_cdp`. The router sends web goals to `CdpObserver`; file upload is `DOM.setFileInputFiles`, so the native open panel is never needed for the web path.
 - No screenshots, no vision, no Screen Recording permission (P10). An app with no usable AX tree is `BLOCKED: opaque_app`.
-- Native-app automation is not what milestones are ordered around (P2). M10 lands after the web navigator, judge, Sol and the media/canvas work.
+- Native-app automation is not what milestones are ordered around (P2). M11 lands after the web navigator, judge, Sol and the media/canvas/extension work.
 
 Two consumers:
 
@@ -273,7 +273,7 @@ The user can add entries. Removing a default entry is a Settings → Safety acti
 - `AXIsProcessTrustedWithOptions(prompt = true)` **once**, from onboarding; then poll `AXIsProcessTrusted()` every second while the onboarding/Doctor screen is open. Deep link: `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`.
 - The grant is keyed on bundle id **+ code requirement**. Ad-hoc builds = cdhash → **every rebuild silently invalidates the grant while the toggle still shows ON**. Developer ID builds (P1) keep it across updates.
 - Under `tauri dev` / `cargo run` the bare binary is attributed to the **launching terminal** — grant the terminal for development; test the real grant only with a signed `.app`.
-- Accessibility is requested at **M1 onboarding** even though `neo-ax` lands in M10, because nothing else in the product can work around a missing grant later; Screen Recording is never requested (P10).
+- Accessibility is requested at **M1 onboarding** even though `neo-ax` lands in M11, because nothing else in the product can work around a missing grant later; Screen Recording is never requested (P10).
 - **`neo doctor`** (and Settings → Doctor) reports: trusted yes/no · *toggle on but untrusted* (prints `tccutil reset Accessibility com.starkbot.neo`) · `CGPreflightPostEventAccess` · secure input currently on (and which pid holds it) · signing identity / ad-hoc warning · a live probe (snapshot Finder's menu bar, expect > 5 nodes).
 
 ## Testing seams
@@ -319,7 +319,7 @@ Mutating subcommands obey the deny list and print the guard result and the diff.
 
 `erishen/ax-agent` (Rust + Tauri 2, closest match: index-path refs + relocation hints, 2 s timeout, 35-step budget) · `andelf/axcli` (Rust, CSS-like selectors `AXButton[title*=…]`, `CGEventPostToPid`) · `mediar-ai` MacosUseSDK (diff-after-action) · Ghost OS (depth tunnelling, sticky modifiers, focus requirement) · Playwright MCP snapshot spec (ref lifecycle, element descriptions) · `browser-use/jev-ultrafast` `browser.py` guards (the freshness model ported here; read, never executed).
 
-## Acceptance criteria — M10
+## Acceptance criteria — M11
 
 1. `neo ax snapshot` of Mail, Notes, Finder and Slack: ≤ 1,500 nodes, p50 < 150 ms, p95 < 400 ms on Apple Silicon; batched fetch ≥ 5× fewer IPC calls than per-attribute (`bench`).
 2. `neo ax table` p50 < 100 ms; every fixture's golden table stable; ≤ 250 elements.
@@ -337,7 +337,7 @@ Mutating subcommands obey the deny list and print the guard result and the diff.
 | Risk | Mitigation |
 |---|---|
 | Apps with thin or wrong AX trees (custom-drawn, games, some Catalyst/SwiftUI views) | `opaque_app` → `BLOCKED`, said plainly; no vision fallback by decision (P10) |
-| Element table of 250 cannot hold a large window + menus | modal-first, on-screen-first, goal-ranked menus, `truncated` + scroll; measure in M10 before tuning |
+| Element table of 250 cannot hold a large window + menus | modal-first, on-screen-first, goal-ranked menus, `truncated` + scroll; measure in M11 before tuning |
 | Menu-bar walk cost per step | per-pid cache, re-read `AXEnabled` only; drop to top-level `MENU` targets if over budget |
 | `CGEvent` fallback acts on the wrong thing | frontmost + occlusion guards, AX-first ordering, no coordinates from the model |
 | Whole-editor deny is blunt (blocks VS Code entirely) | documented; the user may move an editor to per-app mode *confirm everything* (typed confirmation); whether terminal-class entries are removable at all is an open question for the user |

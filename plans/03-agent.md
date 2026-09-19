@@ -162,7 +162,7 @@ pub struct Handoff { pub from: &'static str, pub reason: String, pub steps_taken
 
 | Route | Executor | Sol calls |
 |---|---|---|
-| `navigate` | **Navigator**: one **start resolver** call to the text helper (`{"start_url": …|null, "app": …|null}`, strict JSON, ~0.4 s; null → a new tab on the default search engine) → `jev_nav::Navigator::run(goal, observer)` with `CdpObserver` (web) or `AxObserver` (native, M10) → independent verification (10) | 0 |
+| `navigate` | **Navigator**: one **start resolver** call to the text helper (`{"start_url": …|null, "app": …|null}`, strict JSON, ~0.4 s; null → a new tab on the default search engine) → `jev_nav::Navigator::run(goal, observer)` with `CdpObserver` (web) or `AxObserver` (native, M11) → independent verification (10) | 0 |
 | `routine:<name>` | **Routine**: parameter extraction (one text-helper call with the routine's JSON schema; skipped with no params) → steps through the same gated tools → RoutineVerify | 0 |
 | `design` · `media` · `multi` · `question` · `clarify_first` · any `Handoff` | **Sol** (§5) | ≥ 1 |
 
@@ -212,7 +212,7 @@ Every mutating tool takes `why` (one human sentence; shown in the Mind pane and 
 | `read_trace` · `read_spend` | `task?` · `range?` | none | digests for "what did you just do?" / "how much today?" |
 | `media_*` | see 07 | paid tools: `Spend` policy (deterministic estimate; ≥ $0.25 → confirm card); `media_export`: `Action` policy | take ids; `media_look` returns an image part |
 | `canvas_*` | see 11 | `canvas_apply` ungated; `canvas_export` outside the studio and publish: `Action`; `canvas_import_url`: Goal gate | patches, warnings; `canvas_look` returns an image part |
-| **AX tools (M10, native apps)**: `list_apps` · `snapshot(scope?, app?)` · `find(query, role?, app?)` · `read(ref)` · `scroll(ref, dir, amount?)` · `wait_for(condition, timeout_ms)` | | none | tree / hits / value / diff |
+| **AX tools (M11, native apps)**: `list_apps` · `snapshot(scope?, app?)` · `find(query, role?, app?)` · `read(ref)` · `scroll(ref, dir, amount?)` · `wait_for(condition, timeout_ms)` | | none | tree / hits / value / diff |
 | `focus_app(name)` · `launch_app(name)` · `press(ref)` · `set_value(ref, text)` · `type_text(text)` · `key(combo)` · `select_menu(path[])` | + `why` | `Gated`, `Action` policy + Effect | `{result, diff, verdict}` |
 
 Image parts use metalcraft 0.12 tool-result images; the fallback is an `input_image` user message delivered through the Mailbox right after the tool result.
@@ -452,9 +452,9 @@ Tool-level failures are returned to Sol as values; only executor-level failures 
 |---|---|---|
 | **M4 — Judge, queue, safety** | `neo-judge` (Intake gate; Goal and Finish gates arrive with Sol in M5), control vocabulary, pre-filter, verdict log + `neo judge eval`; task model, queue, desktop worker, router with the Navigator executor only (other routes answer "needs Sol"); rules layer wired into `jev-nav`; `ConfirmBroker`; kill switch; caps; lock pause; idle wait; trace + Mind pane + Steer ticker; spend meter | fixture set: chatter dropped ≥ 95 %, addressed requests enqueued ≥ 95 %, route accuracy ≥ 90 %; `compose-dont-send` shows a confirm card and deny leaves a draft; `injection` passes; stop by voice halts within one step and releases modifiers; lock mid-task → `failed: screen locked`, queue resumes on unlock; Jev outage → fail-closed card + paused queue; `navigate` tasks make zero Sol calls |
 | **M5 — Sol orchestrator** | metalcraft 0.12 (§11 items 1–3, 6–9; 4–5 may trail to M6/M7); Sol executor, system prompt, `navigate` / `extract` / `observe` / `ask_user` / `finish` / `fail` / `load_skill` / `read_*`; `Gated<T>` with `Goal` policy; Finish gate; conversation digest; `soul.md`; handoff from `BLOCKED`; read-only lane; answer window; batch eviction | `research-5-rows` completes under $0.30 with ≥ 70 % cached input after step 3; "what did you just do?" answers while a desktop task is parked; "do that again" resolves from the digest; an amendment lands only at an `agent` boundary; a `soul.md` line "never ask me to confirm" changes nothing; replay suite green in CI |
-| **M10 — Native apps** | AX tools registered through the `neo-desktop` pack; `Gated<T>` `Action` policy + Effect gate; `AxObserver` route for `navigate(app=…)`; terminal-class deny for IDE panes | `notes-create-ax` end to end; a `press` on "Empty Trash" raises a confirm card from the rules layer alone with Jev offline; Terminal is refused with a clear message; every scenario passes with all app profiles removed (P9) |
+| **M11 — Native apps** | AX tools registered through the `neo-desktop` pack; `Gated<T>` `Action` policy + Effect gate; `AxObserver` route for `navigate(app=…)`; terminal-class deny for IDE panes | `notes-create-ax` end to end; a `press` on "Empty Trash" raises a confirm card from the rules layer alone with Jev offline; Terminal is refused with a clear message; every scenario passes with all app profiles removed (P9) |
 
-`Gated<T>` itself lands in M5 (Goal policy), gains `Spend` in M6 and `Action` for `call_pack_tool` in M9; M10 adds the AX tools behind it.
+`Gated<T>` itself lands in M5 (Goal policy), gains `Spend` in M6 and `Action` for `call_pack_tool` in M9; M11 adds the AX tools behind it.
 
 ## 16. Risks
 

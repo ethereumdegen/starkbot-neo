@@ -4,9 +4,9 @@ Everything starkbot-neo knows beyond its core loop — the navigator, Sol, the g
 
 ## 1. Principles
 
-1. **Packs are data, never code.** JSON + Markdown. Nothing in a pack executes; no scripts, no selectors, no shell (P3). A pack can *describe* an HTTP request, *advise* Sol in a skill, *name* a recipe of neo's own gated tools — nothing else.
-2. **Same format as the user's other hosts.** The Axoniac agent-pack format, `manifest_version: 2`, as specified in `metalcraft-agent/specs/AGENT_PACK_FORMAT.md` and consumed by metalcraft-agent, starfire and degen-tools. A pack published for those hosts installs in neo **unchanged**; a pack authored for neo stays valid for them.
-3. **One neo-only extension: `desktop/`.** Optional native-app hints, routines, tighten-only policies. Other hosts carry it and ignore it (§4.4).
+1. **Portable data packs are data, never code.** JSON + Markdown. Nothing in the base pack surface executes; no scripts, no selectors, no shell (P3). A pack can *describe* an HTTP request, *advise* Sol in a skill, *name* a recipe of neo's own gated tools — nothing else. M10's explicit `component/` tier is sandboxed Wasm, separately badged and consented (§12), never treated as a data pack.
+2. **Same format as the user's other hosts.** The Axoniac agent-pack format, `manifest_version: 2`, as specified in `metalcraft-agent/specs/AGENT_PACK_FORMAT.md` and consumed by metalcraft-agent, starfire and degen-tools. A data pack published for those hosts installs in neo **unchanged**; a data pack authored for neo stays valid for them.
+3. **Neo-only extensions are namespaced paths.** `desktop/` is declarative native-app hints, routines and tighten-only policies (§4). Optional `component/` is the M10 sandboxed-code tier (§12). Other hosts carry, hash and ignore both.
 4. **Consent is computed from the bytes, never declared** (spec §5); neo re-derives everything it shows. **Packs advise; they never authorize.** No pack part can remove a deny rule, lower a threshold, skip a gate or see another pack's credential.
 5. **No website knowledge, ever (P9).** No pack part may carry per-site selectors, landmarks, URLs-to-click or layouts. Skills describe *workflows*; routines carry *goal strings*; the navigator works out the page.
 
@@ -27,6 +27,8 @@ Read from `axoniac-seeded-agent-packs/packs/{vercel-vgpu, taste-skill, octaweave
   flows/<id>.json                       optional                    (neo: ignored in v1)
   SIGNATURE                             optional, ed25519 over agent_pack.json (ship now, enforce later)
   desktop/…                             neo-only (§4)
+  component/manifest.json              optional neo component capability manifest (M10)
+  component/component.wasm             optional `wasm32-wasip2` component (M10)
 ```
 
 A pack is **self-contained**: installing needs no network. A pack may have zero integrations (`taste-skill`) or zero skills, but the shared validator demands **exactly one preset whose default persona is in the archive** — so even a desktop-only neo pack ships a minimal preset + persona (`neo pack new` scaffolds them).
@@ -47,6 +49,7 @@ A pack is **self-contained**: installing needs no network. A pack may have zero 
 | `domains[]` | derived | hosts of every tool URL |
 | `content_sha256` | derived | `metalcraft_packs::canonical_sha256` over every file except the manifest |
 | `parent` | no | fork lineage `{id, version, content_sha256}` |
+| `replaces` | no | neo-only id of a replaceable data pack; allowed only on a local clone whose `parent` names that pack |
 
 Unknown top-level fields are preserved and never cause rejection.
 
@@ -116,6 +119,7 @@ Note: `allowed_hosts` is a **per-tool** field, not an integration field.
 | preset `model` | `tier` → model picker default for that mode: `premium → sol`, `standard → terra`, `fast → luna` (latest of each family from the model registry). `needs` / `min_context` are checked against the registry; unmet → install warning. A user-pinned model always wins; `prefer` is never a requirement. |
 | `flows/`, `memories.jsonl`, `vectors.bin`, persona roles / sub-agent roster | Carried, hashed, **ignored** in v1. Listed under "not used by starkbot-neo" in pack detail. |
 | `desktop/apps`, `desktop/routines`, `desktop/policies.json` | §4. |
+| `component/manifest.json`, `component/component.wasm` | M10 sandboxed component extension (§12); absent for ordinary data packs; carried, hashed and ignored by other hosts. |
 
 ## 4. The `desktop/` extension (neo only)
 
@@ -204,7 +208,7 @@ A native one is the same shape: `focus_app {name:"Notes"}` → `key {combo:"cmd+
 
 Merge with the rules layer (A9), per key: **lists → union**; confirm thresholds (`outward`, `destructive`, `spends`) → **min**; `on_task` floor → **max**; pacing `max_*` → **min**, `min_delay_ms` → **max**; spend caps → **min**. There is no `allow_*`, no `remove_*`, no way to name an existing rule. A value that would loosen the current *defaults* (e.g. `outward: 0.6`) is a **validation error at install**, not a silent no-op. Every merged rule keeps its provenance (`from pack neo-gtm`) in Settings → Safety; disabling the pack removes exactly its contributions. Origin patterns here are *policy*, not navigation knowledge — they say where the bot must stop or slow down, never how to operate a site.
 
-### 4.4 Do the other hosts tolerate `desktop/`? — verified in source
+### 4.4 Do the other hosts tolerate neo-only paths? — verified in source
 
 | Host | Finding |
 |---|---|
@@ -212,8 +216,8 @@ Merge with the rules layer (A9), per key: **lists → union**; confirm threshold
 | `packctl` (`collect_files`) | zips and hashes every non-dotfile under the pack dir → `desktop/` is built into the `.agentpack` with no change. |
 | axoniac registry (`axoniac-prime/backend/src/services/bundle.rs`) | prefix-driven like the agent; unknown paths contribute nothing and are not rejected. |
 | degen-tools `stage_one` | keeps only `integration.json`, `README.md`, `api_tools/*.json`, `skills/*.md`; everything else never reaches disk. Tolerates. (It refuses a pack with zero integrations — correct: nothing for it to run.) |
-| The spec text | §2 lists the layout but states no rule for unknown paths (§3 does, for unknown manifest *fields*). **Needed:** one sentence in spec §2 — "unknown paths are carried, hashed and ignored; `desktop/` is reserved for starkbot-neo" — constitution open item 5. |
-| Consequence | other hosts' consent summaries do not mention `desktop/`. Harmless there (they cannot execute it); neo derives its own (§9.3). The unknown tool field `mutating` and integration field `key_help` are likewise ignored elsewhere. |
+| The spec text | §2 lists the layout but states no rule for unknown paths (§3 does, for unknown manifest *fields*). **Needed:** one sentence in spec §2 — "unknown paths are carried, hashed and ignored; `desktop/` and `component/` are reserved for starkbot-neo" — constitution open item 5. |
+| Consequence | other hosts' consent summaries do not mention `desktop/` or `component/`. They cannot execute either; neo derives its own consent (§9.3, §12). The unknown tool field `mutating` and integration field `key_help` are likewise ignored elsewhere. |
 
 ## 5. HTTP tools: the ported runner
 
@@ -362,9 +366,54 @@ pub trait StepRunner { async fn run(&self, tool: &str, args: Value) -> StepResul
 
 **Settings → Packs.** *Installed*: toggle, version, badges (*built in*, *partially supported*, *key missing* → opens `KeyField`, *update available*). *Pack detail*: skills (readable), tools (method, host, mutating), modes, hinted apps, **routines with steps and a "try it" box**, policies with provenance, consent summary, "not used by starkbot-neo", lock hash, rollback. *Browse*: registry search → manifest preview → install. *Updates*: consent diffs. *My pack* (`neo-user`): routine + hint editors with live validation. Mind pane lines: `loaded skill gtm-lead-research`, `routine neo-gtm/log_crm_activity (Jev 0.91) · params 410 ms · verify 0.88`, `pack tool octaweave_create_note → 201`.
 
-**CLI.** `neo pack list | search <q> | install <@handle|path|file> [--registry] | remove | enable | disable | update [--all] | validate <dir> | consent <id|path> | new <id> | lock verify` · `neo pack tool list|describe|call <name> --args '{…}'` · `neo routine list | match "<utterance>" | params <name> "<utterance>" | run <name> --param k=v [--dry-run]`.
+**CLI.** `neo pack list [--json] | search <q> | add <git-url|@handle|path|file> [--enable] | remove | enable | disable | update [--all] | clone <id> [--edit] | validate <dir> | consent <id|path> | new <id> | lock verify` · `neo pack tool list|describe|call <name> --args '{…}'` · `neo routine list | match "<utterance>" | params <name> "<utterance>" | run <name> --param k=v [--dry-run]`.
 
-## 12. Tests (Rust only)
+## 12. Omarchy-class extension workflow
+
+Omarchy's useful idea is not “plugins are crates.” Its shell discovers namespaced `manifest.json` + QML directories from a built-in path and a user path, then offers list/enable/disable, git add/update/remove, clone-a-built-in, live reload and a community catalog. Its third-party QML runs unsandboxed inside the long-lived shell process. Neo copies the workflow, **not** that execution boundary: an assistant process can reach keys, logged-in browser sessions and macOS Accessibility, so third-party native code never enters the app process.
+
+### 12.1 Data packs — the default extension tier
+
+The existing `.agentpack` format covers most extensions without code: skills, modes/personas, schema-validated HTTP tools, Jev-matched routines, native-app hints and tighten-only policies. It gets the Omarchy ergonomics:
+
+- ids are namespaced within the shared slug grammar: `neo-` is reserved, registry publishers use `<publisher>-<name>`, and local clones use `local-<user>-<name>`;
+- embedded packs and `~/Library/Application Support/com.starkbot.neo/packs/` are discovered through one registry API; `neo pack list --json` reports source, version, enabled state, kinds, support and grants;
+- `add <git-url>` resolves and records an **exact commit**, validates in staging, derives consent, then atomically installs. A mutable branch or upstream HEAD is never the installed identity;
+- update fetches to staging, shows source + content + capability/consent diff, requires approval, atomically swaps, and keeps the previous version for rollback; dirty local clones are never overwritten;
+- `clone neo-browser --edit` copies the data surface to `local-<user>-browser`, records `parent` + `replaces`, enables the clone and disables the replaceable built-in in one transaction. `neo-desktop`, safety policy and native-tool ownership cannot be replaced;
+- developer-mode local directories are watched and revalidated on save. A valid revision affects only new `TaskSnapshot`s; an invalid revision leaves the last valid one active and shows every validation error;
+- remove disables first. Registry/git installs are deleted only after rollback data is retained; hand-authored directories move to a timestamped backup. Pack grants and Keychain values are separate—removing a pack revokes its grants but never silently deletes a shared key.
+
+### 12.2 Code components — arbitrary logic, capability confined
+
+When declarative tools are insufficient, a pack may carry `component/component.wasm` plus `component/manifest.json`. This is a separate post-v1 tier and does not change the portable agent-pack interpretation on other hosts. Components target the WASI component model (`wasm32-wasip2`) and run in the separate `neo-extension-host` process under Wasmtime; no dylib, executable, shell script, npm install hook or in-process plugin is accepted.
+
+The component manifest has `schema_version`, namespaced `id`, semver `version`, `world`, SDK version range, entry points, and requested capabilities. The installer re-derives imports/exports from the component and rejects a manifest that understates them. Initial WIT worlds:
+
+M10 ships a new database migration, not a change to schema v1: `components(pack_id, world, sdk_range, status, failures, last_failure_at)`, `component_grants(pack_id, capability, scope JSON, granted_at, revoked_at)` and `component_kv(pack_id, key, value BLOB, updated_at)`. The writer actor enforces grant changes and the 16 MiB per-component KV quota transactionally; enablement is impossible without a component row whose bytes match `neo.lock`.
+
+| Capability | Component can do | Boundary |
+|---|---|---|
+| `tool-provider` | expose typed tools to the three fixed pack meta-tools | arguments/results capped and schema-validated; every effect is proposed back to `Gated<T>` |
+| `task-hook` | inspect redacted task lifecycle events and return advice/metadata | cannot change route, completion, gates or confirmations |
+| `http:<hosts>` | ask the host HTTP runner to call approved origins | no sockets; declared hosts, redirect/private-IP rules, masking and spend gates still apply |
+| `pack-storage` | read/write its own versioned key/value namespace | no paths and no cross-pack access; quota 16 MiB by default |
+| `canvas-importer` / `canvas-exporter` | transform bounded frame/artifact byte streams | no studio filesystem handle; host chooses input/output files |
+| `ui-card` | provide static assets for a card/panel and exchange schema-validated messages | opaque-origin sandboxed iframe, no Tauri IPC, navigation, downloads or direct network |
+
+There is **no** capability for raw Keychain access, arbitrary filesystem, environment variables, subprocesses, Apple Events, Accessibility, CDP, input events, Tauri commands, unrestricted network or loading another component. Secrets remain host-side handles and are inserted only by the existing approved HTTP/provider path. Browser and macOS actions are host requests expressed as ordinary tool proposals and pass the same deterministic rules, Jev heads, confirm cards, pacing and caps.
+
+Each invocation has fuel, epoch deadline, memory/table/stack limits, request/response byte caps and bounded concurrency. A trap, timeout, protocol violation or host crash fails that call, records a redacted diagnostic and disables the component after three failures; the main app remains alive. Components cannot run at app startup unless the user explicitly granted a `background` entry point, and background calls get separate rate and spend caps.
+
+### 12.3 Catalog, review and authoring
+
+The catalog indexes immutable tuples `(id, version, content_sha256, source_commit)`, not mutable repository heads. Publication requires manifest validation, exact-commit build reproducibility metadata, capability extraction, license, source link and automated hostile-fixture scans; “verified” means those checks passed, not that the code is safe. Install and update always show requested capability changes, domains, storage, background work, UI surfaces and exact hash.
+
+`neo extension new <id> --rust` scaffolds a Rust component crate, WIT bindings, a data-pack wrapper and fixture host; TypeScript/Go templates may follow when their component toolchains are stable. `neo extension dev <dir>` uses a developer-only local grant, watches/rebuilds outside the app, hot-swaps only after validation, and exposes structured logs without secrets. Production Starkbot never invokes a compiler or package manager.
+
+The Packs UI keeps one mental model: **Data** (safe/default) or **Component** (sandboxed code) badge, source/hash, permissions, enable toggle, update diff, rollback, “clone and edit,” and a kill switch. The first-party catalog itself is just another signed registry; users may add registries with `verified-only` or `explicit` trust.
+
+## 13. Tests (Rust only)
 
 - **Conformance:** the five real packs in `axoniac-seeded-agent-packs/packs` and their `dist/*.agentpack` archives read, hash-verify and validate; consent output equals metalcraft-agent's `derive_consent` for the same bytes (golden JSON).
 - **Hostile archives:** `..` paths, symlinks, zip bomb beyond 64 MiB declared-small, wrong hash, two presets, missing persona/skill/integration, untyped parameter, undeclared `$NAME`, reserved env name, redirecting registry, id in two registries.
@@ -373,20 +422,24 @@ pub trait StepRunner { async fn run(&self, tool: &str, args: Value) -> StepResul
 - **Routines:** head-option rendering; param extraction with a stub text helper (null handling, `ask`); step executor over a fake `StepRunner` proving every step passes through the gate; handoff bundle marks executed mutating steps; verify fail-closed on Jev outage.
 - **Meta-tools + lock:** tool list identical before/after enabling a pack mid-task; schema errors round-trip; lock tamper → pack disabled; consent-diff goldens; rollback.
 - **No-hints rule:** the native scenario suite runs under `--no-hints` in the same job.
+- **Components:** WIT import/export extraction must equal the manifest; no ambient WASI sockets/directories/env/processes; fuel, epoch, memory, byte and concurrency limits; traps isolate to `neo-extension-host`; denied capabilities never reach a host call; tool effects still traverse a fake `Gated<T>`; iframe fixtures cannot reach Tauri IPC or the network; exact-hash install, capability-diff update, rollback and three-strike disable.
 
-## 13. Milestones
+## 14. Milestones
 
 | M | Packs work |
 |---|---|
 | M4 | intake request reserves the `routine` head (empty option list until M9); policies merge point exists in the rules layer |
 | **M5** | **registry wiring**: `PackRegistry` + `TaskSnapshot`, embedded `neo-desktop` / `neo-browser` registered through it, `load_skill` + skill index for embedded skills, modes from embedded personas, native tools declared via `native_tools` |
 | M6 | generic enablement flow + `key_help` + grants, first used by `neo-media` |
-| **M9** | **full packs**: bundle read/validate, HTTP runner + meta-tools + gating, install from dir / file / registry, `neo.lock`, consent + diff, updates/rollback, routines (head, params, executor, verify, handoff), `desktop/policies`, Packs UI, CLI, `neo-gtm`, `neo-user` |
-| M10 | `desktop/apps` hints consumed by `AxObserver`; `neo-apple-apps`, `neo-electron`; the no-hints gate |
+| **M9** | **full data packs + Omarchy-class manager**: bundle read/validate, HTTP runner + meta-tools + gating, install from dir / file / exact git commit / registry, `neo.lock`, consent + diff, enable/disable, clone/edit, developer hot reload, updates/rollback, routines (head, params, executor, verify, handoff), `desktop/policies`, Packs UI, CLI, catalog, `neo-gtm`, `neo-user` |
+| **M10** | **component SDK**: `neo-extension-host`, Wasmtime component runtime, WIT SDK + Rust template, capability broker/consent/revocation, `tool-provider`, `task-hook`, pack storage, host HTTP, sandboxed UI cards, component catalog validation |
+| M11 | `desktop/apps` hints consumed by `AxObserver`; `neo-apple-apps`, `neo-electron`; the no-hints gate |
 
 *M9 done when:* `octaweave` installs from the registry unchanged and "add a note to Octaweave called X" works by voice through the meta-tools with a confirm-free GET path and a gated POST; `vercel-vgpu` installs and shows *partially supported*; `neo-gtm/log_crm_activity` runs with zero Sol calls; a pack with a parameter host and no `allowed_hosts`, and one with a loosening policy, are both refused.
 
-## 14. Risks
+*M10 done when:* an independently built Rust component installs by exact hash, exposes one typed tool and one UI card, persists only inside its quota, and requests one host-checked HTTP call; attempts to open a socket/path/env var, call Tauri, bypass `Gated<T>` or exceed fuel/memory/time fail without crashing the app. Updating it shows a capability diff and rollback restores the prior component.
+
+## 15. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -396,4 +449,8 @@ pub trait StepRunner { async fn run(&self, tool: &str, args: Value) -> StepResul
 | Credential exfiltration by a hostile pack | declared-names-only expansion, per-`(pack, name)` grants, reserved names, parsed-URL host check, no redirects, consent shows hosts per key |
 | `desktop/` rejected by a future host or registry validator | spec §2 amendment reserving it (open item 5); conformance test builds a `desktop/` pack with `packctl` and reads it with the ported `Bundle::read` |
 | Format drift between four runner copies | golden consent + runner tests on the real packs; extract the shared crate after M9 |
+| Wasm component becomes an escape hatch around gates | no ambient WASI; narrow WIT imports only; actions are proposals handled by the main process through `Gated<T>`; component host has no Keychain/Tauri handle |
+| Extension crashes or exhausts resources | separate host process, fuel + epoch + memory/table/stack/byte/concurrency limits, three-strike disable, app remains alive |
+| Marketplace points at code different from review | immutable source commit + content hash are install identity; exact-byte verification before consent; update requires a new review/diff |
+| “Clone built-in” replaces safety-critical behavior | `neo-desktop`, safety and native-tool ownership are non-replaceable; clone only redirects replaceable data packs and affects new task snapshots |
 | Hints quietly become a dependency | `--no-hints` CI gate; hint schema cannot express selectors |

@@ -50,10 +50,11 @@ file wins and the doc is wrong. Dated 2026-09-18. `U` = decided by the user,
 | A14 | Canvas refinement UX: **pins** (element-anchored comments → scoped agent tasks), **knobs** (agent-generated sliders bound to CSS variables; dragging costs no model call), direct text edit, and **Jev micro-edits** by voice (`target` + `operation` + `amount` heads over a closed op vocabulary snapped to the token scale; anything generative → `NEEDS_SOL`). | U (+D) |
 | A15 | UI: React + TS + Vite in the webview, DRY components + hooks, types generated from Rust. Two modes of the main window — **Assist** (Conversation · Queue · Mind) and **Design** (Hypercanvas) — sharing the always-present listening bar. Overlay mechanics live only in `src-tauri::panels` behind one main-thread `PanelController`, using `tauri-nspanel` pinned to revision `c9ec2130422200f0863b23dfdad02b133a529b07`: `pill` and click-through `ring` are never-key NSPanels under `Prohibited`; `quick-entry` is a separate key-capable NSPanel under `Accessory`; `main` / `design` use `Regular`. Every activation-policy transition reapplies intended panel visibility. | U (+D, proven S6) |
 | A16 | Storage: SQLite (`rusqlite`, WAL) for app state; a **studio** is a plain folder (`studio.json`, `takes.jsonl`, `takes/`, `canvas/`, `exports/`) readable by the `dmm` CLI. | D |
+| A17 | **Extensions use Omarchy-class ergonomics without Omarchy's trust model.** Packs remain portable, declarative data. An optional code tier is a signed or exact-hash-pinned `wasm32-wasip2` component run by a separate `neo-extension-host`: no ambient filesystem, network, environment, subprocess, Keychain or macOS APIs; every host capability is declared, consented and revocable, and every proposed desktop/browser/spend action re-enters `Gated<T>`. Namespaced ids, built-in/user discovery, enable/disable, clone-and-edit, hot reload in developer mode, update diffs, rollback and a community catalog match Omarchy's workflow. Native dylibs and unsandboxed in-process plugins are never loaded. | U (+D) |
 
 ## Vocabulary (use these words exactly)
 
-**utterance** (one VAD-cut piece of speech) · **message** (a Conversation entry: voice/typed/bot) · **task** (a queued unit of work) · **route** · **goal** (the sentence the navigator works from) · **step** (one observe→decide→execute cycle) · **head** (one question inside a TypeSafe request) · **operation / target** · **observer** (`CdpObserver`, `AxObserver`) · **text helper** · **gate / confirm card** · **trace** (persisted record of a task) · **Steer ticker** · **pack / skill / routine / persona** · **take** (one generated or imported media result, `t0001…`) · **studio** · **frame** (Web · Graphic · Set · Video · Board) · **node** · **op / transaction** · **token** · **knob** · **pin** · **micro-edit**.
+**utterance** (one VAD-cut piece of speech) · **message** (a Conversation entry: voice/typed/bot) · **task** (a queued unit of work) · **route** · **goal** (the sentence the navigator works from) · **step** (one observe→decide→execute cycle) · **head** (one question inside a TypeSafe request) · **operation / target** · **observer** (`CdpObserver`, `AxObserver`) · **text helper** · **gate / confirm card** · **trace** (persisted record of a task) · **Steer ticker** · **pack / skill / routine / persona** · **component** (sandboxed Wasm code extension) · **take** (one generated or imported media result, `t0001…`) · **studio** · **frame** (Web · Graphic · Set · Video · Board) · **node** · **op / transaction** · **token** · **knob** · **pin** · **micro-edit**.
 
 ## Crate map
 
@@ -66,6 +67,7 @@ neo-ax              macOS accessibility actor (native apps)
 neo-voice           capture, VAD, segmenter, STT, TTS, duplex gate
 neo-judge           intake + routing + gates built on jev-nav::wire; verdict log; eval harness
 neo-packs           pack bundle/registry, HTTP tool runner, routines, install + lock, enablement
+neo-extension-host  separate Wasmtime component process; capability broker and resource limits
 neo-media           adapter over the degen-media-maker lib: tools, backends, spend estimates
 neo-canvas          hypercanvas document: HTML/CSS frames, node tree, ops, undo, tokens, knobs, pins, storage
 neo-canvas-agent    canvas tools for Sol, outline/look, micro-edit policy, region workers
@@ -90,16 +92,17 @@ Upstream crates we change: **metalcraft → 0.12** (reasoning summaries, image p
 | M6 | Media engine | dmm lib split, `neo-media`, backends, enablement flow, quality pipeline, spend gate |
 | M7 | Hypercanvas I | document + ops + canvas UI; Graphic / Set / Board frames; takes as nodes; agent passes; pins, knobs, micro-edits; exports |
 | M8 | Hypercanvas II | Web frames: breakpoints, components, CDP checks, code export, import-from-URL, handoff bundle |
-| M9 | Packs + GTM | installable packs, routines, `neo-gtm` workflows, pacing guard |
-| M10 | Native apps | `neo-ax`, `AxObserver`, fine-grained tools + `Gated<T>` |
-| M11 | Voice out | TTS, half-duplex gate, headphones full duplex, spoken questions + voice confirms |
-| M12 | Video | Video frames, timeline, keyframes, captions, audio, MP4; starflux bridge later |
-| M13 | Ship | pill + ring polish, updater, notarized DMG, first-run < 3 min |
+| M9 | Packs + GTM | installable data packs, Omarchy-class pack manager UX, routines, `neo-gtm` workflows, pacing guard |
+| M10 | Component SDK | `neo-extension-host`, WIT SDK, capability consent, sandboxed UI cards, clone/edit/hot reload, exact-hash catalog installs |
+| M11 | Native apps | `neo-ax`, `AxObserver`, fine-grained tools + `Gated<T>` |
+| M12 | Voice out | TTS, half-duplex gate, headphones full duplex, spoken questions + voice confirms |
+| M13 | Video | Video frames, timeline, keyframes, captions, audio, MP4; starflux bridge later |
+| M14 | Ship | pill + ring polish, updater, notarized DMG, first-run < 3 min |
 
 ## Still open (needs the user)
 
 1. Apple Developer team / signing identity for `com.starkbot.neo` — blocks M1.
-2. Personal tool vs public product — sets how much polish M13 needs.
+2. Personal tool vs public product — sets how much polish M14 needs.
 3. Repo home (account, private/public).
 4. Default pack registry: axoniac.com or a registry yet to be built.
-5. OK to cut metalcraft 0.12, split degen-media-maker into lib + bin, and add a `desktop/` folder to the shared pack format.
+5. OK to cut metalcraft 0.12, split degen-media-maker into lib + bin, and reserve `desktop/` plus `component/` paths in the shared pack format.

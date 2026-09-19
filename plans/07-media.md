@@ -343,8 +343,8 @@ Every intake and every media/design task carries these facts: `studio`, `selecte
 |---|---|
 | **Clipboard** | `media_export(dest: clipboard)` writes `NSPasteboard`: `public.png` + file URL (raster), `public.svg-image` + UTF-8 source (SVG), file URL (video). Paste is a desktop step |
 | **Web upload** | `media_export(dest: upload_staging)` writes to `exports/` and adds the path to the task's **upload allow-list**; the navigator's upload operation calls CDP **`DOM.setFileInputFiles`** with that path. The navigator may set **only** allow-listed paths — this is the whole of its file access (P3). Posting is the navigator's `outward` confirm |
-| **OS open panel** (native apps, M10) | routine in `neo-apple-apps`: `cmd+shift+g` → type the staged path → Return |
-| **"Use this"** | browser: the navigator's snapshot gives the image URL → `media_import(url)`. Desktop: drop onto the canvas, paste, or the app's own `NSOpenPanel`; from M10, Finder selection via `AXURL` |
+| **OS open panel** (native apps, M11) | routine in `neo-apple-apps`: `cmd+shift+g` → type the staged path → Return |
+| **"Use this"** | browser: the navigator's snapshot gives the image URL → `media_import(url)`. Desktop: drop onto the canvas, paste, or the app's own `NSOpenPanel`; from M11, Finder selection via `AXURL` |
 | **"Put it on my desktop"** | `media_export(dest: folder("~/Desktop"))` — pre-gate, then a plain file write by `neo-media` |
 
 ## 14. What the canvas must provide (parity checklist for 11)
@@ -360,7 +360,7 @@ Takes as nodes on a Board, newest first · in-flight jobs with queue position an
 
 ## 16. Video scope
 
-In this engine: image → video takes (fal), animated SVG (Quiver), motion renders of an `AdSpec` over a still or a clip (keeps the clip's audio), filmstrips, first/mid-frame extraction. **Not** here: timelines, multi-clip edits, captions tracks, audio mixing — those are Video frames in the canvas (M12), which call this engine for clips and frames. Beyond motion-graphics scale (trim, reframe, colour, long-form) → **starflux** (`~/ai/starflux`) as the later native-tool pack **`neo-video`**, exchanging takes through the same studio folder.
+In this engine: image → video takes (fal), animated SVG (Quiver), motion renders of an `AdSpec` over a still or a clip (keeps the clip's audio), filmstrips, first/mid-frame extraction. **Not** here: timelines, multi-clip edits, captions tracks, audio mixing — those are Video frames in the canvas (M13), which call this engine for clips and frames. Beyond motion-graphics scale (trim, reframe, colour, long-form) → **starflux** (`~/ai/starflux`) as the later native-tool pack **`neo-video`**, exchanging studio takes and gated like other tools.
 
 ## 17. Privacy
 
@@ -393,7 +393,7 @@ Without `--yes` a call over a limit prompts on the TTY; non-interactive without 
 
 *Accepted when:* (a) fresh install: media tools absent; the flow enables with only a fal key and vector tools stay hidden; adding the Quiver key lights them up on the next task; (b) by voice or chat only: "make three logo ideas for Degen Radio" → numbered sheet, blind scores with reasons, winner cleaned (no background rect, passes the 16 px look) → "animate the second one" → "put it on my desktop" → the file is there; spend shown and under the cap; (c) a shoot-out estimated over $0.25 shows the confirm card with **Cheaper**; deny leaves zero provider calls; (d) `dmm ls` in the same studio lists neo's takes, and a `dmm star` does not lose neo's fields; (e) kill switch during a fal job cancels it and the trace says whether it may have billed; (f) no OpenAI image endpoint is referenced anywhere in the workspace (CI grep).
 
-**M7 touchpoints**: canvas subscribes to `Media*` events (takes → Board nodes, streaming drafts); `MediaSetRequested` → Set frame; §14 parity; exports of pieces with copy move to the canvas renderer; `selected_takes` comes from canvas selection. **M9**: GTM workflows call `media_export(upload_staging)` + the navigator upload. **M12**: Video frames pull clips via `media_motion`, frames via `local::probe`; caption layers as PNG overlays; `neo-video` / starflux bridge.
+**M7 touchpoints**: canvas subscribes to `Media*` events (takes → Board nodes, streaming drafts); `MediaSetRequested` → Set frame; §14 parity; exports of pieces with copy move to the canvas renderer; `selected_takes` comes from canvas selection. **M9**: GTM workflows call `media_export(upload_staging)` + the navigator upload. **M13**: Video frames pull clips via `media_motion`, frames via `local::probe`; caption layers as PNG overlays; `neo-video` / starflux bridge.
 
 ## 21. Risks
 
