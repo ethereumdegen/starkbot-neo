@@ -51,7 +51,7 @@ pub trait Vad: Send { fn frame_len(&self) -> usize; fn is_speech(&mut self, fram
 |---|---|
 | pre-roll kept before speech start | 400 ms |
 | start trigger | 4 consecutive speech frames (64 ms) above the noise gate |
-| hangover (silence that closes an utterance) | **700 ms**; **350 ms** while a task is running and the speech so far is ≤ 1.0 s (makes a spoken "stop" fast) |
+| hangover (silence that closes an utterance) | **550 ms** (34 × 16 ms = 544 ms in the segmenter); **350 ms** while a task is running and the speech so far is ≤ 1.0 s (makes a spoken "stop" fast) |
 | minimum utterance | 250 ms of speech — shorter is discarded locally, never uploaded |
 | forced cut | 30 s |
 | noise gate | calibrated floor + 6 dB |
@@ -219,15 +219,15 @@ Open addressing means overheard speech is paid for: a talkative office at 3 h/da
 
 | Part | Time |
 |---|---|
-| hangover | 700 ms (350 ms short form) |
-| WAV encode + request build | < 10 ms |
-| upload + `gpt-transcribe` (3–5 s utterance) | 400–700 ms *(measure in the M0 spike)* |
-| filter + control match | < 1 ms |
-| **total** | **1.1–1.4 s**; spoken "stop" ≈ 0.8–1.0 s |
+| hangover | 550 ms (350 ms short form) |
+| WAV encode + request build | 2–8 ms measured in S4 |
+| upload + `gpt-transcribe` (5.3 s utterance) | 810 ms p50 / 1,299 ms p95 over five S4 calls |
+| filter + control match | < 1 ms target |
+| **total** | **1,362 ms p50 / 1,845 ms p95 measured**; spoken "stop" projects ≈ 1.2 s at the same request p50 |
 | then Jev intake | + ~100–180 ms |
 | TTS first audio | < 500 ms from `say` |
 
-If the spike misses: lower hangover to 550 ms first; speculative upload at 350 ms of silence (cancelled if speech resumes) is the second lever *(verify billing of cancelled requests)*.
+The S4 spike applied the first lever: 700 ms missed p50, while the 550 ms normal hangover passed both budgets. Speculative upload at 350 ms stays out of v1 unless broader fixture measurements regress; it adds cancellation and billing ambiguity without evidence that it is needed.
 
 ## Provider seam
 
@@ -286,7 +286,7 @@ Fixtures are recorded with `neo voice record` — an explicit CLI act, the only 
 | earshot weak in noise or with music | `trait Vad` seam; M0 spike decides; music fixture in CI |
 | STT hallucinations on near-silence | min-speech rule, gate, hallucination list, all drops visible |
 | New OpenAI params (`keywords`, transcription session shape) shift | raw `reqwest`/WS, shapes pinned by mock tests, *(verify)* items closed in the M0 spike |
-| 700 ms hangover feels slow or cuts slow talkers | tunable; short-form hangover; streaming STT option for perceived speed |
+| 550 ms hangover cuts slow talkers | tunable; interrupted speech returns from `Hangover` to `Speech`; fixture boundaries and slow-speech recordings gate release |
 | Bluetooth mic degrades headphone audio | avoid-Bluetooth-mic default |
 | Headphones misdetected → bot hears itself | self-echo filter behind the gate; per-device override |
 | VoiceProcessingIO side effects | AEC stays opt-in and out of M11 |

@@ -89,13 +89,40 @@ Live `gpt-5.6-luna` calls with reasoning disabled returned the correct field val
 
 Conclusion: output shape and semantic isolation work, but both observed calls exceeded the ≤600 ms target. Two samples are not a latency distribution; p50/p95 measurement remains open.
 
-## S4 — earshot to transcription
+## S4 — Earshot to GPT-Transcribe
 
-Not implemented or run.
+Command: `cargo run --release -p s4-voice`. The spike captured 30 seconds from the built-in microphone through CPAL's real callback into an `rtrb` SPSC ring, downmixed and resampled 48 kHz → 16 kHz through Rubato 5, ran Earshot over 256-sample frames, and sent a detected 5.331-second speech fixture to live `gpt-transcribe` five times with `prompt`, `keywords[]`, and `languages[]`.
+
+| Measurement | Result |
+|---|---:|
+| Callback ring overflow | 0 |
+| Real room input | 480,086 samples; −50.6 dBFS peak; −62.8 dBFS RMS |
+| Normal-room false uploads | 0 in 30 s (0.00/min observed; not a long-run rate claim) |
+| Earshot CPU for 30 s | 12 ms |
+| Fixture detection | 1 segment; peak score 0.981 |
+| Keyword transcription accuracy | 5/5 exact for `Stark`, `Hypercanvas`, and `autumn` |
+| WAV encode | 2–8 ms |
+| GPT-Transcribe request p50 / p95 | 810 / 1,299 ms |
+| End-of-speech → final transcript p50 / p95 | 1,362 / 1,845 ms |
+
+The original 700 ms hangover missed the p50 target in two samples; one also missed p95. Applying the predeclared first lever—34 frames = 544 ms, documented as 550 ms—brought the same five-request scenario under the 1.5 s / 2.5 s targets without speculative upload. The exact transcript returned on all five calls. Multipart arrays must use repeated `keywords[]` and `languages[]` parts; JSON strings are rejected with HTTP 400.
+
+Decision: keep Earshot and batch `gpt-transcribe` as the default, change the normal hangover to 550 ms, retain the 350 ms short-command hangover, and keep `gpt-live-transcribe` optional. This proves the local pipeline and one quiet-room sample, not the M2 ten-minute music/silence, microphone-device, or one-hour soak criteria. Machine-readable evidence is `spikes/out/s4-voice/report.json`.
 
 ## S5 — metalcraft + Sol reasoning replay
 
-Not implemented or run.
+Command: `cargo run -p s5-sol`. The spike uses local `metalcraft` 0.12 revision `3f5e865eae51186882ff20604dbbf658f12d24af` with `rig-core` 0.42 and OpenAI Responses. `gpt-5.6-sol` was forced through ten sequential `advance` tool calls and one terminal `finish` call. Every request used `parallel_tool_calls:false`, `store:false`, `include:["reasoning.encrypted_content"]`, `reasoning.summary:"auto"`, and a stable `prompt_cache_key`.
+
+| Check | Observed result |
+|---|---|
+| Tool loop | 10/10 ordered `advance` calls plus `finish`; 11 model calls total |
+| Reasoning retention | 5 encrypted reasoning items retained in `AgentState` |
+| Reasoning replay | per-request replay counts `0, 0, 4, 5, 5, 5, 5, 5, 5, 5, 5`; no Responses validation error |
+| Reasoning summaries | none returned at `low` effort despite `summary:"auto"`; the hook and storage path remained empty |
+| Usage | 6,483 input, 386 output, 199 reasoning, 0 cached-input tokens |
+| Wall time | 20,192 ms |
+
+Decision: ship `rig` 0.42 and manual encrypted-item replay as the M5 reasoning spine. Keep `store:false` and explicit encrypted-content inclusion. Treat reasoning summaries as optional display data, not a Mind-pane or correctness dependency; this run proves the transport but `gpt-5.6-sol` did not emit summaries at low effort. Machine-readable evidence is `spikes/out/s5-sol/report.json`. The local path dependency is replaced only after the upgrade is committed and tagged exactly `v0.12.0`.
 
 ## S6 — non-activating NSPanel
 

@@ -391,9 +391,9 @@ Prices come from `neo_core::PriceTable`, refreshed at start and every 6 h (K3: n
 
 | # | Change | Why |
 |---|---|---|
-| 1 | Bump `rig` from 0.37 to the current release line (rig-core 0.42) and fix the fallout | reasoning-summary parts, image content in tool results and the streaming API are all reached through rig; 0.37 predates parts of them *(verify each against rig's types in the M0 spike)* |
-| 2 | `ReasoningItem` / `AgentMessage::Reasoning` gain `summary: Vec<String>`; request `reasoning.summary: "auto"`; add `reasoning_summaries` to `LlmResponseSnapshot` | today the item carries only `id` + `encrypted`; the Mind pane's `Thought` needs readable text |
-| 3 | `AgentOptions.additional_params: Option<Value>`, deep-merged into the request | today only `reasoning.effort` is set; we need `parallel_tool_calls`, `store`, `include`, `prompt_cache_key`, `reasoning.summary` |
+| 1 | **Done locally:** bump the runtime dependency from `rig` 0.37 to `rig-core` 0.42; keep the full `rig` facade dev-only for legacy examples | reasoning-summary parts and Responses replay are available without pulling optional vector/database backends into neo |
+| 2 | **Done locally:** `ReasoningItem` / `AgentMessage::Reasoning` carry `summary: Vec<String>`; requests set `reasoning.summary: "auto"`; `LlmResponseSnapshot` exposes `reasoning_summaries` | S5 proved the path, but `gpt-5.6-sol` at low effort returned no summaries, so the Mind pane must treat them as optional |
+| 3 | **Done locally:** `AgentOptions.additional_params: Option<Value>` is deep-merged into generated request parameters | S5 used it for `parallel_tool_calls:false`, `store:false`, encrypted-content inclusion, and `prompt_cache_key` |
 | 4 | Image parts in tool results: `Tool::call_rich` (defaulted to wrap `call`) returning `ToolOutput { json, images }`; `AgentMessage::ToolResult` gains `images`; `build_conversation` emits them | `media_look` / `canvas_look` (A12, A13 critique loops) |
 | 5 | Streaming delta hook `LlmDeltaHook` (`ReasoningSummaryDelta`, `TextDelta`) on a streaming send path | live thoughts in the Mind pane |
 | 6 | `ToolRegistry` keeps **insertion order** (today a `HashMap`; `to_openai_tools()` order differs per registry instance) | tool-schema order is part of the cached prefix; random order = a cache miss on every task |

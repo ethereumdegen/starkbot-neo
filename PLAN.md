@@ -134,7 +134,7 @@ Numbers and conclusions are recorded in `plans/spikes.md`; any *(verify)* in the
 
 | Crate | Change | Needed by |
 |---|---|---|
-| `metalcraft` → 0.12 | reasoning summaries on `ReasoningItem` + `reasoning.summary: "auto"`; image parts in tool results; streaming delta hook; `rig` 0.37 → 0.42 | M5 (thoughts in the Mind pane), M6 (`media_look`), M7 (`canvas_look`) |
+| `metalcraft` 0.12 | `rig` 0.42, reasoning-item replay, summaries, and deep-merged request params are complete locally; image tool-result parts and streaming delta hook remain | M5 (reasoning spine), M6 (`media_look`), M7 (`canvas_look`) |
 | `degen-media-maker` | split into lib + bin; `MediaBackend` trait; progress callback | M6 |
 | Axoniac pack format | tolerate the neo-only `desktop/` folder in other hosts | M9 |
 

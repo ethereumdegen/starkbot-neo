@@ -52,7 +52,7 @@ Two wire formats, both stateless:
 | Thought streaming | `response.reasoning_summary_text.delta` (prose guide says `response.reasoning.delta` — handle both) | `reasoning` deltas |
 | Rust support | rig's OpenAI Responses client pointed at the OpenRouter base URL — *unverified* | **rig has an OpenRouter provider; chat-only; already round-trips `reasoning_details`** (0.37 tests show it) |
 
-→ **Plan: OpenRouter goes through rig's OpenRouter chat provider.** metalcraft 0.12 generalises `ReasoningItem { id, encrypted }` into an opaque provider-tagged blob (`Responses{id, encrypted, summary}` | `ChatDetails(Vec<Value>)`) so both replay shapes survive `AgentState`. That is upstream item #6. (Aside: rig-core is at **0.42** now; metalcraft pins 0.37 — bump as part of 0.12.)
+→ **Plan: OpenRouter goes through rig's OpenRouter chat provider.** metalcraft 0.12 generalises `ReasoningItem { id, encrypted }` into an opaque provider-tagged blob (`Responses{id, encrypted, summary}` | `ChatDetails(Vec<Value>)`) so both replay shapes survive `AgentState`. That is upstream item #6. `rig` is now 0.42 in the local metalcraft 0.12 tree; the OpenRouter-specific opaque replay shape remains unimplemented.
 
 Request shape for every Sol call via OpenRouter:
 
@@ -161,7 +161,7 @@ Media enablement (07) → three options: **① OpenRouter** (already satisfied i
 - 05: `neo-keys` accounts `openai | openrouter | typesafe | FAL_KEY | QUIVERAI_API_KEY`; registry merges both providers' model lists, tagged; price table from live APIs.
 - 03: provider-aware model builder; 200-with-error stream handling; exact-cost path.
 - 02: `Transcriber` / `Speaker` get OpenRouter impls (JSON base64 or multipart; pcm-rate probe).
-- PLAN §6 metalcraft 0.12: + provider-tagged reasoning blob, + rig bump 0.37 → 0.42.
+- PLAN §6 metalcraft 0.12: + provider-tagged reasoning blob; the rig 0.37 → 0.42 bump is complete locally.
 
 ## Sources
 openrouter.ai/docs: `api_reference/responses/overview` · `use-cases/reasoning-tokens` · `features/provider-routing` · `guides/routing/routers/latest-resolution` · `guides/routing/model-variants/overview` · `features/prompt-caching` · `guides/overview/auth/oauth` · `guides/overview/auth/byok` · `api_reference/limits` · `api_reference/errors-and-debugging` · `app-attribution` · `guides/features/zdr` · `guides/overview/multimodal/{image-generation,video-generation,stt,tts}` · `faq` — live JSON: `openrouter.ai/api/v1/{models,images/models,videos/models,providers}` — `openrouter.ai/works-with-openrouter/fal` · `fal.ai/models/openrouter/router` · `docs.quiver.ai/developers`

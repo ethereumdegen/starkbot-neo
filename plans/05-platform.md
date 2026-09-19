@@ -83,7 +83,7 @@ panic = "unwind"                # a panicking task must not take the desktop wor
 
 - Every dependency version lives in `[workspace.dependencies]`; member crates write `foo.workspace = true`. `tauri-specta` and `specta` are pinned with `=`. `metalcraft` and `degen-media-maker` are git/path dependencies until published.
 - `rust-toolchain.toml` pins the stable channel (≥ 1.91) with `rustfmt` + `clippy`; targets `aarch64-apple-darwin` and `x86_64-apple-darwin`.
-- One `reqwest`, one `tokio`, one `rusqlite` in `Cargo.lock` — `cargo deny check bans` fails on duplicates of those three *(verify which `reqwest` minor `rig` 0.37 / metalcraft 0.12 pull, and align on it)*.
+- One `reqwest`, one `tokio`, one `rusqlite` in `Cargo.lock` — `cargo deny check bans` fails on duplicates of those three. `rig` 0.42 uses `reqwest` 0.13, so the workspace is aligned on 0.13.
 - Feature flags are few: `jev-nav` → `web` (default), `ax` (macOS only, pulls `neo-ax`); `neo-voice` → `tts`, `live-stt`; `neo-agent` → `media`, `canvas` (default on; off for fast CLI builds). Env-key fallback is **not** a feature (feature unification would leak it into the app): it is a runtime `KeySource` chosen by each binary (§6).
 - Long builds on this machine use a scratch target dir — `CARGO_TARGET_DIR=$TMPDIR/neo-target` — because other sessions sometimes delete `target/` mid-build. `neo dev env` prints the export line.
 
@@ -93,7 +93,7 @@ panic = "unwind"                # a panicking task must not take the desktop wor
 |---|---|
 | App shell | `tauri` 2.11 (`tray-icon`, `macos-private-api`); plugins `global-shortcut` 2.3, `updater` 2.10, `single-instance` 2.4, `autostart` 2.5, `log` 2.9, `notification` 2.3; `tauri-nspanel` git revision `c9ec2130422200f0863b23dfdad02b133a529b07` (the S6-proven `v2.1` code; never float the branch) |
 | Bridge | `tauri-specta` =2.0.0-rc.25 + matching `specta` (exact pins); fallback if the rc bites: `ts-rs` + one hand-written `api.ts` |
-| Sol · Jev | `metalcraft` 0.11 → **0.12** (feature `rig`), `rig` pinned 0.37 (upstream 0.42; the bump rides in metalcraft 0.12) · Jev needs none: `jev-nav::wire` is raw `reqwest` and **the `jev` crate is not a dependency** (A6) |
+| Sol · Jev | local-path `metalcraft` **0.12** (feature `rig`, committed revision `3f5e865eae51186882ff20604dbbf658f12d24af`; remote cutover pin is that revision or tag `v0.12.0`) with `rig-core` 0.42 · Jev needs none: `jev-nav::wire` is raw `reqwest` and **the `jev` crate is not a dependency** (A6) |
 | HTTP / WS | `reqwest` (`rustls-tls`, `http2`, `multipart`, `stream`, `json`), `tokio-tungstenite` (streaming STT; CDP attach mode), `url`, `wiremock` (dev) |
 | macOS | `objc2` (+`exception`), `objc2-application-services` 0.3, `objc2-core-graphics`, `objc2-core-foundation`, `objc2-app-kit`, `objc2-av-foundation`, `objc2-foundation` |
 | Audio | `cpal` 0.18, `rubato` 5, `earshot`, `rtrb`, `hound` |
