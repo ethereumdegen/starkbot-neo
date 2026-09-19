@@ -114,7 +114,7 @@ The Rust/CDP renderer produced and the visual check inspected these artifacts:
 
 The inspected frame had no unintended clipping or rendering failure; the orb crossing the right/bottom edges is intentional CSS overflow. The video visibly advances the rise and spin animations across sampled frames.
 
-Conclusion: CDP can emit exact-scale stills and a playable frame-stepped MP4. A captured webview render has not yet been pixel-compared against the CDP still, and the prior run’s timing and byte-determinism console values were not retained in this session, so those S7 acceptance criteria remain open.
+Conclusion: CDP emits exact-scale stills and a playable frame-stepped MP4. The native WKWebView path now captures its Retina backing image at 2160 × 2160 and normalizes it to the canonical 1080 × 1080 fixture size before comparison.
 
 ### Interactive Hypercanvas extension
 
@@ -151,4 +151,20 @@ All 42 nodes existed in both engines. Same-origin parent patching succeeded in a
 
 The five Chrome reference images were inspected: the flex, grid, typography, container-query, and transformed SVG fixtures rendered without clipping, missing content, or broken layout. The machine-readable result is `spikes/out/engine-drift/report.json`.
 
-Conclusion: the M0 same-origin WKWebView patch criterion passes. The box-drift criterion takes its documented alternative: one divergent node exceeds 2 px and is emitted as an `engine-drift` lint. WKWebView pixel snapshots were not captured, so raster-level perceptual comparison remains open; Chrome remains the canonical renderer.
+Conclusion: the M0 same-origin WKWebView patch criterion passes. The box-drift criterion takes its documented alternative: one divergent node exceeds 2 px and is emitted as an `engine-drift` lint. Native raster capture and perceptual comparison now pass all five fixtures: meaningful-pixel ratios are 0.060%–0.217% and block SSIM is 0.9727–0.9958. The largest residual is the known system-font difference in `type-rhythm`; Chrome remains the canonical export renderer.
+
+#### Golden fidelity runbook
+
+Chrome is the export authority; WKWebView is the editing preview. The shared five-fixture corpus covers flex, grid, typography, container queries, gradients, shadows, transforms, SVG, and overflow at a fixed 1080 × 1080 CSS viewport.
+
+```sh
+# Rewrite the committed Chrome references only after an intentional renderer change.
+spikes/scripts/hypercanvas-fidelity.sh --update
+
+# Capture fresh native WKWebView PNGs, compare them, and fail on threshold breach.
+spikes/scripts/hypercanvas-fidelity.sh --compare
+```
+
+`--compare` writes normalized WebKit captures to `spikes/out/golden/webkit/`, red/yellow diff overlays with cyan region boxes to `spikes/out/golden/diff/`, WebKit box metrics to `spikes/out/golden/webkit-metrics.json`, and the machine-readable perceptual report to `spikes/out/golden/report.json`. Red pixels exceed the anti-aliasing neighborhood tolerance; yellow pixels differ directly but match within a one-pixel neighborhood. A fixture fails when meaningful pixels exceed 0.8% or block SSIM falls below 0.970.
+
+Diagnosis order: inspect reported region boxes; check the matching `data-n` boxes in `webkit-metrics.json`; then classify the divergence as layout, bundled-font metrics, WebKit paint, or Chrome export behavior. Fix shared HTML/CSS for layout drift. Keep a WebKit-only preview normalization only when Chrome export remains correct and the rule is explicit. Never refresh Chrome goldens to bless a WebKit-only regression.

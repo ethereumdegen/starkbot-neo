@@ -12,3 +12,11 @@ tauri.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 s7-render.workspace = true
+tokio.workspace = true
+image.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-web-kit.workspace = true

@@ -3,4 +3,4 @@ target/
 *.png
 *.mp4
 spikes/out/
-!crates/hyper-canvas/fixtures/golden/*.png
+!spikes/fixtures/golden/chrome/*.png
