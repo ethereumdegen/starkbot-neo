@@ -63,6 +63,42 @@ record. It wins over every other document, including this one.
 | Design | micro-edits: target + operation + amount | — | briefs, subtree rewrites, critique | document, ops, undo, tokens, exports |
 | Media | — | — | art direction, shoot-out critique via vision | backends, takes ledger, compositor, spend gate |
 
+### 2.1 Product user stories
+
+These are end-to-end product contracts, not demo prompts. The default path uses deterministic Rust plus Jev's classifier-speed decisions; Sol is reserved for planning, copy, visual direction, critique, and recovery.
+
+#### SEO: audit and improve a local or remote website
+
+> As a site owner, I can point Stark at a local website project or a remote URL and ask it to find, prioritize, and fix SEO problems, so I get measurable improvements without paying for an LLM call on every page or field.
+
+- **Remote URL:** Stark opens the site in managed Chrome, crawls within an explicit origin/page cap, extracts rendered metadata, headings, links, canonicals, robots directives, structured data, performance signals, and accessibility semantics deterministically, and uses Jev for cheap navigation and page-state decisions. It may edit through an authenticated CMS only when the user asks; every publish or outward-facing change requires confirmation. Otherwise it produces an audit and concrete patches.
+- **Local project:** the user grants one project folder through the macOS open panel. A scoped website-project capability may read and patch only that folder—never arbitrary files or a shell. Rust handles crawling, duplicate detection, link graphs, schema validation, and before/after checks; Sol is used once for prioritization and only for genuinely generative title, description, or page-copy rewrites. Every change is previewed as a diff and can be reverted.
+- **Acceptance:** report issues by impact and affected URL; distinguish source HTML from rendered output; preserve framework/build conventions; re-run the same audit after edits; show score deltas and unresolved items; never claim ranking gains; no paid model call for deterministic checks.
+
+#### Browser use: fast Jev navigation over accessibility semantics
+
+> As a user, I can give Stark a browser goal in ordinary language and watch it complete the task quickly and safely, including forms, menus, iframes, uploads, scrolling, and new tabs.
+
+- Managed Chrome uses the atomic CDP DOM/ARIA snapshot: browser accessibility semantics without the latency and instability of walking Chrome through the macOS AX API. Jev receives one bounded action space and chooses operation, target, progress, and safety heads in one request per step; the Luna helper is used only for text values; ordinary browser tasks make zero Sol calls.
+- Safari, Firefox, and opaque Electron browser shells use the macOS AX path as a secondary route. The same `jev-nav` policy and safety gates apply to both observers.
+- **Acceptance:** median observe → Jev → act stays interactive; targets are independently verified after mutations; open shadow roots, cross-origin iframes, contenteditable, file inputs, nested scrolling, popups, and persistent sessions work; stale or occluded targets are never clicked; login walls and CAPTCHAs return `BLOCKED`.
+
+#### macOS use: generic native-app control through Accessibility
+
+> As a Mac user, I can ask Stark to operate ordinary native and Electron apps without app-specific scripts, while secure fields and dangerous actions remain protected.
+
+- `neo-ax` snapshots the focused app through batched Accessibility API reads; Jev drives the same operation/target loop used for the browser. AX actions are preferred, with guarded `CGEvent` fallback only when the target is fresh, visible, unobscured, and inside the expected window.
+- Optional pack hints may enable AX trees or tune waits, but cannot encode selectors or workflows. Sol receives fine-grained gated AX tools only after the cheap navigator reports `BLOCKED`.
+- **Acceptance:** works with hints disabled across the fixture app and representative AppKit, SwiftUI, Catalyst, and Electron apps; secure-field values never enter memory, logs, or model state; stale references relocate only on one exact fingerprint match; focus, modifiers, Spaces, screen lock, and permission loss fail safely.
+
+#### Hypercanvas: agentic static and animated ad production
+
+> As a marketer or designer, I can brief Stark, receive strong ad directions on a Figma-like canvas, and iterate by voice, pins, knobs, text edits, or direct manipulation until a complete static and animated campaign set is export-ready.
+
+- Sol owns briefs, concepts, layout/copy passes, art direction, and visual critique. Jev handles cheap micro-edits (`target + operation + amount`), selection intent, and repetitive placement decisions. Rust owns the HTML/CSS document, tokens, constraints, transactions, per-author undo, timeline, deterministic rendering, and export validation.
+- fal.ai and QuiverAI/Arrow2 provide image, SVG, edit, upscale, cutout, and motion takes behind the existing spend gate. The agent runs shoot-outs, places selected takes non-destructively, keeps lineage, and typesets all final copy in the browser renderer rather than inside generated imagery.
+- **Acceptance:** generate and iterate coherent 1:1, 4:5, 9:16, 16:9, and 1200×628 sets from one master; preserve user locks and edits across agent rewrites; produce static PNG/JPG/WebP/PDF and deterministic animated MP4/GIF outputs; compare Chrome exports against Hypercanvas previews; expose cost before paid calls; meet platform safe zones, legibility, and brand-token checks.
+
 ## 3. Milestones
 
 Defined in [00-decisions](plans/00-decisions.md#milestones-supersede-every-earlier-phase-list); each area doc carries the acceptance criteria for its part. Every milestone is proven in the headless **`neo` CLI** before its UI is built.
