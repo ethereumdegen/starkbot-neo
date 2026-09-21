@@ -1,0 +1,51 @@
+[package]
+name = "neo-agent"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Agent runtimes and provider process bridges for Starkbot Neo."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+# `StreamExt::next`, for driving metalcraft's run event stream.
+futures-util.workspace = true
+base64.workspace = true
+bytes.workspace = true
+# `http::HeaderMap`, for the one header the Claude subscription's transport
+# swaps out of every rig request.
+http.workspace = true
+jev-nav = { workspace = true, features = ["ax"] }
+metalcraft.workspace = true
+neo-ax.workspace = true
+neo-cdp.workspace = true
+neo-core.workspace = true
+neo-judge.workspace = true
+neo-keys.workspace = true
+neo-store.workspace = true
+neo-otel.workspace = true
+neo-voice.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+rustix.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+url.workspace = true
+# `v4` is added on top of the workspace features: the OAuth flow needs OS
+# randomness for PKCE and `getrandom` already arrives with `uuid`.
+uuid = { workspace = true, features = ["v4"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

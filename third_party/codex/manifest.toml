@@ -1,0 +1,21 @@
+version = "0.155.1"
+tag = "rust-v0.155.1"
+source_commit = "be2951ea34f0d295ed0becf97079f92fa5f6950e"
+license = "Apache-2.0"
+source = "https://github.com/openai/codex"
+license_url = "https://raw.githubusercontent.com/openai/codex/be2951ea34f0d295ed0becf97079f92fa5f6950e/LICENSE"
+license_sha256 = "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+
+[[artifacts]]
+target = "aarch64-apple-darwin"
+url = "https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-aarch64-apple-darwin.tar.gz"
+sha256 = "5e5a51470dce2423f9d96bd191d0bbc4cc0e2848a6833df5178eaf47a07a3768"
+size = 90600719
+archive_binary = "codex-aarch64-apple-darwin"
+
+[[artifacts]]
+target = "x86_64-apple-darwin"
+url = "https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-x86_64-apple-darwin.tar.gz"
+sha256 = "ff22ad0bf28b8568dbfb28ef0ea64451fe5170fa0f9118bf764ca6cb24c27791"
+size = 98684755
+archive_binary = "codex-x86_64-apple-darwin"
