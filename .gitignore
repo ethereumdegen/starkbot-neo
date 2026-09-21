@@ -4,3 +4,10 @@ target/
 *.mp4
 spikes/out/
 !spikes/fixtures/golden/chrome/*.png
+vendor/
+
+# The desktop app (04): node_modules and the Vite output are build products,
+# but the window icon `tauri::generate_context!` reads is a source file.
+ui/node_modules/
+ui/dist/
+!src-tauri/icons/*.png

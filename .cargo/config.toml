@@ -1,0 +1,27 @@
+# Development defaults for anything run through cargo.
+#
+# `NEO_KEYCHAIN_FILE` moves credential storage out of the login Keychain and
+# into a file under `target/`. This exists because a Keychain read from an
+# unsigned binary raises a **modal** authorization prompt, and a `cargo`
+# binary's code-signing identity changes on every rebuild — so `cargo test`
+# and `cargo run` asked for the login password once per credential per run,
+# and because the dialog is modal, an agent turn blocked behind it looked like
+# a hang.
+#
+# The file holds secrets in clear text, readable only by the owner (0600). It
+# is confined to `target/`, which is git-ignored. A shipped Starkbot is not
+# launched through cargo, does not see this variable, and uses the login
+# Keychain (K7, 05 §Keychain).
+#
+# To use the real login Keychain from a cargo build — to check the shipped
+# path, or after `scripts/sign-dev.sh` — clear it for the one command:
+#   NEO_KEYCHAIN_FILE= cargo run -p neo-cli -- doctor
+#
+# The credentials the signed app already stored can be copied in once with
+# `neo keys import-login`, which prompts once per item and never again.
+# `file` selects the backend; each `Runtime` then keeps `keys.json` beside its
+# own store, so two data directories — and parallel tests, which each get a
+# temporary one — never share a file. Naming one global path here instead was a
+# bug: concurrent read-modify-write from parallel tests corrupted it.
+[env]
+NEO_KEYCHAIN_BACKEND = "file"

@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
+members = ["crates/*", "src-tauri", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
+# `cargo run` with no arguments starts `neo`. The workspace has several
+# binaries — the desktop shell and six spikes — so cargo refuses to pick one
+# without this.
+#
+# It also narrows a bare `cargo build`, `cargo test` and `cargo clippy` to this
+# one package and its dependencies. Whole-workspace commands therefore need
+# `--workspace`, which is what CI already runs.
+default-members = ["crates/neo-cli"]
 
 [workspace.package]
 edition = "2024"
@@ -13,30 +21,56 @@ clippy = { unwrap_used = "deny", expect_used = "warn", dbg_macro = "deny", print
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = "0.27"
 async-trait = "0.1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-uuid = { version = "1", features = ["serde", "v7"] }
-time = { version = "0.3", features = ["serde", "formatting"] }
+ts-rs = { version = "12", features = ["serde-compat", "uuid-impl", "no-serde-warnings"] } # The dropped warnings are all `#[serde(transparent)]` on newtypes, which ts-rs already renders transparently.
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "serde-well-known"] }
 url = { version = "2", features = ["serde"] }
 http = "1"
+# Named only to satisfy `rig::http_client::HttpClientExt`'s own bounds, which
+# rig states in terms of `bytes::Bytes` and does not re-export.
+bytes = "1"
 zeroize = "1"
+security-framework = "3"
+# `flock` for the screen lease, through a safe API: the workspace denies
+# `unsafe_code`, which rules out calling libc directly for it.
+rustix = { version = "1", features = ["fs"] }
 futures-core = "0.3"
 rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "=2.5.0"
-reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls", "http2", "stream"] }
 thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+toml = "0.9"
 tempfile = "3"
 tracing = "0.1"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.30"
+crossterm = "0.29"
+insta = "1"
+wiremock = "0.6"
 neo-cdp = { path = "crates/neo-cdp" }
 neo-keys = { path = "crates/neo-keys" }
 neo-core = { path = "crates/neo-core" }
+neo-eval = { path = "crates/neo-eval" }
+neo-agent = { path = "crates/neo-agent" }
+neo-ax = { path = "crates/neo-ax" }
+neo-judge = { path = "crates/neo-judge" }
 neo-store = { path = "crates/neo-store" }
+neo-tui = { path = "crates/neo-tui" }
+neo-otel = { path = "crates/neo-otel" }
+neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
+spice-framework = { path = "../spice" }
 metalcraft = { path = "../metalcraft", features = ["rig"] } # Remote cutover pin: rev 3f5e865eae51186882ff20604dbbf658f12d24af or tag v0.12.0.
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"
@@ -45,8 +79,8 @@ s7-render = { path = "spikes/s7-render" }
 command-fds = "0.3.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 block2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSError", "NSData"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSImage", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSError", "NSData", "NSArray", "NSEnumerator", "NSURL"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit"] }
 core-graphics = "0.25"
 audioadapter-buffers = "5.2"
