@@ -71,7 +71,7 @@ neo-otel = { path = "crates/neo-otel" }
 neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
 spice-framework = { path = "../spice" }
-metalcraft = { path = "../metalcraft", features = ["rig"] } # Remote cutover pin: rev 3f5e865eae51186882ff20604dbbf658f12d24af or tag v0.12.0.
+metalcraft = { version = "1.2.0", features = ["rig"] }
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
