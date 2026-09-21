@@ -70,7 +70,7 @@ neo-tui = { path = "crates/neo-tui" }
 neo-otel = { path = "crates/neo-otel" }
 neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
-spice-framework = { path = "../spice" }
+spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"

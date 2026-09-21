@@ -5362,6 +5362,8 @@ dependencies = [
 [[package]]
 name = "spice-framework"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d71a4f241d10cf158e197d00df0c7356026784f3b61803ea959aa695ac121a6"
 dependencies = [
  "async-trait",
  "chrono",
