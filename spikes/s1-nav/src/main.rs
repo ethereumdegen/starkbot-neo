@@ -142,13 +142,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let text = std::env::var("OPENAI_API_KEY").ok().map(|key| {
+    let text: Option<Box<dyn jev_nav::text::TextHelper>> = std::env::var("OPENAI_API_KEY").ok().map(|key| {
         let model = std::env::var("TEXT_MODEL").unwrap_or_else(|_| "gpt-5.6-luna".into());
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let mut helper = OpenAiTextHelper::new(key, model, base_url);
         helper.extra = json!({ "reasoning_effort": std::env::var("TEXT_REASONING").unwrap_or_else(|_| "none".into()) });
-        helper
+        Box::new(helper) as Box<dyn jev_nav::text::TextHelper>
     });
     if text.is_none() {
         println!("OPENAI_API_KEY not set — the run will stop at the first TYPE_TEXT.");

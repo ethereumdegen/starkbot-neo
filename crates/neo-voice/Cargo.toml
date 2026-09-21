@@ -1,0 +1,75 @@
+[package]
+name = "neo-voice"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Microphone capture and speech-to-text: on-device macOS dictation, or OpenAI gpt-transcribe."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cpal.workspace = true
+hound.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+audioadapter-buffers.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+neo-keys.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt", "time", "sync"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSString",
+    "NSError",
+    "NSLocale",
+    "NSArray",
+    "NSEnumerator",
+    "NSOperation",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "CFRunLoop",
+    "CFPreferences",
+    "CFString",
+] }
+objc2-speech = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-avf-audio",
+    "SFSpeechRecognizer",
+    "SFSpeechRecognitionRequest",
+    "SFSpeechRecognitionResult",
+    "SFSpeechRecognitionTask",
+    "SFSpeechRecognitionTaskHint",
+    "SFTranscriptionSegment",
+    "SFTranscription",
+    "SFErrors",
+] }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "AVAudioBuffer",
+    "AVAudioFormat",
+    "AVAudioTypes",
+] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "AVCaptureDevice",
+    "AVMediaFormat",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }
+wiremock.workspace = true

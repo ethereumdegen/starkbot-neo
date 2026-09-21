@@ -1,0 +1,626 @@
+//! Agent-in-the-loop evaluation of app control, on `spice-framework`.
+//!
+//! This crate answers one question with evidence: **can Sol plus Jev actually
+//! operate a real application?** Not "did the model produce plausible prose" —
+//! whether the document, the spreadsheet cell, or the page is in the state the
+//! task asked for.
+//!
+//! # Why `spice-framework`
+//!
+//! App control is nondeterministic twice over: the model picks a different
+//! action sequence each run, and the application itself is a moving target
+//! (layout, focus, timing). A normal `#[test]` is the wrong shape — one run,
+//! pass or fail. `spice` is built for exactly this: `consensus_runs` /
+//! `consensus_required` express "4 of 5 runs must pass", which is the
+//! acceptance bar the plan already asks for (S8a), and the report carries
+//! per-run latency and token cost so a regression in *cost* is visible too.
+//!
+//! Nothing in `spice` needed changing. Three seams carry all of it:
+//! [`spice_framework::AgentUnderTest`] (implemented by [`NeoAgent`] over
+//! `Runtime::chat`), [`spice_framework::Judge`] (implemented by [`NeoJudge`]
+//! over the user's own subscription, so judging needs no extra key), and
+//! `Assertion::ExpectToolArg`, which is how a probe's observation becomes a
+//! hard assertion.
+//!
+//! # The part that makes this an eval and not a vibe check
+//!
+//! A model that says "I set A1 to 42" proves nothing. Every case ends with a
+//! **probe**: after the turn, the harness reads the application's own state
+//! back through the same accessibility and CDP paths the agent used, and
+//! attaches it as a synthetic `probe` tool call whose *arguments are the
+//! observed state*. Assertions then run against the app, not the transcript:
+//!
+//! ```text
+//! Assertion::ExpectToolArg("probe".into(), "value".into(), json!("42"))
+//! ```
+//!
+//! A run where the model claims success and the cell is empty fails.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use neo_agent::Runtime;
+use neo_agent::agent::{ChatMessage, ChatRequest};
+use neo_core::{ActionKind, ActionSummary, AppEvent, ConversationId, Envelope, RunId, TurnUsage};
+use serde_json::{Value, json};
+use spice_framework::agent::{AgentConfig, AgentOutput, AgentUnderTest, ToolCall, Turn, Usage};
+use spice_framework::error::SpiceError;
+use spice_framework::judge::{Judge, JudgeRequest, JudgeVerdict};
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
+
+pub mod apps;
+pub mod cases;
+pub mod fixture;
+pub mod probe;
+pub mod suite;
+
+pub use apps::{App, availability};
+pub use fixture::Fixture;
+pub use probe::{Probe, run_probe};
+pub use spice_framework::report::{SuiteReport, TestReport};
+pub use suite::{CASE_TIMEOUT, CaseListing, EvalError, Selection, list_cases, run_suite};
+
+/// How many actions one eval turn may spend. Lower than the interactive
+/// default: an eval task is one concrete outcome, and a run that needs eight
+/// actions to set a spreadsheet cell has already failed the thing being
+/// measured.
+pub const EVAL_MAX_STEPS: usize = 5;
+
+/// Starkbot under test.
+///
+/// Wraps the real [`Runtime`], so an eval exercises the same agent loop, the
+/// same `jev-nav` policy, the same element budgets and the same safety heads
+/// as a user typing into the TUI. There is no eval-only shortcut: if this
+/// passes, the product does the thing.
+pub struct NeoAgent {
+    runtime: Arc<Runtime>,
+    /// One conversation for the whole suite. `chat` records each turn against
+    /// it, and `turns` has a foreign key on `conversations(id)`: an id the
+    /// store never saw would lose every turn record the eval produces.
+    conversation: ConversationId,
+    /// The suite's stop signal, threaded into every turn so a cancelled eval
+    /// does not leave a browser open and a document half typed.
+    cancel: CancellationToken,
+}
+
+impl NeoAgent {
+    #[must_use]
+    pub fn new(
+        runtime: Arc<Runtime>,
+        conversation: ConversationId,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            runtime,
+            conversation,
+            cancel,
+        }
+    }
+}
+
+/// Exactly the actions the agent loop can take (P3: no shell, no files).
+///
+/// A constant rather than a literal inside
+/// [`AgentUnderTest::available_tools`], so the test that guards the surface
+/// reads the same list the agent reports. Asserting against a second copy
+/// would only ever prove the copy right.
+pub const ACTIONS: [&str; 6] = ["browse", "app", "answer", "ask", "probe", "fixture"];
+
+#[async_trait]
+impl AgentUnderTest for NeoAgent {
+    async fn run(
+        &self,
+        user_message: &str,
+        config: &AgentConfig,
+    ) -> Result<AgentOutput, SpiceError> {
+        let started = Instant::now();
+
+        if self.cancel.is_cancelled() {
+            return Ok(AgentOutput {
+                final_text: String::new(),
+                error: Some("the eval was cancelled".to_owned()),
+                duration: started.elapsed(),
+                ..Default::default()
+            });
+        }
+
+        // Known starting state first: without it a case measures whatever the
+        // last run left on screen, which is how the first TextEdit case
+        // "failed".
+        let mut prelude: Vec<Turn> = Vec::new();
+        if let Some(fixture) = Fixture::from_config(config) {
+            match fixture::apply(&fixture).await {
+                Ok(applied) => prelude.push(Turn {
+                    index: 0,
+                    output_text: Some("fixture applied".to_owned()),
+                    tool_calls: vec![ToolCall {
+                        id: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        arguments: applied.clone(),
+                    }],
+                    tool_results: vec![applied],
+                    stop_reason: Some("fixture".to_owned()),
+                    duration: Duration::ZERO,
+                }),
+                // A broken fixture is a harness failure, not a model failure:
+                // it is reported as the run's error so the case does not read
+                // as "the agent could not do it".
+                Err(error) => {
+                    return Ok(AgentOutput {
+                        final_text: String::new(),
+                        error: Some(format!("fixture failed: {error}")),
+                        duration: started.elapsed(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        let mut request = ChatRequest::new(self.conversation, vec![ChatMessage::user(user_message)]);
+        request.max_steps = EVAL_MAX_STEPS;
+        request.cancel = self.cancel.clone();
+
+        // `chat` has no progress callback any more: progress is events, so a
+        // window, a terminal and this harness can all watch the same turn.
+        // The eval subscribes *before* the call and keeps only the envelopes
+        // carrying its own run — which is why the run id is minted here rather
+        // than inside `chat`. The trace is not decoration: assertions such as
+        // `ExpectToolArg("browse", "url", …)` are scored against it, and a
+        // turn that errors keeps the steps it got through.
+        let steps = Collector::attach(self.runtime.subscribe(), request.run);
+        let outcome = self.runtime.chat(request).await;
+        let collected = steps.finish().await;
+
+        let (final_text, error) = match outcome {
+            Ok(outcome) => (outcome.text, None),
+            // A failed run is data, not a harness error: the case still gets
+            // scored, and `ExpectNoError` is what fails it.
+            Err(error) => (String::new(), Some(error.to_string())),
+        };
+
+        let offset = prelude.len();
+        let mut turns: Vec<Turn> = prelude;
+        turns.extend(collected.steps.into_iter().enumerate().map(|(index, step)| {
+            let observation = step.observation.unwrap_or_else(|| step.thought.clone());
+            Turn {
+                index: index + offset,
+                output_text: Some(observation.clone()),
+                tool_calls: vec![ToolCall {
+                    id: format!("step-{index}"),
+                    name: step.name,
+                    arguments: step.arguments,
+                }],
+                tool_results: vec![json!({ "observation": observation })],
+                stop_reason: None,
+                duration: step.duration,
+            }
+        }));
+
+        // The probe: read the application's own state back, and attach it as a
+        // tool call whose arguments *are* the observation. This is what makes
+        // the assertions statements about the app rather than about the model.
+        // A cancelled run is not probed: the app is mid-edit, and an
+        // observation of that is worse than none.
+        if let Some(probe) = Probe::from_config(config)
+            && !self.cancel.is_cancelled()
+        {
+            let observed = run_probe(&self.runtime, &probe)
+                .await
+                .unwrap_or_else(|error| json!({ "error": error.to_string() }));
+            let index = turns.len();
+            turns.push(Turn {
+                index,
+                output_text: None,
+                tool_calls: vec![ToolCall {
+                    id: "probe".to_owned(),
+                    name: "probe".to_owned(),
+                    arguments: observed.clone(),
+                }],
+                tool_results: vec![observed],
+                stop_reason: Some("probe".to_owned()),
+                duration: Duration::ZERO,
+            });
+        }
+
+        let tools_called = turns
+            .iter()
+            .flat_map(|turn| turn.tool_calls.iter().map(|call| call.name.clone()))
+            .collect();
+        Ok(AgentOutput {
+            final_text,
+            turns,
+            tools_called,
+            duration: started.elapsed(),
+            error,
+            usage: Some(collected.usage.as_ref().map_or_else(Usage::default, usage_of)),
+        })
+    }
+
+    fn available_tools(&self, _config: &AgentConfig) -> Vec<String> {
+        ACTIONS.iter().map(|action| (*action).to_owned()).collect()
+    }
+
+    fn name(&self) -> &str {
+        "starkbot-neo"
+    }
+}
+
+/// One action as a spice tool call: the name is the action, the arguments are
+/// what it was given, so `ExpectToolArg("browse", "url", …)` works. The
+/// argument keys are a contract — every assertion in [`cases`] is written
+/// against them.
+fn describe(action: &ActionSummary) -> (String, Value) {
+    match action.kind {
+        ActionKind::Browse => (
+            "browse".to_owned(),
+            json!({ "url": action.target, "goal": action.goal }),
+        ),
+        ActionKind::App => (
+            "app".to_owned(),
+            json!({ "app": action.target, "goal": action.goal }),
+        ),
+        ActionKind::Answer => ("answer".to_owned(), json!({ "text": action.text })),
+        ActionKind::Ask => ("ask".to_owned(), json!({ "question": action.text })),
+    }
+}
+
+/// What a turn's usage costs, in spice's shape.
+///
+/// `cost_usd` stays empty on purpose: plan-backed work is `Usd::Unpriced`
+/// (05 §7), and a report that invented a price would make a subscription run
+/// look like a metered one.
+fn usage_of(usage: &TurnUsage) -> Usage {
+    Usage {
+        input_tokens: Some(usage.input_tokens),
+        output_tokens: Some(usage.output_tokens),
+        total_tokens: Some(usage.total_tokens()),
+        cost_usd: None,
+    }
+}
+
+/// One step of a turn, as the events described it.
+struct StepTrace {
+    name: String,
+    arguments: Value,
+    /// The model's reason for the action, which stands in for the observation
+    /// until the action resolves — a turn that errors mid-step still shows
+    /// what it was trying to do.
+    thought: String,
+    observation: Option<String>,
+    duration: Duration,
+}
+
+/// What one turn's events amounted to.
+#[derive(Default)]
+struct Collected {
+    steps: Vec<StepTrace>,
+    usage: Option<TurnUsage>,
+}
+
+/// A background subscriber that keeps one run's progress while `chat` runs.
+///
+/// It has to be a task rather than a drain afterwards: the broadcast buffer is
+/// finite, and a turn that overran it would silently lose steps from the
+/// trace, which weakens the very assertions the case is scored on.
+struct Collector {
+    stop: CancellationToken,
+    task: tokio::task::JoinHandle<Collected>,
+}
+
+impl Collector {
+    fn attach(mut events: broadcast::Receiver<Envelope>, run: RunId) -> Self {
+        let stop = CancellationToken::new();
+        let signal = stop.clone();
+        let task = tokio::spawn(async move {
+            let mut collected = Collected::default();
+            loop {
+                let envelope = tokio::select! {
+                    received = events.recv() => match received {
+                        Ok(envelope) => envelope,
+                        // Lagging drops steps this trace needed; there is
+                        // nothing to recover, so keep what still arrives.
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                    () = signal.cancelled() => break,
+                };
+                if absorb(&mut collected, run, envelope.event) {
+                    return collected;
+                }
+            }
+            // The stop arm can win the race against events already queued —
+            // `TurnFinished` is published before `chat` returns — so take what
+            // is left before answering.
+            while let Ok(envelope) = events.try_recv() {
+                if absorb(&mut collected, run, envelope.event) {
+                    break;
+                }
+            }
+            collected
+        });
+        Self { stop, task }
+    }
+
+    async fn finish(self) -> Collected {
+        self.stop.cancel();
+        // A collector that panicked would take the whole eval down with it if
+        // this unwrapped; an empty trace fails the case instead, which is the
+        // outcome a harness fault deserves.
+        self.task.await.unwrap_or_default()
+    }
+}
+
+/// Fold one event into the trace. Answers whether the turn ended.
+fn absorb(collected: &mut Collected, run: RunId, event: AppEvent) -> bool {
+    match event {
+        AppEvent::TurnStep {
+            run: theirs,
+            action,
+            thought,
+            ..
+        } if theirs == run => {
+            let (name, arguments) = describe(&action);
+            collected.steps.push(StepTrace {
+                name,
+                arguments,
+                thought,
+                observation: None,
+                duration: Duration::ZERO,
+            });
+            false
+        }
+        AppEvent::TurnStepDone {
+            run: theirs,
+            observation,
+            duration_ms,
+            ..
+        } if theirs == run => {
+            if let Some(step) = collected.steps.last_mut() {
+                step.observation = Some(observation);
+                step.duration = Duration::from_millis(duration_ms);
+            }
+            false
+        }
+        AppEvent::TurnFinished {
+            run: theirs, usage, ..
+        } if theirs == run => {
+            collected.usage = usage;
+            true
+        }
+        AppEvent::TurnFailed { run: theirs, .. } => theirs == run,
+        _ => false,
+    }
+}
+
+/// An LLM judge on the user's own subscription.
+///
+/// `spice`'s built-in judge needs an OpenAI API key. Starkbot's whole point is
+/// that one inference connection is enough (K6/K7), so the judge runs on
+/// whatever runtime is selected — a Claude Pro/Max or ChatGPT plan included.
+pub struct NeoJudge {
+    runtime: Arc<Runtime>,
+}
+
+impl NeoJudge {
+    #[must_use]
+    pub fn new(runtime: Arc<Runtime>) -> Self {
+        Self { runtime }
+    }
+}
+
+#[async_trait]
+impl Judge for NeoJudge {
+    async fn score(&self, req: JudgeRequest<'_>) -> Result<JudgeVerdict, SpiceError> {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "score": {
+                    "type": "number",
+                    "description": "0.0 to 1.0, how fully the rubric is met"
+                },
+                "reasoning": { "type": "string" }
+            },
+            "required": ["score", "reasoning"],
+            "additionalProperties": false
+        });
+        let prompt = format!(
+            "You are grading whether an agent completed a task by operating a real \
+             application. Be strict: a claim of success with no evidence in the \
+             transcript scores low.\n\n\
+             Task given to the agent:\n{task}\n\n\
+             Rubric:\n{rubric}\n\n\
+             What the agent answered:\n{answer}\n\n\
+             What the agent actually did, step by step:\n{trace}\n\n\
+             Score from 0.0 to 1.0 against the rubric only.",
+            task = req.user_message,
+            rubric = req.rubric,
+            answer = req.output.final_text,
+            trace = trace_of(req.output),
+        );
+        let (value, _turn) = self
+            .runtime
+            .ask_json(&prompt, &schema, None)
+            .await
+            .map_err(|error| SpiceError::AgentError(error.to_string()))?;
+        let score = value
+            .get("score")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| SpiceError::AgentError("the judge answered without a score".to_owned()))?;
+        // The runner applies `threshold`; a judge only reports.
+        Ok(JudgeVerdict::new(
+            score,
+            value
+                .get("reasoning")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ))
+    }
+}
+
+/// The trace a judge is shown: what was done, and what each action produced.
+fn trace_of(output: &AgentOutput) -> String {
+    if output.turns.is_empty() {
+        return "(nothing)".to_owned();
+    }
+    output
+        .turns
+        .iter()
+        .map(|turn| {
+            let calls = turn
+                .tool_calls
+                .iter()
+                .map(|call| format!("{}({})", call.name, call.arguments))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{}. {calls} -> {}",
+                turn.index + 1,
+                turn.output_text.as_deref().unwrap_or("(no observation)")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    // A failed `expect` in a test is the test failing, which is the point.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn summary(kind: ActionKind, target: Option<&str>, goal: Option<&str>) -> ActionSummary {
+        ActionSummary {
+            kind,
+            target: target.map(ToOwned::to_owned),
+            goal: goal.map(ToOwned::to_owned),
+            text: None,
+        }
+    }
+
+    /// The action → tool-call mapping is what every assertion in the suite is
+    /// written against, so the names and argument keys are a contract.
+    #[test]
+    fn an_action_becomes_a_tool_call_with_its_arguments() {
+        let (name, arguments) = describe(&summary(
+            ActionKind::Browse,
+            Some("https://example.com"),
+            Some("read the heading"),
+        ));
+        assert_eq!(name, "browse");
+        assert_eq!(arguments["url"], json!("https://example.com"));
+        assert_eq!(arguments["goal"], json!("read the heading"));
+
+        let (name, arguments) = describe(&summary(
+            ActionKind::App,
+            Some("TextEdit"),
+            Some("turn on bold"),
+        ));
+        assert_eq!(name, "app");
+        assert_eq!(arguments["app"], json!("TextEdit"));
+    }
+
+    /// A turn's steps are rebuilt from events now, and the observation has to
+    /// replace the thought once the action resolves — the judge and the
+    /// `ExpectToolArg` assertions both read that text.
+    #[test]
+    fn an_observation_supersedes_the_thought_it_followed() {
+        let run = RunId::new();
+        let mut collected = Collected::default();
+        assert!(!absorb(
+            &mut collected,
+            run,
+            AppEvent::TurnStep {
+                run,
+                step: 1,
+                thought: "open the page".to_owned(),
+                action: summary(ActionKind::Browse, Some("https://example.com"), Some("read it")),
+            }
+        ));
+        assert!(!absorb(
+            &mut collected,
+            run,
+            AppEvent::TurnStepDone {
+                run,
+                step: 1,
+                observation: "the page shows $29 per seat".to_owned(),
+                duration_ms: 1_200,
+            }
+        ));
+        // Another run's turn ending must not end this one's collection.
+        assert!(!absorb(
+            &mut collected,
+            run,
+            AppEvent::TurnFailed {
+                run: RunId::new(),
+                error: "someone else's turn".to_owned(),
+            }
+        ));
+        assert!(absorb(
+            &mut collected,
+            run,
+            AppEvent::TurnFinished {
+                run,
+                text: "$29".to_owned(),
+                steps: 1,
+                exhausted: false,
+                usage: Some(TurnUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..TurnUsage::default()
+                }),
+            }
+        ));
+
+        let step = collected.steps.first().expect("one step");
+        assert_eq!(step.observation.as_deref(), Some("the page shows $29 per seat"));
+        assert_eq!(step.duration, Duration::from_millis(1_200));
+        assert_eq!(collected.steps.len(), 1);
+        let usage = usage_of(&collected.usage.expect("the turn reported usage"));
+        assert_eq!(usage.total_tokens, Some(15));
+        // Plan-backed work has no price to report (05 §7).
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    /// The judge is shown what happened, not just what was claimed — a model
+    /// that answers "done" with an empty trace has to be scoreable as wrong.
+    #[test]
+    fn the_judge_sees_the_trace_and_not_only_the_answer() {
+        let output = AgentOutput {
+            final_text: "I set the cell.".to_owned(),
+            turns: vec![Turn {
+                index: 0,
+                output_text: Some("Blocked after 1 action(s): the grid never moved".to_owned()),
+                tool_calls: vec![ToolCall {
+                    id: "step-0".to_owned(),
+                    name: "app".to_owned(),
+                    arguments: json!({ "app": "LibreOffice", "goal": "type 42 into A1" }),
+                }],
+                tool_results: vec![],
+                stop_reason: None,
+                duration: Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let trace = trace_of(&output);
+        assert!(trace.contains("Blocked"), "the failure must reach the judge");
+        assert!(trace.contains("LibreOffice"));
+    }
+
+    #[test]
+    fn the_tool_allowlist_contains_no_shell_or_file_action() {
+        // Reads [`ACTIONS`] rather than standing up a `Runtime`: the list is
+        // static, `available_tools` ignores `self` to produce it, and opening
+        // a real runtime here made a test about a constant depend on the
+        // store actor and the login keychain — which is how it failed once
+        // under a loaded workspace run and never again.
+        for forbidden in ["bash", "shell", "run", "read_file", "write_file", "exec"] {
+            assert!(
+                !ACTIONS.contains(&forbidden),
+                "`{forbidden}` must not be an action (P3)"
+            );
+        }
+    }
+}
