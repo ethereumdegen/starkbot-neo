@@ -25,8 +25,6 @@ export type Screen =
   | "chat"
   | "runs"
   | "projects"
-  | "automate"
-  | "eval"
   | "inspect"
   | "connections"
   | "settings";

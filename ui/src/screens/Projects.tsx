@@ -21,24 +21,32 @@ export function Projects() {
   const [everySeconds, setEverySeconds] = useState("14400");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [root, setRoot] = useState("");
 
   const applyDetail = (next: ProjectDetailView) => {
     setDetail(next);
     setSoul(next.soul);
     setHeartbeat(next.heartbeat);
     setEverySeconds(String(next.project.heartbeat_every_seconds));
-    setProjects((current) => current.map((project) =>
-      project.slug === next.project.slug ? next.project : project,
-    ));
+    setProjects((current) => {
+      const exists = current.some((project) => project.slug === next.project.slug);
+      return exists
+        ? current.map((project) => project.slug === next.project.slug ? next.project : project)
+        : [next.project, ...current];
+    });
   };
 
-  const run = async (work: () => Promise<ProjectDetailView>) => {
+  const run = async (work: () => Promise<ProjectDetailView>): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       applyDetail(await work());
+      return true;
     } catch (thrown) {
       setError(errorOf(thrown).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -66,13 +74,63 @@ export function Projects() {
     }
   };
 
+  const create = async () => {
+    if (!(await run(() => api.createProject(name.trim(), root)))) {
+      return;
+    }
+    setName("");
+    setRoot("");
+    setCreating(false);
+  };
   return (
     <div className={`${panes.columns} ${panes.split}`}>
+
       <section className={panes.pane}>
-        <div className={panes.head}><h2>Projects</h2></div>
+        <div className={panes.head}>
+          <h2>Projects</h2>
+          <button className={panes.spacer} onClick={() => setCreating((value) => !value)}>
+            {creating ? "Cancel" : "New project"}
+          </button>
+        </div>
         <div className={`${panes.body} ${panes.tight}`}>
-          {projects.length === 0 && (
-            <p className={panes.empty}>No projects yet. Create one with <code>neo projects add</code>.</p>
+          {creating && (
+            <form
+              className={panes.form}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void create();
+              }}
+            >
+              <h3>New project</h3>
+              <div className={panes.field}>
+                <label htmlFor="project-name">Name</label>
+                <input
+                  id="project-name"
+                  autoFocus
+                  value={name}
+                  placeholder="Q4 Launch"
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </div>
+              <div className={panes.field}>
+                <label htmlFor="project-root">Existing folder</label>
+                <input
+                  id="project-root"
+                  value={root}
+                  placeholder="optional — managed when blank"
+                  onChange={(event) => setRoot(event.target.value)}
+                />
+              </div>
+              <span className={panes.hint}>
+                A blank folder uses Starkbot's data directory. An existing folder is never created or scanned.
+              </span>
+              <button type="submit" className="primary" disabled={busy || name.trim() === ""}>
+                Create project
+              </button>
+            </form>
+          )}
+          {projects.length === 0 && !creating && (
+            <p className={panes.empty}>No projects yet. Create one here to get started.</p>
           )}
           {projects.map((project) => (
             <button

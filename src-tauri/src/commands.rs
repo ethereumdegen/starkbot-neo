@@ -203,6 +203,22 @@ pub async fn list_projects(state: State<'_, Desktop>) -> Result<Vec<Project>, Ui
     let runtime = state.runtime();
     project_blocking(move || runtime.projects()).await
 }
+#[tauri::command]
+pub async fn create_project(
+    state: State<'_, Desktop>,
+    name: String,
+    root: Option<String>,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        let root = root
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
+        let project = runtime.create_project(&name, root.as_deref())?;
+        project_detail(&runtime, &project.slug)
+    })
+    .await
+}
 
 #[tauri::command]
 pub async fn show_project(

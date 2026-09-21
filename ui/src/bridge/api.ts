@@ -288,6 +288,8 @@ export const api = {
 
   getBootstrap: () => invoke<BootstrapView>("get_bootstrap"),
   listProjects: () => invoke<Project[]>("list_projects"),
+  createProject: (name: string, root?: string) =>
+    invoke<ProjectDetailView>("create_project", { name, root: root?.trim() || null }),
   showProject: (slug: string) => invoke<ProjectDetailView>("show_project", { slug }),
   saveProjectDocument: (slug: string, document: "soul.md" | "heartbeat.md", content: string) =>
     invoke<ProjectDetailView>("save_project_document", { slug, document, content }),

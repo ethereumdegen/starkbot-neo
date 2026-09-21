@@ -52,6 +52,7 @@ fn main() -> std::process::ExitCode {
             commands::handshake,
             commands::get_bootstrap,
             commands::list_projects,
+            commands::create_project,
             commands::show_project,
             commands::save_project_document,
             commands::configure_project_heartbeat,

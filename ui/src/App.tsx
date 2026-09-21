@@ -1,8 +1,6 @@
 import { useAppEvents } from "./bridge/events";
-import { Automate } from "./screens/Automate";
 import { Chat } from "./screens/Chat";
 import { Connections } from "./screens/Connections";
-import { Eval } from "./screens/Eval";
 import { Inspect } from "./screens/Inspect";
 import { Projects } from "./screens/Projects";
 import { Runs } from "./screens/Runs";
@@ -15,8 +13,6 @@ const TABS: { id: Screen; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "runs", label: "Runs" },
   { id: "projects", label: "Projects" },
-  { id: "automate", label: "Automate" },
-  { id: "eval", label: "Eval" },
   { id: "inspect", label: "Inspect" },
   // Its own rail entry rather than the thirteenth tab inside Settings: this
   // is where a key is typed and a subscription signed in, and a fresh
@@ -33,10 +29,6 @@ function Screens({ screen }: { screen: Screen }) {
       return <Runs />;
     case "projects":
       return <Projects />;
-    case "automate":
-      return <Automate />;
-    case "eval":
-      return <Eval />;
     case "inspect":
       return <Inspect />;
     case "connections":
