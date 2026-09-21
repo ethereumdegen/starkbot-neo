@@ -228,7 +228,11 @@ export type AppEvent =
       exhausted: boolean;
       usage: TurnUsage | null;
     }
-  | { type: "turn_failed"; run: RunId; error: string }
+  // `error` is a sentence for a person and gets reworded; `code` is the
+  // producer's own stable name for the failure — `neo_agent`'s `error_code`
+  // or the desktop's `UiError::code` — so a screen can tell a deliberate
+  // stop from a crash without matching on prose.
+  | { type: "turn_failed"; run: RunId; error: string; code: string }
   | { type: "nav_step"; run: RunId; step: number; line: string; kind: NavStepKind }
   // A run is blocked on a question. The card stays up until the matching
   // `*_resolved` arrives — which it always does, because the run publishes

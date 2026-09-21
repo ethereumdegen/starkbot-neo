@@ -28,14 +28,15 @@ use std::time::{Duration, Instant};
 use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 use tokio::sync::oneshot;
 
-use crate::apps;
+use super::apps;
+use super::input::{self, Target};
+use super::perm;
+use super::sys::{self, Attrs, AxElem};
 use crate::deny::AxPolicy;
 use crate::error::{AxError, Freshness, StaleReason};
-use crate::input::{self, Target};
 use crate::mapping::PRESS_ACTIONS;
-use crate::perm;
 use crate::raw::RawNode;
-use crate::sys::{self, Attrs, AxElem};
+
 use crate::table::{self, BuiltTable, TableInput};
 use crate::types::{
     ActOutcome, AppInfo, AppSel, AxAction, Element, ElementTable, Fingerprint, Guard, Method, Rect,

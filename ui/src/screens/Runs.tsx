@@ -94,6 +94,9 @@ function Detail({ record, now }: { record: RunRecord; now: number }) {
       <div className={panes.body}>
         <div className={trace.usage}>{record.run}</div>
         {(record.kind === "chat" || record.steps.length > 0) && <RunSteps record={record} />}
+        {/* The one place navigator lines are drawn. They used to be filed
+            onto the open step card as well, so a chat turn that browsed
+            showed each line twice and stored it twice. */}
         <NavLines entries={navEntries} />
         <EvalRows run={record.run} />
         {record.text !== null && <div className={trace.answer}>{record.text}</div>}
@@ -112,8 +115,13 @@ function Detail({ record, now }: { record: RunRecord; now: number }) {
 
 /**
  * Every run this window has heard of, including the ones it did not start:
- * the event stream is a broadcast, so a `neo nav` in a terminal shows up here
- * the moment it publishes its first step.
+ * the event stream is a broadcast, so a turn another front end started shows
+ * up here the moment it publishes its first step.
+ *
+ * A run only appears once something will say it ended — its own commands,
+ * `TurnStarted` or `EvalCase`. A bare `NavStep` is not enough: nothing
+ * publishes a terminal event for a `neo nav` in a terminal, so a record
+ * opened from one would sit at `running` for the life of the window.
  */
 export function Runs() {
   const order = useStore((state) => state.runs.order);

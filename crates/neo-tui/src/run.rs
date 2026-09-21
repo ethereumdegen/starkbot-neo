@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use neo_agent::agent::{
     AppOptions, BrowserOptions, ChatMessage, ChatRequest, run_app, run_browser,
 };
@@ -20,7 +22,8 @@ use neo_agent::runtime::{Bootstrap, LoginHandle, Runtime, RuntimeError};
 use neo_core::{Envelope, RunId};
 use neo_eval::Selection;
 use neo_voice::{Microphone, Transcriber};
-use ratatui::DefaultTerminal;
+use ratatui::backend::Backend;
+use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -39,6 +42,10 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(60);
 /// A second kill switch inside this window quits (14 §3).
 const DOUBLE_KILL: Duration = Duration::from_secs(2);
+/// How long quitting waits for the cancelled runs to let go of what they
+/// hold. Long enough for a CDP `Browser.close` round trip, short enough
+/// that a wedged run cannot hold the terminal hostage.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 /// How long the core serves the loopback callback: a browser round-trip with a
 /// password manager and a second factor in the middle.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -161,9 +168,14 @@ impl Drop for Job {
     /// Cancelling is what reclaims the browser and stops the typing: the
     /// token reaches the navigator and the AX actor, whereas `abort` alone
     /// drops the future and leaves Chrome running.
+    ///
+    /// So this cancels, and only cancels. It used to abort in the next
+    /// breath, which set the flag before the cancelled task could be polled
+    /// even once — producing precisely the orphan the paragraph above says
+    /// the cancel is for, on the one path that reaches here: quitting.
+    /// [`Jobs::settle`] is what gives those tasks their moment to run.
     fn drop(&mut self) {
         self.cancel.cancel();
-        self.task.abort();
     }
 }
 
@@ -231,6 +243,38 @@ impl Jobs {
     fn cancel_all(&self) {
         for job in self.active.values() {
             job.cancel.cancel();
+        }
+    }
+
+    /// Cancel everything and wait, briefly, for it to let go.
+    ///
+    /// A cancelled task still has to be *polled* to close its browser and
+    /// release the keyboard; returning from the loop drops the runtime with
+    /// those futures still parked at their cancellation points, so the quit
+    /// path asks for the shutdown and then stays long enough to observe it.
+    /// Bounded, because "reclaim the browser" must not become "the terminal
+    /// never comes back": whatever has not finished by the deadline is left
+    /// to the runtime, which is no worse than the abort this replaced.
+    fn settle(&mut self, budget: Duration) {
+        self.cancel_all();
+        if self.active.is_empty() {
+            return;
+        }
+        let active = &mut self.active;
+        let closing = async {
+            for job in active.values_mut() {
+                // The task's own error is not interesting here: a run that
+                // panicked has already dropped whatever it was holding.
+                let _ = (&mut job.task).await;
+            }
+        };
+        let closed =
+            tokio::runtime::Handle::current().block_on(tokio::time::timeout(budget, closing));
+        if closed.is_err() {
+            tracing::warn!(
+                ?budget,
+                "a run did not stop in time; leaving it to the runtime"
+            );
         }
     }
 }
@@ -414,8 +458,6 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         }
         Err(error) => state.note(format!("the conversation could not be opened: {error}")),
     }
-    let keymap = KeyMap;
-    let mut last_kill: Option<Instant> = None;
     let mut context = Loop {
         jobs: Jobs::new(),
         chores: Chores::new(),
@@ -424,6 +466,34 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         voice: None,
         started: Instant::now(),
     };
+
+    let outcome = frames(
+        runtime,
+        terminal,
+        &mut state,
+        &mut context,
+        &mut receiver,
+        &mut session,
+    );
+    // Quitting is the path that used to orphan a browser: the loop returned,
+    // the jobs were dropped, and their cancellation never got polled. Every
+    // exit comes through here, including an error one, because a run holding
+    // Chrome does not care why the front end is leaving.
+    context.jobs.settle(SHUTDOWN_BUDGET);
+    outcome
+}
+
+/// Draw, read a key, apply what the core published; repeat until quit.
+fn frames(
+    runtime: &Arc<Runtime>,
+    terminal: &mut DefaultTerminal,
+    state: &mut State,
+    context: &mut Loop,
+    receiver: &mut tokio::sync::broadcast::Receiver<Envelope>,
+    session: &mut Presence,
+) -> Result<(), TuiError> {
+    let keymap = KeyMap;
+    let mut last_kill: Option<Instant> = None;
     // The sequence number the next envelope should carry. `None` until the
     // first one arrives, since a subscription starts wherever the process is.
     let mut expected: Option<u64> = None;
@@ -433,7 +503,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
             // `y`/`n` only go live once the card's sentence actually reached
             // a frame, so the renderer reports back what it painted.
             let mut painted = ui::Painted::default();
-            terminal.draw(|frame| painted = ui::draw(frame, &state))?;
+            terminal.draw(|frame| painted = ui::draw(frame, state))?;
             state.dirty = false;
             state.painted(painted);
         }
@@ -442,7 +512,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
             match event::read()? {
                 Event::Key(key) => {
                     state.status = None;
-                    let action = keymap.resolve(key, &state);
+                    let action = keymap.resolve(key, state);
                     if action == Action::KillSwitch {
                         if last_kill.is_some_and(|at| at.elapsed() < DOUBLE_KILL) {
                             return Ok(());
@@ -450,7 +520,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
                         last_kill = Some(Instant::now());
                     }
                     if let Some(command) = state.apply_action(action) {
-                        execute(runtime, &mut state, &mut context, command)?;
+                        execute(runtime, terminal, state, context, command)?;
                     }
                 }
                 Event::Resize(..) => state.dirty = true,
@@ -459,17 +529,11 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         }
 
         state.tick(elapsed_ms(context.started));
-        poll_login(runtime, &mut state, &mut context.login, &context.chores);
-        poll_jobs(&mut state, &mut context.jobs);
-        poll_chores(&mut state, &mut context.chores);
-        poll_voice(&mut state, &context.dictation, &mut context.voice);
-        drain(
-            runtime,
-            &mut state,
-            &mut receiver,
-            &mut expected,
-            &context.chores,
-        )?;
+        poll_login(runtime, state, &mut context.login, &context.chores);
+        poll_jobs(state, &mut context.jobs);
+        poll_chores(state, &mut context.chores);
+        poll_voice(state, &context.dictation, &mut context.voice);
+        drain(runtime, state, receiver, &mut expected, &context.chores)?;
         // What this process is doing, in the words another Starkbot will see.
         session.beat(state.activity_line());
 
@@ -744,12 +808,17 @@ fn poll_login(
 
 /// Apply everything the core has published since the last frame.
 ///
-/// A gap in [`Envelope::seq`] means events were missed — a slow frame, or a
-/// burst wider than the channel — and a thread rendered from a partial
-/// stream is worse than one rendered again from scratch, so a gap
-/// re-bootstraps (14 §4). `seq` is what detects it, not `Lagged`: a burst
-/// that arrives while this loop is inside `terminal.draw` is missed without
-/// the channel ever reporting it.
+/// A break in [`Envelope::seq`] means this front end is not looking at the
+/// stream it thinks it is — a thread rendered from a partial one is worse
+/// than one rendered again from scratch, so a break re-bootstraps (14 §4).
+/// `seq` is what detects it, not `Lagged`: a burst that arrives while this
+/// loop is inside `terminal.draw` is missed without the channel ever
+/// reporting it.
+///
+/// A number *below* what was expected counts. It means the publisher
+/// restarted its counter or a prefix is being replayed, and the previous
+/// `seq > next` test accepted that silently — applying a second copy of
+/// every event it had already seen.
 fn drain(
     runtime: &Arc<Runtime>,
     state: &mut State,
@@ -760,10 +829,15 @@ fn drain(
     loop {
         match receiver.try_recv() {
             Ok(Envelope { seq, event, .. }) => {
-                let missed = expected.is_some_and(|next| seq > next);
+                let broken = expected.is_some_and(|next| seq != next);
                 *expected = Some(seq + 1);
-                if missed {
-                    rebootstrap(runtime, state, chores, "events were missed — re-reading")?;
+                if broken {
+                    rebootstrap(
+                        runtime,
+                        state,
+                        chores,
+                        "the event stream broke — re-reading",
+                    )?;
                 }
                 state.apply(event);
             }
@@ -842,8 +916,9 @@ fn steer(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, run: Run
 /// already depended on. The budget is asserted rather than hoped for — but
 /// only in debug builds, because a release must not kill a session over a
 /// slow disk.
-fn execute(
+fn execute<B: Backend>(
     runtime: &Arc<Runtime>,
+    terminal: &mut Terminal<B>,
     state: &mut State,
     context: &mut Loop,
     command: Command,
@@ -853,7 +928,7 @@ fn execute(
     // for it is the feature, not the bug.
     let hands_over_the_terminal = matches!(command, Command::ConnectSubscription { .. });
     let started = Instant::now();
-    let outcome = dispatch(runtime, state, context, command);
+    let outcome = dispatch(runtime, terminal, state, context, command);
     debug_assert!(
         hands_over_the_terminal || started.elapsed() < FRAME_BUDGET,
         "a command held the frame loop for {} ms; start it as a chore instead",
@@ -863,8 +938,9 @@ fn execute(
 }
 
 #[allow(clippy::too_many_lines)]
-fn dispatch(
+fn dispatch<B: Backend>(
     runtime: &Arc<Runtime>,
+    terminal: &mut Terminal<B>,
     state: &mut State,
     context: &mut Loop,
     command: Command,
@@ -992,7 +1068,7 @@ fn dispatch(
         // the vendor's own prompts take, and comes back. Spawning it would
         // put two writers on one tty.
         Command::ConnectSubscription { provider } => {
-            let outcome = with_terminal_released(|| {
+            let outcome = with_terminal_released(terminal, || {
                 tokio::runtime::Handle::current().block_on(connect(runtime, provider))
             });
             spawn_reload(
@@ -1095,6 +1171,16 @@ fn dispatch(
             if let Err(error) = runtime.answer_ask(ask, answer, via) {
                 state.note(format!("that answer could not be delivered: {error}"));
             }
+        }
+        // `Ctrl-L` is for a screen something else wrote over, so the
+        // display and ratatui's back buffer disagree. Clearing resets both
+        // — the diff the next frame computes is against a blank buffer, so
+        // the whole UI is emitted again.
+        Command::Redraw => {
+            terminal
+                .clear()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            state.dirty = true;
         }
         Command::ReBootstrap => {
             rebootstrap(runtime, state, &context.chores, "re-reading the core")?;
@@ -1424,17 +1510,43 @@ fn account_note(
 
 /// Leave the alternate screen, run `body`, and take the terminal back.
 ///
-/// Restoring first means the vendor's own prompts and its browser handoff are
-/// visible; re-initialising afterwards redraws from scratch.
-fn with_terminal_released<T>(body: impl FnOnce() -> T) -> T {
+/// Restoring first means the vendor's own prompts and its browser handoff
+/// are visible. Coming back is the half that has to be done deliberately.
+/// This used to call `ratatui::try_init()` and throw away the
+/// `DefaultTerminal` it returned, which broke the screen twice over:
+/// re-entering the alternate buffer blanks the display while the terminal
+/// the loop still draws through holds the pre-handover frame in its back
+/// buffer, so the next `draw` writes only a diff against a frame nobody can
+/// see and most of the UI never repaints — and `try_init` installs a panic
+/// hook chained onto the previous one, so every login left another copy
+/// behind.
+///
+/// So the screen is re-entered with the two crossterm calls `try_init`
+/// would have made, the terminal this front end already owns is kept, and
+/// `Terminal::clear` resets its back buffer so the next
+/// frame is drawn whole. The panic hook installed once by [`TerminalGuard`]
+/// stays the only one.
+fn with_terminal_released<B: Backend, T>(
+    terminal: &mut Terminal<B>,
+    body: impl FnOnce() -> T,
+) -> T {
     if let Err(error) = ratatui::try_restore() {
         tracing::warn!(%error, "could not hand the terminal over");
     }
     let outcome = body();
-    if let Err(error) = ratatui::try_init() {
+    if let Err(error) = reclaim_terminal(terminal) {
         tracing::warn!(%error, "could not take the terminal back");
     }
     outcome
+}
+
+/// Re-enter the alternate screen and make the next frame a full repaint.
+fn reclaim_terminal<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal
+        .clear()
+        .map_err(|error| io::Error::other(error.to_string()))
 }
 
 /// Ask the vendor what a stored key is worth.
@@ -1532,10 +1644,7 @@ mod tests {
     /// The same data directory the CLI uses, so the test sees the real
     /// credentials and the real selected runtime.
     fn dirs_data_dir() -> std::path::PathBuf {
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default()
-            .join("Library/Application Support/com.starkbot.neo")
+        neo_core::paths::data_dir().unwrap_or_default()
     }
 
     /// The frame loop runs inside `block_in_place`, and every unit of work the
@@ -1611,10 +1720,12 @@ mod tests {
                     .expect("the file keychain stores a key");
                 let mut state = State::new(runtime.bootstrap().expect("a bootstrap"));
                 let mut context = frame_loop_context();
+                let mut terminal = offscreen_terminal();
 
                 let started = Instant::now();
                 execute(
                     &runtime,
+                    &mut terminal,
                     &mut state,
                     &mut context,
                     Command::CheckKey {
@@ -1668,10 +1779,17 @@ mod tests {
                 let (runtime, _listener) = hung_vendor(&dir);
                 let mut state = State::new(bootstrap());
                 let mut context = frame_loop_context();
+                let mut terminal = offscreen_terminal();
 
                 let started = Instant::now();
-                execute(&runtime, &mut state, &mut context, Command::Doctor)
-                    .expect("the command is applied");
+                execute(
+                    &runtime,
+                    &mut terminal,
+                    &mut state,
+                    &mut context,
+                    Command::Doctor,
+                )
+                .expect("the command is applied");
                 let held = started.elapsed();
 
                 assert!(
@@ -1810,5 +1928,11 @@ mod tests {
             voice: None,
             started: Instant::now(),
         }
+    }
+
+    /// A terminal off the tty: `execute` takes one because two of its arms
+    /// own the screen, and neither of them is exercised here.
+    fn offscreen_terminal() -> Terminal<ratatui::backend::TestBackend> {
+        Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("an offscreen terminal")
     }
 }

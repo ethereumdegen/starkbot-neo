@@ -137,11 +137,20 @@ pub struct StepEvent {
 
 pub struct RunConfig {
     pub goal: String,
+    /// Ask the risk heads (`rules::SAFETY`) on every step.
     pub safety_heads: bool,
     /// The probability at which a safety head becomes a confirm card.
     pub confirm_at: f64,
     /// Hosts this run may never act on (10 §7).
     pub denied_origins: Vec<String>,
+    /// How sure Jev must stay that the page still serves the goal.
+    ///
+    /// A floor, not a ceiling: `on_task` answers "still on task?", so low is
+    /// the dangerous direction — the opposite of the three risk heads. `0.0`
+    /// disables the check, and the head is then not asked for at all. Above
+    /// zero it is both the question's threshold and the gate's: two answers
+    /// in a row below it end the run (`gate::MAX_OFF_TASK_STRIKES`).
+    pub on_task_floor: f32,
 }
 
 pub struct Navigator<O: Observer> {
@@ -288,6 +297,7 @@ impl<O: Observer> Navigator<O> {
                 &config.goal,
                 &self.history,
                 config.safety_heads,
+                config.on_task_floor,
             );
             let evaluation = self
                 .jev
@@ -334,16 +344,23 @@ impl<O: Observer> Navigator<O> {
                 });
             }
 
-            // The run wandered off the goal, or page text talked the
-            // classifier into somebody else's task.
-            if let Some(reason) = self.gate().on_task(&decision.safety) {
-                on_step(&event);
-                return Ok(self.blocked(reason));
-            }
-
             let Some(action) = decision.action.clone() else {
                 return Ok(self.blocked(BlockReason::NoAction));
             };
+
+            // The run wandered off the goal, or page text talked the
+            // classifier into somebody else's task. A WAIT is exempt: it
+            // mutates nothing, and a page that is still loading is exactly
+            // the page whose on-task score is about to recover.
+            let waiting = action.get("kind").and_then(Value::as_str) == Some("wait");
+            if !waiting
+                && let Some(reason) = self
+                    .gate()
+                    .on_task(&decision.safety, f64::from(config.on_task_floor))
+            {
+                on_step(&event);
+                return Ok(self.blocked(reason));
+            }
 
             // An approval is spent only on the action it was given for.
             let pre_approved = self

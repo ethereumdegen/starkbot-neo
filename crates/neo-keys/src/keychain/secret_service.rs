@@ -1,47 +1,86 @@
-//! Linux storage: the session's Secret Service provider, over D-Bus.
+//! The session's Secret Service (`org.freedesktop.secrets`) as a keychain
+//! backend — Linux's login Keychain.
 //!
-//! Secret Service is the freedesktop API that gnome-keyring, KWallet and
-//! KeePassXC all implement, so one backend covers every desktop a Starkbot
-//! user is likely to run. We talk to it with the `secret-service` crate rather
-//! than `keyring`: `keyring`'s Linux path is this same crate plus a
-//! credential-store abstraction we would not use (we already have our own
-//! `Keychain` seam and our own file backend), and `libsecret-sys` would put a
-//! C library and its headers on the build machine. `secret-service` with
-//! `rt-async-io-crypto-rust` is pure Rust — a stock Ubuntu box needs no
-//! `-dev` package to build Starkbot.
+//! One item per account in the **default** collection, carrying the two
+//! attributes `service` and `account` and nothing else. Those are libsecret's
+//! own names, so the item this crate writes is exactly the item
+//! `secret-tool lookup service com.starkbot.neo account openai` finds: a
+//! lookup matches an item whose attributes are a superset of the query, so a
+//! third attribute here would still be found, while a third one on the
+//! command line would not find ours.
 //!
-//! The session is DH-encrypted (`EncryptionType::Dh`), not plain: a plain
-//! session would push the key material through the session bus in clear text,
-//! where any process that can talk to the bus could watch it go past.
-//!
-//! Nothing from `secret_service` crosses this module's edge: the three
-//! functions below speak bytes and [`KeychainError`], so the shared code in
-//! the parent module compiles identically on every platform.
+//! Every call runs on a thread of its own. `secret-service`'s blocking API
+//! drives zbus through `tokio::runtime::Runtime::block_on` — that is what
+//! zbus's `tokio` feature does — and `block_on` panics when the calling
+//! thread is already driving a runtime, which `Runtime::secret` and the OAuth
+//! store both are. zbus keeps its own reactor, so the thread spawned here
+//! only parks until the round trip returns.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use secret_service::blocking::{Collection, SecretService};
-use secret_service::{EncryptionType, Error as ServiceError};
+use secret_service::{EncryptionType, Error};
 
 use super::KeychainError;
 
-/// Lookup attributes. `service`/`account` mirror `kSecAttrService` and
-/// `kSecAttrAccount` on macOS so both backends address an item the same way.
-const SERVICE_ATTRIBUTE: &str = "service";
-const ACCOUNT_ATTRIBUTE: &str = "account";
+/// The bus name a Secret Service provider owns.
+const BUS_NAME: &str = "org.freedesktop.secrets";
 
-/// What the stored bytes are. Every Starkbot secret is UTF-8 — a vendor key or
-/// our own JSON credential blob.
+/// The two attributes `secret-tool` takes on its command line.
+const ATTRIBUTE_SERVICE: &str = "service";
+const ATTRIBUTE_ACCOUNT: &str = "account";
+
+/// A stored credential is always UTF-8 ([`super::Keychain::get`] refuses
+/// anything else), so the item is text — which is what `secret-tool lookup`
+/// prints and what another keyring front end will show the user.
 const CONTENT_TYPE: &str = "text/plain";
 
+/// Is there a Secret Service provider on this session's bus?
+///
+/// Memoized: the answer cannot change without the session restarting, and
+/// every `Keychain::new` asks.
+pub(super) fn available() -> bool {
+    static AVAILABLE: LazyLock<bool> = LazyLock::new(|| off_thread(probe));
+    *AVAILABLE
+}
+
+fn probe() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    let Ok(bus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(BUS_NAME) else {
+        return false;
+    };
+    if let Ok(true) = bus.name_has_owner(name) {
+        return true;
+    }
+    // A provider that is activatable but not started yet is still a keyring:
+    // the first `connect` starts it. Only a session with no provider at all
+    // falls back to the file.
+    match bus.list_activatable_names() {
+        Ok(names) => names.iter().any(|name| name.as_str() == BUS_NAME),
+        Err(_) => false,
+    }
+}
+
 pub(super) fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, KeychainError> {
-    with_collection("read", account, |collection| {
-        match collection
-            .search_items(attributes(service, account))?
-            .first()
-        {
+    run("read", account, || {
+        let bus = SecretService::connect(EncryptionType::Dh)?;
+        let collection = unlocked(&bus)?;
+        let items = collection.search_items(attributes(service, account))?;
+        match items.first() {
+            // The collection is unlocked by now, which is all gnome-keyring
+            // locks; the spec lets a provider lock an item on its own, and
+            // KeePassXC does. Same prompt, same mapping — asking first costs
+            // one property read.
             Some(item) => {
-                item.ensure_unlocked()?;
+                if item.is_locked()? {
+                    item.unlock()?;
+                }
                 Ok(Some(item.get_secret()?))
             }
             None => Ok(None),
@@ -50,10 +89,13 @@ pub(super) fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, Keych
 }
 
 pub(super) fn set(service: &str, account: &str, secret: &[u8]) -> Result<(), KeychainError> {
-    let label = format!("{service}: {account}");
-    with_collection("write", account, |collection| {
-        // `replace` matches `SecItemUpdate`-or-add: one account, one item, so a
-        // re-entered key does not leave the old one behind in Seahorse.
+    let label = format!("Starkbot Neo — {account}");
+    run("write", account, || {
+        let bus = SecretService::connect(EncryptionType::Dh)?;
+        let collection = unlocked(&bus)?;
+        // `replace` makes this the upsert `set_generic_password` is on macOS:
+        // storing twice leaves one item, not two items one of which `get`
+        // will never reach.
         collection.create_item(
             &label,
             attributes(service, account),
@@ -65,9 +107,13 @@ pub(super) fn set(service: &str, account: &str, secret: &[u8]) -> Result<(), Key
     })
 }
 
-/// An account with nothing stored is already deleted.
 pub(super) fn delete(service: &str, account: &str) -> Result<(), KeychainError> {
-    with_collection("delete", account, |collection| {
+    run("delete", account, || {
+        let bus = SecretService::connect(EncryptionType::Dh)?;
+        let collection = unlocked(&bus)?;
+        // Every match, not the first. Two items can carry the same attributes
+        // — another front end can write one — and leaving one behind would
+        // have `get` keep returning a credential the user deleted.
         for item in collection.search_items(attributes(service, account))? {
             item.delete()?;
         }
@@ -75,94 +121,157 @@ pub(super) fn delete(service: &str, account: &str) -> Result<(), KeychainError> 
     })
 }
 
-fn attributes<'a>(service: &'a str, account: &'a str) -> HashMap<&'a str, &'a str> {
-    HashMap::from([(SERVICE_ATTRIBUTE, service), (ACCOUNT_ATTRIBUTE, account)])
+/// The default collection, unlocked.
+///
+/// `ensure_unlocked` only reports the state; `unlock` is what raises the
+/// provider's own prompt, which is how a locked login keyring is meant to be
+/// opened. Dismissing that prompt arrives as [`Error::Prompt`] and becomes
+/// [`KeychainError::Cancelled`] — never "no such account", which is the one
+/// confusion a caller cannot recover from: it would tell the user to store a
+/// key they had already stored.
+fn unlocked<'a>(bus: &'a SecretService<'a>) -> Result<Collection<'a>, Error> {
+    let collection = bus.get_default_collection()?;
+    if collection.is_locked()? {
+        collection.unlock()?;
+        collection.ensure_unlocked()?;
+    }
+    Ok(collection)
 }
 
-/// Run one operation against the default collection, on a thread of its own.
-///
-/// The `secret-service` blocking API is a `block_on` around zbus, and zbus
-/// says plainly that blocking on an async executor's own thread may stall that
-/// executor. Every caller of `Keychain` is potentially inside the Tokio
-/// runtime — the TUI frame loop and `Runtime`'s key checks both are — so the
-/// D-Bus round trip happens on a scoped thread that belongs to no runtime. The
-/// thread also keeps the connection's lifetime to one operation, which is what
-/// makes `Keychain` `Send + Sync` without a lock.
-fn with_collection<T: Send>(
+fn attributes<'a>(service: &'a str, account: &'a str) -> HashMap<&'a str, &'a str> {
+    HashMap::from([(ATTRIBUTE_SERVICE, service), (ATTRIBUTE_ACCOUNT, account)])
+}
+
+fn run<T: Send>(
     operation: &'static str,
     account: &str,
-    task: impl FnOnce(&Collection<'_>) -> Result<T, ServiceError> + Send,
+    work: impl FnOnce() -> Result<T, Error> + Send,
 ) -> Result<T, KeychainError> {
-    let outcome = std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                let service = SecretService::connect(EncryptionType::Dh)?;
-                let collection = service.get_any_collection()?;
-                collection.ensure_unlocked()?;
-                task(&collection)
-            })
-            .join()
-    });
-    match outcome {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(translate(operation, account, &error)),
-        // A panic in the D-Bus thread is a bug, not a user-fixable condition;
-        // it still must not take the process down with it.
-        Err(_) => Err(KeychainError::Store {
-            operation,
-            account: account.to_owned(),
-            detail: "the secret store thread panicked".to_owned(),
-        }),
-    }
+    off_thread(work).map_err(|error| map(operation, account, &error))
 }
 
-/// Name the two conditions a user can actually fix, and pass everything else
-/// through as a diagnostic. Neither path can carry the stored value: a D-Bus
-/// error is a name and a message from the provider, never the payload.
-fn translate(operation: &'static str, account: &str, error: &ServiceError) -> KeychainError {
-    if is_absent(error) {
-        return KeychainError::NoSecretService;
-    }
+/// Run `work` where no tokio runtime is entered, and wait for it.
+fn off_thread<T: Send>(work: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| match scope.spawn(work).join() {
+        Ok(value) => value,
+        // `thread::scope` re-raises it when this closure returns anyway;
+        // doing it here keeps the panic at the call site it came from.
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
+/// The same three outcomes the macOS backend maps, from the same three
+/// situations: the keyring is locked (`errSecInteractionNotAllowed`), the
+/// provider refused (`errSecAuthFailed`), or the user dismissed the prompt
+/// (`errUserCanceled`). A caller therefore never needs a `cfg` to decide what
+/// to tell the user.
+fn map(operation: &'static str, account: &str, error: &Error) -> KeychainError {
+    let account = account.to_owned();
     match error {
-        // `Locked` is a collection that refused to open; `Prompt` is the user
-        // dismissing the unlock dialog; `PromptDisconnected` is that dialog
-        // dying. All three mean the same thing to the user: unlock the keyring.
-        ServiceError::Locked | ServiceError::Prompt | ServiceError::PromptDisconnected => {
-            KeychainError::SecretStoreLocked {
-                operation,
-                account: account.to_owned(),
-            }
+        Error::Locked => KeychainError::Locked { operation, account },
+        Error::Prompt => KeychainError::Cancelled { operation, account },
+        Error::ZbusFdo(zbus::fdo::Error::AccessDenied(_)) => {
+            KeychainError::Denied { operation, account }
         }
-        other => KeychainError::Store {
+        // In this module `NoResult` can only come from the default-collection
+        // lookup: an empty search is an empty `Vec`, not an error. So it means
+        // the provider has no `default` alias — a keyring that was never set
+        // up — and saying so is the difference between a user who runs
+        // `seahorse` and a user who retypes a key that is already stored.
+        Error::NoResult => KeychainError::Keychain {
             operation,
-            account: account.to_owned(),
-            detail: other.to_string(),
+            account,
+            detail: "the secret service has no default collection".to_owned(),
+        },
+        error => KeychainError::Keychain {
+            operation,
+            account,
+            detail: error.to_string(),
         },
     }
 }
 
-/// Is this "nothing is listening"?
-///
-/// Two shapes reach us. `Unavailable` is no session bus at all (no
-/// `DBUS_SESSION_BUS_ADDRESS`, or its socket is gone) — an ssh session or a
-/// container. A bus that *is* running but has no Secret Service provider — a
-/// stock Ubuntu Server, which ships no keyring daemon — answers the first
-/// method call with the D-Bus error `ServiceUnknown`, and that is the case
-/// `doctor` sees most often, so it must not fall through to a generic failure.
-fn is_absent(error: &ServiceError) -> bool {
-    match error {
-        ServiceError::Unavailable => true,
-        ServiceError::Zbus(zbus::Error::MethodError(name, _, _)) => {
-            matches!(
-                name.as_str(),
-                "org.freedesktop.DBus.Error.ServiceUnknown"
-                    | "org.freedesktop.DBus.Error.NameHasNoOwner"
-            )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dismissal of an unlock prompt, a locked keyring and an empty
+    /// keyring are three different situations, and the caller acts on each
+    /// differently. Collapse `Prompt` into "not found" — the shape the
+    /// Secret Service API makes easiest, since a missing item is also a
+    /// missing item — and `bootstrap()` asks the user to store a credential
+    /// they already have.
+    #[test]
+    fn a_dismissed_prompt_is_not_a_missing_account() {
+        assert!(matches!(
+            map("read", "openai", &Error::Prompt),
+            KeychainError::Cancelled { .. }
+        ));
+        assert!(matches!(
+            map("read", "openai", &Error::Locked),
+            KeychainError::Locked { .. }
+        ));
+        let denied = Error::ZbusFdo(zbus::fdo::Error::AccessDenied(String::new()));
+        assert!(matches!(
+            map("write", "openai", &denied),
+            KeychainError::Denied { .. }
+        ));
+        match map("read", "openai", &Error::NoResult) {
+            KeychainError::Keychain { detail, .. } => {
+                assert!(detail.contains("default collection"));
+            }
+            other => panic!("expected a keychain error, got {other:?}"),
         }
-        ServiceError::ZbusFdo(error) => matches!(
-            error,
-            zbus::fdo::Error::ServiceUnknown(_) | zbus::fdo::Error::NameHasNoOwner(_)
-        ),
-        _ => false,
+    }
+
+    /// No error built from a provider failure can carry the value: the only
+    /// free text is the provider's own message.
+    #[test]
+    fn errors_never_quote_the_stored_value() {
+        let error = map("read", "openai", &Error::Crypto("bad padding"));
+
+        let message = error.to_string();
+        assert!(message.contains("openai"));
+        assert!(!message.contains("sk-"));
+    }
+
+    /// The real provider on this session, which the rest of the suite must not
+    /// touch: it writes to the user's own default collection, and a locked
+    /// keyring raises a prompt that would look like a hang behind
+    /// `cargo test`.
+    ///
+    /// **Inside a multi-threaded runtime on purpose.** Every caller of
+    /// `Keychain::get` is: `Runtime::secret` and the OAuth store are both
+    /// reached from async code. `zbus`'s `tokio` feature makes its blocking
+    /// API call `Runtime::block_on`, which panics outright when the calling
+    /// thread is already driving a runtime — so without [`off_thread`] this
+    /// test panics on the first bus call while a plain `#[test]` would pass,
+    /// and the panic would only show up in the shipped app.
+    ///
+    /// Run it deliberately: `cargo test -p neo-keys -- --ignored`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "writes to the session's real keyring and may raise an unlock prompt"]
+    async fn the_session_keyring_round_trips_a_long_secret() {
+        let service = format!("com.starkbot.neo.test.ss.{}", std::process::id());
+        let value = "k".repeat(700);
+
+        if let Err(error) = set(&service, "openai", value.as_bytes()) {
+            panic!("{error}");
+        }
+        let read_back = get(&service, "openai");
+        let deleted = delete(&service, "openai");
+        let after = get(&service, "openai");
+
+        match read_back {
+            Ok(Some(bytes)) => assert_eq!(bytes, value.as_bytes()),
+            other => panic!("expected the value back, got {other:?}"),
+        }
+        if let Err(error) = deleted {
+            panic!("{error}");
+        }
+        match after {
+            Ok(None) => {}
+            other => panic!("expected the item to be gone, got {other:?}"),
+        }
     }
 }

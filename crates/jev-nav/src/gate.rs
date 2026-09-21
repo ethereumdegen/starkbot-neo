@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::policy::{Action, Decision};
+use crate::rules::{ON_TASK, SAFETY};
 
 /// Words in a control's label that make an action a confirm, regardless of
 /// what the safety heads believed about it.
@@ -56,14 +57,16 @@ pub const CONFIRM_WORDS: &[&str] = &[
     "confirm and",
 ];
 
-/// How far below certainty the `on_task` head may sit before a strike, and how
-/// many strikes end the run.
+/// The default for [`crate::RunConfig::on_task_floor`], and how many answers
+/// below that floor end the run.
 ///
 /// One low answer is normal: an intermediate page — a consent banner, a
 /// redirect, a loading screen — is not "relevant to the goal" in any obvious
 /// way. Two in a row means the run has wandered, or page text has talked the
 /// classifier into somebody else's task, which is what this tripwire is for
-/// (10 §6).
+/// (10 §6). The floor itself is a setting rather than this constant, because
+/// a run that asks for no drift head at all (`0.0`) must not be struck for
+/// the answer it never asked for.
 pub const ON_TASK_FLOOR: f64 = 0.5;
 pub const MAX_OFF_TASK_STRIKES: u32 = 2;
 
@@ -239,7 +242,7 @@ impl Gate {
             }
         }
         if self.safety_heads {
-            for head in ["outward", "destructive", "spends"] {
+            for &(head, _) in SAFETY {
                 // Fail closed (A-Q7): `policy::resolve` refuses a response
                 // that omitted a head, so an absent one here means nobody
                 // wired it — and the unknown scores as risky.
@@ -286,15 +289,24 @@ impl Gate {
         }
     }
 
-    /// The `on_task` tripwire: two consecutive answers under the floor end the
-    /// run. Anything at or above the floor forgives the earlier strike.
-    pub fn on_task(&mut self, safety: &BTreeMap<String, f64>) -> Option<BlockReason> {
-        if !self.safety_heads {
+    /// The `on_task` tripwire: two consecutive answers under `floor` end the
+    /// run. Anything at or above it forgives the earlier strike.
+    ///
+    /// A `floor` of zero is the run opting out, and then there is nothing to
+    /// strike: `policy::build_request` does not even ask the drift head, and
+    /// a head nobody asked for must never read as drift. Above zero the head
+    /// was asked, so it was answered or the step already failed — an absent
+    /// answer here means nobody wired it, and the unknown scores as drifted
+    /// for the same reason the confirm heads fail closed.
+    ///
+    /// Independent of `safety_heads`: the risk ceilings and the drift floor
+    /// are separate questions, and a run may want either without the other.
+    pub fn on_task(&mut self, safety: &BTreeMap<String, f64>, floor: f64) -> Option<BlockReason> {
+        if floor <= 0.0 {
             return None;
         }
-        // Fail closed for the same reason the confirm heads do.
-        let answer = safety.get("on_task").copied().unwrap_or(0.0);
-        if answer >= ON_TASK_FLOOR {
+        let answer = safety.get(ON_TASK.0).copied().unwrap_or(0.0);
+        if answer >= floor {
             self.off_task_strikes = 0;
             return None;
         }
@@ -514,9 +526,29 @@ mod tests {
         let on = BTreeMap::from([("on_task".to_owned(), 0.9)]);
         let off = BTreeMap::from([("on_task".to_owned(), 0.1)]);
 
-        assert_eq!(gate.on_task(&off), None);
-        assert_eq!(gate.on_task(&on), None, "a good answer clears the strike");
-        assert_eq!(gate.on_task(&off), None);
-        assert_eq!(gate.on_task(&off), Some(BlockReason::OffTask));
+        assert_eq!(gate.on_task(&off, ON_TASK_FLOOR), None);
+        assert_eq!(
+            gate.on_task(&on, ON_TASK_FLOOR),
+            None,
+            "a good answer clears the strike"
+        );
+        assert_eq!(gate.on_task(&off, ON_TASK_FLOOR), None);
+        assert_eq!(
+            gate.on_task(&off, ON_TASK_FLOOR),
+            Some(BlockReason::OffTask)
+        );
+    }
+
+    /// A run with the floor at zero never asked the drift head, so nothing
+    /// answered it — and an unanswered question must not end the run. This is
+    /// the one reading that would make the setting unusable.
+    #[test]
+    fn a_floor_of_zero_never_strikes() {
+        let mut gate = gate();
+        let nothing = BTreeMap::new();
+
+        for _ in 0..MAX_OFF_TASK_STRIKES + 1 {
+            assert_eq!(gate.on_task(&nothing, 0.0), None);
+        }
     }
 }

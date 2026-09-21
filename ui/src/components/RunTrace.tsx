@@ -42,10 +42,6 @@ function StepCard({ step }: { step: RunStep }) {
           ))}
         </ul>
       )}
-      {/* What the navigator did inside this action, while it is doing it:
-          the card is the only place these lines belong, and a step that is
-          still running is the one they arrived under. */}
-      {step.nav.length > 0 && <NavLines entries={step.nav} />}
       {running ? (
         <div className={styles.pending} aria-live="polite">
           working…

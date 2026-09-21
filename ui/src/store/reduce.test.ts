@@ -165,34 +165,6 @@ describe("a turn the window is watching happen", () => {
     expect(record.usage?.output_tokens).toBe(40);
     expect(record.steers).toEqual(["per seat, not per org"]);
   });
-
-  it("files a navigator line under the step that was open when it arrived", () => {
-    const state = play([
-      [{ type: "turn_started", run: RUN, conversation: CONVERSATION }, 1],
-      [
-        {
-          type: "turn_step",
-          run: RUN,
-          step: 0,
-          thought: "open the pricing page",
-          action: { kind: "browse", target: "https://example.com", goal: "read it", text: null },
-        },
-        2,
-      ],
-      [{ type: "nav_step", run: RUN, step: 7, line: "launched chrome", kind: { kind: "launch" } }, 3],
-      [
-        { type: "turn_step_done", run: RUN, step: 0, observation: "$20 per seat", duration_ms: 900 },
-        4,
-      ],
-      // Between two steps nothing is open: a line here belongs to no card
-      // rather than to the one that just closed.
-      [{ type: "nav_step", run: RUN, step: 8, line: "closed chrome", kind: { kind: "summary" } }, 5],
-    ]);
-
-    const record = state.runs.byId[RUN];
-    expect(record.steps[0].nav.map((entry) => entry.line)).toEqual(["launched chrome"]);
-    expect(record.kind).toBe("chat");
-  });
 });
 
 describe("a run that ends badly", () => {
@@ -200,7 +172,15 @@ describe("a run that ends badly", () => {
     clock = 1_700_000_000_000;
     const state = play([
       [{ type: "turn_started", run: RUN, conversation: CONVERSATION }, 1],
-      [{ type: "turn_failed", run: RUN, error: "the model returned no action" }, 2],
+      [
+        {
+          type: "turn_failed",
+          run: RUN,
+          error: "the model returned no action",
+          code: "agent_graph",
+        },
+        2,
+      ],
     ]);
 
     const record = state.runs.byId[RUN];
@@ -210,13 +190,41 @@ describe("a run that ends badly", () => {
     expect(elapsedMs(record, 9_999_999_999_999)).toBe(1000);
   });
 
-  it("calls a cancelled run stopped, not broken", () => {
+  // The classification comes off the event, not off the sentence. A reword
+  // on either side of the bridge used to turn every stopped run red.
+  it("calls a run stopped when the code says so, whatever the sentence says", () => {
     const state = play([
       [{ type: "turn_started", run: RUN, conversation: CONVERSATION }, 1],
-      [{ type: "turn_failed", run: RUN, error: "cancelled" }, 2],
+      [
+        {
+          type: "turn_failed",
+          run: RUN,
+          error: "the run was stopped after 3 steps",
+          code: "cancelled",
+        },
+        2,
+      ],
     ]);
 
     expect(state.runs.byId[RUN].status).toBe("cancelled");
+    expect(state.runs.byId[RUN].code).toBe("cancelled");
+  });
+
+  it("does not call a run stopped because its sentence mentions cancelling", () => {
+    const state = play([
+      [{ type: "turn_started", run: RUN, conversation: CONVERSATION }, 1],
+      [
+        {
+          type: "turn_failed",
+          run: RUN,
+          error: "the vendor cancelled the subscription",
+          code: "agent_request",
+        },
+        2,
+      ],
+    ]);
+
+    expect(state.runs.byId[RUN].status).toBe("failed");
   });
 
   it("tells a turn the user stopped from one that answered", () => {
@@ -396,7 +404,95 @@ describe("navigator lines", () => {
     expect(entries.map((entry) => entry.kind.kind)).toEqual(["launch", "decision"]);
     const decision = entries[1].kind;
     expect(decision.kind === "decision" && decision.operation).toBe("click");
-    expect(state.runs.byId[RUN].kind).toBe("nav");
+    // A navigator line is traced, but it opens no run record: nothing
+    // publishes a terminal event for a run this window did not start, so
+    // one seeded here would sit at `running` for the life of the window.
+    expect(state.runs.byId[RUN]).toBeUndefined();
+    expect(state.runs.order).toEqual([]);
+  });
+
+  it("keeps at most TRACE_CAP lines for one run", () => {
+    const lines: [AppEvent, number][] = [];
+    for (let step = 0; step < 320; step += 1) {
+      lines.push([
+        { type: "nav_step", run: RUN, step, line: `line ${step}`, kind: { kind: "outcome" } },
+        step + 1,
+      ]);
+    }
+    const entries = play(lines).trace.nav[RUN];
+
+    expect(entries).toHaveLength(300);
+    // The tail is what is kept: a long run's interesting part is its end.
+    expect(entries[entries.length - 1].line).toBe("line 319");
+    expect(entries[0].line).toBe("line 20");
+  });
+});
+
+describe("the run list's bounds", () => {
+  function chatRun(index: number): string {
+    return `0192f2cd-0000-7000-8000-${String(index).padStart(12, "0")}`;
+  }
+
+  /**
+   * The window is meant to stay open all day, so the list is capped — but a
+   * *running* run is never the one dropped. It is the one the Stop button
+   * has to be able to reach, and a run evicted while live would also never
+   * be settled by its own terminal event.
+   */
+  it("drops the oldest settled runs and never a running one", () => {
+    const events: [AppEvent, number][] = [];
+    let seq = 1;
+    // The first run is still going; the next sixty finish.
+    events.push([{ type: "turn_started", run: chatRun(0), conversation: CONVERSATION }, seq++]);
+    for (let index = 1; index <= 60; index += 1) {
+      events.push([
+        { type: "turn_started", run: chatRun(index), conversation: CONVERSATION },
+        seq++,
+      ]);
+      events.push([
+        {
+          type: "turn_finished",
+          run: chatRun(index),
+          text: "done",
+          steps: 1,
+          exhausted: false,
+          usage: null,
+        },
+        seq++,
+      ]);
+    }
+    const runs = play(events).runs;
+
+    expect(runs.order).toHaveLength(50);
+    expect(Object.keys(runs.byId)).toHaveLength(50);
+    expect(runs.order).toContain(chatRun(0));
+    expect(runs.byId[chatRun(0)].status).toBe("running");
+    // Newest first, and the oldest settled runs are the ones gone.
+    expect(runs.order[0]).toBe(chatRun(60));
+    expect(runs.byId[chatRun(1)]).toBeUndefined();
+  });
+
+  it("keeps at most TURN_CARD_CAP step cards for one turn", () => {
+    const events: [AppEvent, number][] = [
+      [{ type: "turn_started", run: RUN, conversation: CONVERSATION }, 1],
+    ];
+    for (let step = 0; step < 50; step += 1) {
+      events.push([
+        {
+          type: "turn_step",
+          run: RUN,
+          step,
+          thought: `thought ${step}`,
+          action: { kind: "answer", target: null, goal: null, text: null },
+        },
+        step + 2,
+      ]);
+    }
+    const steps = play(events).runs.byId[RUN].steps;
+
+    expect(steps).toHaveLength(40);
+    expect(steps[0].step).toBe(10);
+    expect(steps[steps.length - 1].step).toBe(49);
   });
 });
 

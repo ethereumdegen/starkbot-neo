@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Terminal front end for Starkbot Neo: renders core state, sends typed commands (P12)."
+# An application crate, never a crates.io library.
 publish = false
 
 [lints]

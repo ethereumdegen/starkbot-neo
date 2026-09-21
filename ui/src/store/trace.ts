@@ -1,4 +1,5 @@
 import type { AppEvent, EvalCaseState, NavStepKind, RunId } from "../bridge/api";
+import { RUNS_CAP } from "./runs";
 
 /**
  * One navigator line as the backend rendered it, plus the structure behind
@@ -29,12 +30,41 @@ export interface TraceState {
 
 export const initialTrace: TraceState = { nav: {}, evals: {} };
 
+/**
+ * How many lines one run's trace keeps, mirroring `neo_tui::runs::TRACE_CAP`.
+ * The oldest goes first: a long run's interesting part is its tail, and the
+ * whole trace is persisted core-side regardless of what a window holds.
+ */
+const TRACE_CAP = 300;
+
+/**
+ * Hold the rows for one run, and the traces of at most `RUNS_CAP` runs.
+ *
+ * A trace is keyed by a run id this window may never have started and may
+ * never hear the end of, so without the second bound the map grows for as
+ * long as the window is open. String keys iterate in insertion order, so
+ * the front of `Object.keys` is the least recently opened trace.
+ */
+function hold<T>(
+  traces: Record<RunId, T[]>,
+  run: RunId,
+  rows: T[],
+): Record<RunId, T[]> {
+  const capped = rows.length > TRACE_CAP ? rows.slice(rows.length - TRACE_CAP) : rows;
+  const next = { ...traces, [run]: capped };
+  const runs = Object.keys(next);
+  for (let index = 0; runs.length - index > RUNS_CAP; index += 1) {
+    delete next[runs[index]];
+  }
+  return next;
+}
+
 export function reduceTrace(state: TraceState, event: AppEvent): TraceState {
   switch (event.type) {
     case "nav_step": {
       const entries = state.nav[event.run] ?? [];
       const entry: NavEntry = { step: event.step, line: event.line, kind: event.kind };
-      return { ...state, nav: { ...state.nav, [event.run]: [...entries, entry] } };
+      return { ...state, nav: hold(state.nav, event.run, [...entries, entry]) };
     }
     case "eval_case": {
       const rows = state.evals[event.run] ?? [];
@@ -51,7 +81,7 @@ export function reduceTrace(state: TraceState, event: AppEvent): TraceState {
       if (at !== -1) {
         next[at] = row;
       }
-      return { ...state, evals: { ...state.evals, [event.run]: next } };
+      return { ...state, evals: hold(state.evals, event.run, next) };
     }
     default:
       return state;

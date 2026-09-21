@@ -24,8 +24,29 @@ pub const HOSTED_BASE: &str = "https://api.openai.com";
 /// The only transcription model offered (K3 hides the deprecated ids).
 pub const MODEL: &str = "gpt-transcribe";
 
-/// Per the plan's latency budget: 8 s, one retry.
-const TIMEOUT: Duration = Duration::from_secs(8);
+/// Per the plan's latency budget for a short utterance: 8 s, one retry.
+///
+/// This is a floor, not the whole budget. `reqwest`'s timeout covers the
+/// upload as well as the answer, so a flat 8 s against `MAX_UTTERANCE` —
+/// two minutes, roughly 3.8 MB of 16 kHz mono WAV — made every long
+/// dictation fail deterministically, then retry once and fail again. The
+/// budget grows with what has to be sent.
+const BASE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// What the upload half of the budget assumes of the user's uplink.
+///
+/// 256 KiB/s is a slow home connection, not a fast one, and deliberately: a
+/// number picked to be generous produces a timeout that fires on a link
+/// that would have finished. The point is that a two-minute dictation gets
+/// a budget it can actually complete inside, not that this is measured.
+const UPLOAD_BYTES_PER_SECOND: u64 = 256 * 1_024;
+
+/// The ceiling on the derived budget. `capture::MAX_UTTERANCE` already caps
+/// the payload, so this only binds when a caller builds an `Utterance` by
+/// hand — but a transcription that can hang for minutes is not a
+/// transcription a push-to-talk key should be able to start.
+const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
 const RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// How much of an error body is worth keeping in a message.
@@ -70,9 +91,10 @@ impl OpenAiTranscriber {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, header);
 
+        // No timeout on the client: it is set per request, from the size of
+        // the WAV that request is carrying.
         let client = Client::builder()
             .default_headers(headers)
-            .timeout(TIMEOUT)
             .build()
             .map_err(|e| VoiceError::Transport {
                 detail: e.to_string(),
@@ -98,6 +120,7 @@ impl OpenAiTranscriber {
 impl Transcriber for OpenAiTranscriber {
     async fn transcribe(&self, utterance: &Utterance) -> Result<Transcript, VoiceError> {
         let wav = wav::encode(&utterance.pcm16, utterance.sample_rate)?;
+        let timeout = timeout_for(wav.len());
         let started = Instant::now();
 
         let mut last: Option<VoiceError> = None;
@@ -108,6 +131,7 @@ impl Transcriber for OpenAiTranscriber {
             let response = self
                 .client
                 .post(self.endpoint.clone())
+                .timeout(timeout)
                 .multipart(Self::form(wav.clone())?)
                 .send()
                 .await;
@@ -147,6 +171,15 @@ impl Transcriber for OpenAiTranscriber {
     fn name(&self) -> &'static str {
         "openai"
     }
+}
+
+/// The request budget for a `bytes`-long upload: [`BASE_TIMEOUT`] plus the
+/// time the bytes themselves need, capped at [`MAX_TIMEOUT`].
+fn timeout_for(bytes: usize) -> Duration {
+    let upload = u64::try_from(bytes).unwrap_or(u64::MAX) / UPLOAD_BYTES_PER_SECOND;
+    BASE_TIMEOUT
+        .saturating_add(Duration::from_secs(upload))
+        .min(MAX_TIMEOUT)
 }
 
 fn retryable(status: StatusCode) -> bool {
@@ -189,6 +222,37 @@ mod tests {
             sample_rate: 16_000,
             duration: Duration::from_millis(250),
         }
+    }
+
+    /// `reqwest`'s timeout covers the upload, so a flat 8 s against the
+    /// 120 s `MAX_UTTERANCE` cap meant a long dictation timed out every
+    /// time, retried once, and timed out again — deterministically, with
+    /// the user's two minutes of speech thrown away both times.
+    #[test]
+    fn the_request_budget_grows_with_the_upload_and_then_stops() {
+        assert_eq!(
+            timeout_for(0),
+            BASE_TIMEOUT,
+            "a short utterance lost its floor"
+        );
+
+        // `crate::capture::MAX_UTTERANCE` of 16 kHz mono PCM16.
+        let longest = 120 * 16_000 * 2;
+        let budget = timeout_for(longest);
+        assert!(
+            budget > Duration::from_secs(20),
+            "{longest} bytes got {budget:?}, which a slow uplink cannot finish inside"
+        );
+        assert!(
+            budget <= MAX_TIMEOUT,
+            "the longest allowed utterance is past the ceiling"
+        );
+
+        assert_eq!(
+            timeout_for(usize::MAX),
+            MAX_TIMEOUT,
+            "the budget is unbounded"
+        );
     }
 
     fn transcriber(base: &str) -> OpenAiTranscriber {

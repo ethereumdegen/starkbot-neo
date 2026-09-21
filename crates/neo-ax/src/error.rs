@@ -114,6 +114,55 @@ pub enum AxError {
     /// way: a stopped actor refuses work rather than half-doing it.
     #[error("the accessibility actor was stopped")]
     Stopped,
+
+    /// This build has no accessibility backend for the platform it is
+    /// running on. Nothing is denied and no permission is missing: the code
+    /// that would read a native app does not exist here yet.
+    #[error(
+        "no accessibility backend for {platform}: driving native apps is macOS-only in this build"
+    )]
+    NoBackend {
+        /// `std::env::consts::OS` of the build that refused.
+        platform: &'static str,
+    },
+
+    /// The session publishes no accessibility bus, so no app can be read.
+    ///
+    /// Distinct from [`AxError::NoBackend`]: the backend exists, the
+    /// operating system's accessibility service does not. On Linux this is
+    /// a missing or dead `at-spi2-core`.
+    #[error("no accessibility bus on this session: {detail}")]
+    NoBus {
+        /// What the lookup of `org.a11y.Bus` reported.
+        detail: String,
+    },
+
+    /// No window manager this build can drive.
+    ///
+    /// Enumerating windows and moving focus is compositor-specific and
+    /// there is no portable protocol for it. A session whose compositor has
+    /// no implementation here is told so by name (17 §3.2), never silently
+    /// degraded into "the app has no focused window".
+    #[error(
+        "no supported window manager on this session: {detail}; native-app control needs one to \
+         enumerate and focus windows"
+    )]
+    NoWindowManager {
+        /// Which compositor was detected, and what was missing.
+        detail: String,
+    },
+
+    /// The compositor offers no way to synthesise input.
+    ///
+    /// The accessibility API is always tried first; this is the refusal
+    /// when an element advertises no usable action *and* the fallback is
+    /// unavailable, so that "nothing happened" is never reported as
+    /// success.
+    #[error("the compositor offers no virtual-input protocol: {detail}")]
+    NoVirtualInput {
+        /// Which protocol was missing.
+        detail: String,
+    },
 }
 
 /// Why an observation is no longer the surface a decision was made on.

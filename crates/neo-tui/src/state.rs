@@ -692,6 +692,14 @@ pub enum Command {
         answer: String,
         via: ResolutionVia,
     },
+    /// Repaint the whole screen (`Ctrl-L`).
+    ///
+    /// Marking the state dirty would only re-diff against a back buffer
+    /// that already agrees with what ratatui believes is on the display —
+    /// which repairs nothing, and the case this key exists for is exactly
+    /// the one where they disagree, because something else wrote over the
+    /// terminal. Only the loop holds the terminal, so it is a command.
+    Redraw,
     ReBootstrap,
 }
 
@@ -829,6 +837,7 @@ impl std::fmt::Debug for Command {
                 .field("via", via)
                 .finish(),
             Self::ReBootstrap => formatter.write_str("ReBootstrap"),
+            Self::Redraw => formatter.write_str("Redraw"),
         }
     }
 }
@@ -2188,7 +2197,7 @@ impl State {
             Action::AskQuit => self.quit_prompt = true,
             Action::ConfirmQuit => self.quit = true,
             Action::CancelQuit => self.quit_prompt = false,
-            Action::Redraw => {}
+            Action::Redraw => return Some(Command::Redraw),
             Action::ToggleHelp => self.help = !self.help,
             Action::CloseOverlay => {
                 if self.help {
@@ -4115,7 +4124,9 @@ pub const fn account_status_label(status: ProviderAccountStatus) -> &'static str
         ProviderAccountStatus::SignedOut => "signed out",
         ProviderAccountStatus::Connected => "connected",
         ProviderAccountStatus::RateLimited => "rate limited",
-        ProviderAccountStatus::Unavailable => "unavailable",
+        // Not "unavailable": the check could not be made, which is not a
+        // claim about the account. See `neo_core::ProviderAccountStatus`.
+        ProviderAccountStatus::Unavailable => "could not check",
     }
 }
 

@@ -20,7 +20,100 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-pub const DEFAULT_CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+/// Executables `chrome_path` will accept, best first: a managed profile is
+/// driven with Chromium's own switches (`--remote-debugging-pipe`,
+/// `--user-data-dir`), which no other engine understands.
+const CHROME_BINARIES: [&str; 6] = [
+    "google-chrome-stable",
+    "google-chrome",
+    "chromium",
+    "chromium-browser",
+    "brave-browser",
+    "microsoft-edge",
+];
+
+/// macOS ships browsers as bundles that are not on `PATH`, and prefers them to
+/// anything a package manager dropped in `/usr/local/bin`.
+#[cfg(target_os = "macos")]
+const CHROME_BUNDLES: [&str; 4] = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+];
+
+/// Substrings that make a file name a Chromium-family browser. Checked against
+/// `$CHROME` and `$BROWSER` so a plain `$BROWSER=firefox` is ignored rather
+/// than launched with switches it will show the user as a URL.
+const CHROME_MARKERS: [&str; 3] = ["chrom", "brave", "edge"];
+
+/// The browser a managed profile runs in: `$CHROME`, then `$BROWSER`, then the
+/// installed Chromium-family binaries. `None` means none is installed, which is
+/// a fact to report rather than a path to fail on later.
+pub fn chrome_path() -> Option<PathBuf> {
+    // One path, spaces and all: a macOS bundle executable has them.
+    if let Some(value) = std::env::var_os("CHROME") {
+        let path = PathBuf::from(value);
+        if is_chrome_family(&path)
+            && let Some(found) = locate(&path)
+        {
+            return Some(found);
+        }
+    }
+    // XDG-shaped instead: a colon-separated list of commands, each of which may
+    // carry a `%s` URL placeholder.
+    if let Some(value) = std::env::var_os("BROWSER") {
+        for entry in std::env::split_paths(&value) {
+            let entry = entry.to_string_lossy();
+            let Some(command) = entry.split_whitespace().next() else {
+                continue;
+            };
+            let path = Path::new(command);
+            if is_chrome_family(path)
+                && let Some(found) = locate(path)
+            {
+                return Some(found);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    for bundle in CHROME_BUNDLES {
+        if let Some(found) = executable(Path::new(bundle)) {
+            return Some(found);
+        }
+    }
+    CHROME_BINARIES
+        .into_iter()
+        .find_map(|name| locate(Path::new(name)))
+}
+
+fn is_chrome_family(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    CHROME_MARKERS.iter().any(|marker| name.contains(marker))
+}
+
+/// A path as given if it names an executable file; a bare name off `PATH`.
+fn locate(path: &Path) -> Option<PathBuf> {
+    if path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        return executable(path);
+    }
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .find_map(|dir| executable(&dir.join(path)))
+}
+
+fn executable(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then(|| path.to_path_buf())
+}
 
 /// Where Chrome publishes the debugging endpoint of a profile it is running.
 /// Written on startup, removed on a clean exit.
@@ -87,7 +180,9 @@ impl LaunchOptions {
     /// launch on a shared profile can only ever be relaunched, never joined.
     pub fn new(profile_dir: impl Into<PathBuf>) -> Self {
         Self {
-            chrome: PathBuf::from(DEFAULT_CHROME),
+            // Empty when no browser is installed; `Browser::launch` names that
+            // rather than spawning a path nobody chose.
+            chrome: chrome_path().unwrap_or_default(),
             profile_dir: profile_dir.into(),
             headless: false,
             window: (1120, 780),
@@ -102,7 +197,7 @@ impl LaunchOptions {
     /// nothing should be left behind.
     pub fn ephemeral(profile_dir: impl Into<PathBuf>) -> Self {
         Self {
-            chrome: PathBuf::from(DEFAULT_CHROME),
+            chrome: chrome_path().unwrap_or_default(),
             profile_dir: profile_dir.into(),
             headless: true,
             window: (1120, 780),
@@ -160,6 +255,11 @@ impl Browser {
     pub async fn launch(options: &LaunchOptions) -> Result<Self> {
         std::fs::create_dir_all(&options.profile_dir)
             .map_err(|e| CdpError::Launch(e.to_string()))?;
+        if options.chrome.as_os_str().is_empty() {
+            return Err(CdpError::Launch(
+                "no Chromium-family browser found; install one or set $CHROME".to_owned(),
+            ));
+        }
         let mut command = Command::new(&options.chrome);
         command
             .arg(format!("--user-data-dir={}", options.profile_dir.display()))
@@ -176,6 +276,11 @@ impl Browser {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(!options.keep_alive);
+        // A Wayland session otherwise gets Chromium through XWayland, where the
+        // window arrives as an X11 client with no `app_id` — and `app_id` is
+        // what the compositor's rules and the native path address a window by.
+        #[cfg(target_os = "linux")]
+        command.arg("--ozone-platform-hint=auto");
         if options.headless {
             command.arg("--headless=new");
         }
@@ -784,16 +889,48 @@ impl Page {
     }
 
     /// Replaces the focused field's contents: select-all, then native text insertion.
+    ///
+    /// The accelerator has to be the one this platform's users press: `Meta+A`
+    /// on macOS, `Ctrl+A` everywhere else. Two things read it. Blink's own
+    /// binding table turns the event into SelectAll off `windowsVirtualKeyCode`
+    /// — drop that field and nothing is selected, so `insertText` appends to
+    /// the old value instead of replacing it. A page that implements its own
+    /// select-all reads `ctrlKey`/`metaKey`, and every editor binds the
+    /// platform's own modifier, so the wrong one silently misses its handler.
+    /// `commands` is the editing-command list AppKit delivers alongside the
+    /// keystroke; it belongs to the macOS path only.
     pub async fn replace_text(&self, text: &str) -> Result<()> {
         const META: u32 = 4;
+        const CTRL: u32 = 2;
+        const SELECT_ALL: u32 = if cfg!(target_os = "macos") {
+            META
+        } else {
+            CTRL
+        };
+        const KEY_A: u32 = 65;
+
+        let mut key_down = json!({
+            "type": "keyDown",
+            "key": "a",
+            "code": "KeyA",
+            "modifiers": SELECT_ALL,
+            "windowsVirtualKeyCode": KEY_A,
+            "nativeVirtualKeyCode": KEY_A,
+        });
+        if cfg!(target_os = "macos") {
+            key_down["commands"] = json!(["selectAll"]);
+        }
+        self.call("Input.dispatchKeyEvent", key_down).await?;
         self.call(
             "Input.dispatchKeyEvent",
-            json!({ "type": "keyDown", "key": "a", "code": "KeyA", "modifiers": META, "commands": ["selectAll"] }),
-        )
-        .await?;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({ "type": "keyUp", "key": "a", "code": "KeyA", "modifiers": META }),
+            json!({
+                "type": "keyUp",
+                "key": "a",
+                "code": "KeyA",
+                "modifiers": SELECT_ALL,
+                "windowsVirtualKeyCode": KEY_A,
+                "nativeVirtualKeyCode": KEY_A,
+            }),
         )
         .await?;
         self.call("Input.insertText", json!({ "text": text }))
@@ -803,6 +940,9 @@ impl Page {
 
     /// Inserts multiline content without a bare Enter that could submit a composer.
     pub async fn replace_text_multiline(&self, text: &str) -> Result<()> {
+        // Shift, not Meta: `Shift+Enter` is the newline every composer agrees
+        // on, and it means the same thing on every platform.
+        const SHIFT: u32 = 8;
         let mut lines = text.split('\n');
         self.replace_text(lines.next().unwrap_or_default()).await?;
         for line in lines {
@@ -812,7 +952,7 @@ impl Page {
                     "type": "keyDown",
                     "key": "Enter",
                     "code": "Enter",
-                    "modifiers": 8,
+                    "modifiers": SHIFT,
                     "windowsVirtualKeyCode": 13,
                     "nativeVirtualKeyCode": 13,
                     "text": "\r",
@@ -826,7 +966,7 @@ impl Page {
                     "type": "keyUp",
                     "key": "Enter",
                     "code": "Enter",
-                    "modifiers": 8,
+                    "modifiers": SHIFT,
                     "windowsVirtualKeyCode": 13,
                     "nativeVirtualKeyCode": 13,
                 }),

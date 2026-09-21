@@ -36,6 +36,11 @@ pub enum StoreError {
     ApplicationId { found: i64, expected: i64 },
     #[error("database actor `{0}` stopped")]
     ActorStopped(&'static str),
+    /// The heartbeat found no session row to refresh. The process was pruned
+    /// from the roster while it was still alive, and `leases.holder` cascades,
+    /// so whatever it held is gone with it.
+    #[error("session `{0}` is no longer on the roster")]
+    SessionEvicted(String),
     #[error("reader pool must contain at least one actor")]
     InvalidPoolSize,
     #[error("unknown settings section `{0}`")]

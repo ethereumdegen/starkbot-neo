@@ -202,9 +202,13 @@ pub async fn run_suite(
 
     // Held across every case, not per case: a suite that released the screen
     // between cases would let another window in halfway through and report the
-    // interference as a model failure. Nested acquisitions inside a case (an
-    // app turn wants the screen too) are allowed — see `neo_agent::screen`.
-    let _screen = runtime.acquire_screen(run, format!("eval: {}", cases::SUITE_NAME))?;
+    // interference as a model failure.
+    //
+    // Each case's turn takes the keyboard again inside this hold. It does so
+    // under its *own* run id, so the nesting is declared with `screen.scope()`
+    // rather than guessed at — see the `NeoAgent::screen` doc for why the
+    // cases cannot simply share the suite's run id.
+    let screen = runtime.acquire_screen(run, format!("eval: {}", cases::SUITE_NAME))?;
 
     // One conversation for the whole suite: `chat` records each turn against
     // it, and the `turns` table has a foreign key on `conversations(id)`, so an
@@ -217,6 +221,7 @@ pub async fn run_suite(
         Arc::clone(runtime),
         conversation.id,
         cancel.clone(),
+        Some(screen.scope()),
     ));
     let judge: Arc<dyn Judge> = Arc::new(NeoJudge::new(Arc::clone(runtime)));
     let trace_dir = runtime.data_dir().join("eval-traces");
@@ -560,12 +565,17 @@ mod tests {
         let listed = list_cases();
         assert_eq!(listed.len(), cases::all().len());
 
-        let textedit = listed
-            .iter()
-            .find(|case| case.id == "type-into-textedit")
-            .expect("TextEdit ships on every Mac");
-        assert!(textedit.runnable());
-        assert_eq!(textedit.app, App::TextEdit);
+        // macOS-only: what "installed" means on Linux is a desktop entry,
+        // and that arrives with L3.
+        #[cfg(target_os = "macos")]
+        {
+            let textedit = listed
+                .iter()
+                .find(|case| case.id == "type-into-textedit")
+                .expect("TextEdit ships on every Mac");
+            assert!(textedit.runnable());
+            assert_eq!(textedit.app, App::TextEdit);
+        }
 
         for case in &listed {
             assert_eq!(case.runnable(), case.app.installed().is_some());

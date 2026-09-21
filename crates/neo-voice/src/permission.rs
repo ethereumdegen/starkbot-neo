@@ -32,8 +32,7 @@ pub const SPEECH_SETTINGS_URL: &str =
 pub const DICTATION_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
 
-/// How long a first-run prompt is given to be answered. Only the macOS
-/// paths prompt, and the workspace denies warnings, so it is gated with them.
+/// How long a first-run prompt is given to be answered.
 #[cfg(target_os = "macos")]
 const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -48,7 +47,8 @@ pub enum MicrophoneAuth {
     Authorized,
 }
 
-/// What TCC says about speech recognition.
+/// What TCC says about speech recognition, or that the question does not
+/// apply here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechAuth {
     /// No answer yet; asking will show the system prompt.
@@ -57,6 +57,12 @@ pub enum SpeechAuth {
     Denied,
     /// Allowed.
     Authorized,
+    /// This platform has no on-device speech recogniser at all, so there is
+    /// nothing to authorise. Distinct from [`SpeechAuth::Denied`], which
+    /// says a recogniser exists and the user refused it: a caller that
+    /// conflates the two tells a Linux user to go and un-deny a permission
+    /// that was never asked for.
+    Unsupported,
 }
 
 /// Current microphone authorisation. Never prompts.
@@ -90,7 +96,7 @@ pub fn speech_status() -> SpeechAuth {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        SpeechAuth::Denied
+        SpeechAuth::Unsupported
     }
 }
 
@@ -99,8 +105,10 @@ pub fn speech_status() -> SpeechAuth {
 /// On-device recognition refuses to run while it is off — the framework
 /// answers "Siri and Dictation are disabled" — so Doctor reads this and
 /// points the user at [`DICTATION_SETTINGS_URL`]. It is a read-only probe on
-/// purpose: Starkbot never flips a System Settings switch for the user. Off
-/// macOS the switch does not exist, hence `false`.
+/// purpose: Starkbot never flips a System Settings switch for the user.
+///
+/// Always `false` where there is no such switch; a caller asks
+/// [`speech_status`] first and stops at [`SpeechAuth::Unsupported`].
 #[must_use]
 pub fn dictation_enabled() -> bool {
     #[cfg(target_os = "macos")]
@@ -138,14 +146,16 @@ pub(crate) fn ensure_microphone() -> Result<(), VoiceError> {
 /// asked.
 #[cfg(target_os = "macos")]
 pub(crate) fn ensure_speech() -> Result<(), VoiceError> {
-    match mac::speech_status() {
+    let settled = match mac::speech_status() {
+        SpeechAuth::NotDetermined => mac::request_speech(PROMPT_TIMEOUT),
+        answered => answered,
+    };
+    match settled {
         SpeechAuth::Authorized => Ok(()),
         SpeechAuth::Denied => Err(VoiceError::SpeechDenied),
-        SpeechAuth::NotDetermined => match mac::request_speech(PROMPT_TIMEOUT) {
-            SpeechAuth::Authorized => Ok(()),
-            SpeechAuth::Denied => Err(VoiceError::SpeechDenied),
-            SpeechAuth::NotDetermined => Err(VoiceError::SpeechNotDetermined),
-        },
+        // `mac` answers only the three TCC states — a recogniser exists
+        // here, which is the one thing `Unsupported` denies.
+        SpeechAuth::NotDetermined | SpeechAuth::Unsupported => Err(VoiceError::SpeechNotDetermined),
     }
 }
 

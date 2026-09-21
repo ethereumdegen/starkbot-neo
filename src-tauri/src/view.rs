@@ -263,7 +263,12 @@ fn fix_for(check: &Check) -> Option<Fix> {
             account: "openai".to_owned(),
         }),
         "inference" => Some(Fix::ChooseRuntime),
-        "chrome" => check.fix.clone().map(|detail| Fix::Manual { detail }),
+        // Rows whose fix is a fact about the machine, not a control this
+        // window owns: installing a browser, starting a keyring, turning
+        // the desktop's accessibility switch on.
+        "chrome" | "credential storage" | "a11y bus" | "a11y enabled" | "compositor" => {
+            check.fix.clone().map(|detail| Fix::Manual { detail })
+        }
         name => subscription_provider(name).map(|provider| {
             if SUBSCRIPTIONS.iter().any(|known| known.id == provider) {
                 Fix::SignIn {

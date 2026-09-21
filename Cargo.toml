@@ -1,9 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "src-tauri", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
-# `cargo run` with no arguments starts `neo`. The workspace has several
-# binaries — the desktop shell and six spikes — so cargo refuses to pick one
-# without this.
+members = ["crates/*", "src-tauri"]
+# The M0 spikes are a nested workspace under `spikes/` (see `spikes/README.md`).
+# They were members until they had answered their questions; keeping them made
+# CI compile two extra Tauri apps, and — because none of them opted into
+# `[lints] workspace = true` — did so with `unsafe_code = "deny"` never applied
+# to a third of the workspace. Their conclusions are in `plans/spikes.md`.
+exclude = ["spikes"]
+# `cargo run` with no arguments starts `neo`. The workspace has more than one
+# binary — `neo` and the desktop shell — so cargo refuses to pick one without
+# this.
 #
 # It also narrows a bare `cargo build`, `cargo test` and `cargo clippy` to this
 # one package and its dependencies. Whole-workspace commands therefore need
@@ -37,17 +43,31 @@ http = "1"
 bytes = "1"
 zeroize = "1"
 security-framework = "3"
-# Linux secret storage (`neo-keys`): the Secret Service D-Bus API that
-# gnome-keyring and KWallet both implement. Chosen over `keyring`, which would
-# pull this same crate plus its own abstraction layer, and over `libsecret-sys`,
-# which needs libsecret/libdbus headers at build time. `rt-async-io-crypto-rust`
-# keeps the tree pure Rust (no OpenSSL) and its blocking API off tokio's
-# executor; `crypto-rust` gives the DH-encrypted session, so a secret never
-# crosses the bus in clear text.
-secret-service = { version = "5", default-features = false, features = ["rt-async-io-crypto-rust"] }
-# Named directly only so `neo-keys` can tell "no Secret Service is running" —
-# a `ServiceUnknown` D-Bus reply — apart from every other transport failure.
-zbus = { version = "5", default-features = false }
+# The login Keychain's Linux twin: whatever owns `org.freedesktop.secrets`
+# on the session bus. `rt-tokio-crypto-rust` points its I/O at the reactor
+# the rest of the workspace already runs on and keeps the session's
+# Diffie-Hellman handshake on RustCrypto, for the reason `reqwest` here is
+# on rustls: no C toolchain, one less system library to match.
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+# One zbus for the workspace. `neo-keys` asks the session bus whether a
+# keyring provider exists, `neo-agent`'s doctor asks it for the two
+# accessibility facts of 11, and L3's AT-SPI backend needs the same major —
+# three independent `zbus = "5"` specs is how a duplicate-version finding
+# starts. The runtime feature is `secret-service`'s to choose; only the API
+# features each caller needs are named here.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+# AT-SPI2 over the same zbus, in pure Rust: no `libatspi`, no GObject. The
+# `tokio` feature points its `zbus::Connection` at the runtime `neo-ax`'s
+# actor thread owns; `async-io` still arrives through `atspi-proxies`'
+# non-optional zbus dependency, and zbus prefers tokio when both are on.
+atspi = { version = "0.30", default-features = false, features = ["proxies", "connection", "wrappers", "tokio"] }
+# The Wayland input fallback of 17 §3.3: `zwp_virtual_keyboard_v1` for keys
+# and `zwlr_virtual_pointer_v1` for the pointer, spoken in-process. The
+# alternative was spawning `xdotool` (X11-only) or `ydotool` (a root daemon
+# on `/dev/uinput`), which P3 refuses.
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # `flock` for the screen lease, through a safe API: the workspace denies
 # `unsafe_code`, which rules out calling libc directly for it.
 rustix = { version = "1", features = ["fs"] }
@@ -83,18 +103,10 @@ neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
 spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
-# `macos-private-api` is re-added per-crate under a macOS target block: the
-# feature does not exist on Linux and would poison the build graph there.
-# `macos-private-api` stays here rather than behind a macOS target
-# section in each member: `tauri-build` validates the feature list
-# against `tauri.conf.json`'s `macOSPrivateApi` by reading the plain
-# `[dependencies]` table, so a target-gated feature reads as absent and
-# fails the build on macOS. It costs a Linux build nothing — it toggles
-# `tauri-runtime`/`tauri-runtime-wry` cfgs and pulls in no crates.
+# Tauri validates this feature against the macOS config from its build script,
+# before target-specific dependency features are visible.
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
-s7-render = { path = "spikes/s7-render" }
 command-fds = "0.3.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 block2 = "0.6"

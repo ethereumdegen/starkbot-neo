@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Secret and credential vocabulary for Starkbot Neo."
+# An application crate, never a crates.io library.
 publish = false
 
 [lints]
@@ -12,20 +13,34 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 zeroize.workspace = true
 
-# The OS secret store is the one platform-specific part of this crate; the
-# `Secret` type, redaction and the `expose()` audit points are shared.
+# The login Keychain is a Security-framework API and exists on macOS only.
+# The file backend below it is pure Rust, so the crate — and therefore
+# `neo-core` and `neo-store` — still builds and tests on the Linux CI lane.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework.workspace = true
 
+# Linux's login Keychain is whatever owns `org.freedesktop.secrets` on the
+# session bus: gnome-keyring, KWallet's Secret Service front end, KeePassXC.
+#
+# zbus is here only to ask the bus whether a provider exists before choosing
+# a backend. Both specs live in `[workspace.dependencies]`, which is also
+# where the reasoning about their features is.
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# The keyring round trip runs inside a runtime, because that is where every
+# caller of it is and because `block_on` inside one is the failure this
+# crate's threading exists to avoid.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio.workspace = true

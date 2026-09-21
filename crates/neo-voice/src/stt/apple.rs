@@ -103,16 +103,24 @@ impl Transcriber for AppleTranscriber {
         if utterance.pcm16.is_empty() {
             return Err(VoiceError::NoAudio);
         }
-        permission::ensure_speech()?;
         let samples = resample::from_pcm16(&utterance.pcm16);
         let rate = f64::from(utterance.sample_rate);
         let started = Instant::now();
 
-        let recognised = tokio::task::spawn_blocking(move || recognise(&samples, rate))
-            .await
-            .map_err(|e| VoiceError::Speech {
-                detail: format!("the recognition thread died: {e}"),
-            })??;
+        let recognised = tokio::task::spawn_blocking(move || {
+            // Inside the closure, not on the line above it. On
+            // `NotDetermined` this shows the system prompt and pumps the run
+            // loop for up to `permission::PROMPT_TIMEOUT`, and doing that
+            // before the `spawn_blocking` parked the whole executor for a
+            // minute — undoing, one line early, exactly what this
+            // `spawn_blocking` exists to do.
+            permission::ensure_speech()?;
+            recognise(&samples, rate)
+        })
+        .await
+        .map_err(|e| VoiceError::Speech {
+            detail: format!("the recognition thread died: {e}"),
+        })??;
 
         Ok(Transcript {
             text: recognised.text,

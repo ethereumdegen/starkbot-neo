@@ -2,16 +2,25 @@
 //!
 //! `neo-ax` refuses denied apps from every command, so no caller can bypass
 //! it by reaching for a different entry point. Pure data and matching: the
-//! actor consults it before it touches an `AXUIElement`.
+//! actor consults it before it touches an element.
+//!
+//! # One list, two key spaces
+//!
+//! The key is the application's identity as its platform states it: a macOS
+//! bundle id (`com.mitchellh.ghostty`) or a Wayland `app_id`
+//! (`com.mitchellh.ghostty`, `kitty`, `code`). They overlap for anything
+//! shipped as a reverse-DNS id and diverge for everything else, so both are
+//! in the same list (17 §3.4) and neither backend knows which entries are
+//! "its". The names list covers what is launched before any id is known.
 
 use crate::types::AppInfo;
 
-/// Bundle ids that are never read or driven.
+/// Bundle ids and Wayland `app_id`s that are never read or driven.
 ///
 /// Terminal-class apps and editors with integrated terminals would turn the
 /// navigator into a shell; the arbitrary-power tools would turn it into a
 /// scripting host; the secret stores would hand out credentials.
-const DENIED_BUNDLE_IDS: [&str; 26] = [
+const DENIED_BUNDLE_IDS: [&str; 38] = [
     // Terminal-class.
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -42,11 +51,26 @@ const DENIED_BUNDLE_IDS: [&str; 26] = [
     "com.bitwarden.desktop",
     "com.apple.systempreferences",
     "com.apple.SystemProfiler",
+    // The same classes again, keyed by Wayland `app_id` (17 §3.4). A
+    // terminal emulator is a shell whichever platform it runs on.
+    "Alacritty",
+    "kitty",
+    "foot",
+    "footclient",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Terminal",
+    "org.gnome.Console",
+    "org.kde.konsole",
+    "code",
+    "code-url-handler",
+    "org.gnome.seahorse.Application",
+    "org.kde.kwalletmanager5",
 ];
 
-/// Bundle id prefixes that cover a family of builds (JetBrains ships one
-/// bundle id per IDE and per edition).
-const DENIED_PREFIXES: [&str; 2] = ["com.jetbrains.", "com.google.android.studio"];
+/// Id prefixes that cover a family of builds. JetBrains ships one bundle id
+/// per IDE and per edition on macOS, and one `jetbrains-<ide>` `app_id` per
+/// IDE on Linux.
+const DENIED_PREFIXES: [&str; 3] = ["com.jetbrains.", "com.google.android.studio", "jetbrains-"];
 
 /// Localized names of the same apps, lower-cased.
 ///
@@ -134,7 +158,7 @@ impl AxPolicy {
     /// family is `CdpObserver`'s, not ours).
     #[must_use]
     pub fn is_chrome_family(app: &AppInfo) -> bool {
-        const CHROME: [&str; 9] = [
+        const CHROME: [&str; 17] = [
             "com.google.Chrome",
             "com.google.Chrome.beta",
             "com.google.Chrome.canary",
@@ -144,6 +168,16 @@ impl AxPolicy {
             "company.thebrowser.Browser",
             "com.vivaldi.Vivaldi",
             "com.operasoftware.Opera",
+            // Wayland `app_id`s for the same browsers. Verified on this
+            // machine: Chromium reports `class="chromium"`.
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-beta",
+            "google-chrome-unstable",
+            "brave-browser",
+            "microsoft-edge",
+            "vivaldi-stable",
         ];
         app.bundle_id
             .as_deref()

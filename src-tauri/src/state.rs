@@ -208,16 +208,9 @@ pub fn provider_by_id(id: &str) -> Result<&'static OauthProvider, UiError> {
         })
 }
 
-/// Where `neo` keeps its data. `neo-cli`'s `default_data_dir` is private, so
-/// these two lines are duplicated on purpose — both front ends must open the
-/// same store, so keep them in step.
+/// Where `neo` keeps its data — the same answer `neo-cli` gets, because both
+/// front ends must open the same store.
 #[must_use]
 pub fn default_data_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library")
-            .join("Application Support")
-            .join("com.starkbot.neo"),
-    )
+    neo_core::paths::data_dir()
 }

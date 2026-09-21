@@ -2,6 +2,7 @@
 //! is read off the NDJSON stream, and nothing but assistant text, thinking and
 //! the final result is accepted.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -200,6 +201,14 @@ impl ClaudeCode {
             .stdout
             .take()
             .ok_or_else(|| ClaudeError::Protocol("stdout was not piped".into()))?;
+        // Drained concurrently, because a pipe nobody reads is a deadlock.
+        // The CLI runs with `--verbose`, so at roughly 64 KiB of diagnostics
+        // it blocked writing to stderr, stopped producing stdout, and the
+        // turn hung until the 300 s timeout — with the explanation sitting
+        // unread in the pipe. Keeping it is also the only way a turn that
+        // dies mid-stream can say why.
+        let stderr = child.stderr.take();
+        let diagnostics = tokio::spawn(stderr_tail(stderr));
         let read = read_turn(stdout);
         let turn = match tokio::time::timeout(self.config.timeout, read).await {
             Ok(result) => result,
@@ -208,8 +217,14 @@ impl ClaudeCode {
                 return Err(ClaudeError::Timeout(self.config.timeout));
             }
         };
-        let _ = child.wait().await;
-        turn
+        // The status was thrown away here (`let _ = child.wait()`), so a CLI
+        // that exited 1 halfway through its stream reported nothing but "the
+        // stream ended without a result".
+        let status = child.wait().await.ok();
+        match turn? {
+            Some(turn) => Ok(turn),
+            None => Err(no_result(status, &diagnostics.await.unwrap_or_default())),
+        }
     }
 
     /// The flags that make a coding agent safe for a marketing harness (P3):
@@ -315,7 +330,13 @@ struct ResultEvent {
     permission_denials: Vec<Value>,
 }
 
-async fn read_turn(stdout: tokio::process::ChildStdout) -> Result<ClaudeTurn, ClaudeError> {
+/// The turn off the NDJSON stream, or `None` when the stream ended without a
+/// `result` event.
+///
+/// `None` rather than an error, because the caller is the only place that can
+/// say *why* the stream stopped: it has the exit status and the stderr tail.
+/// See [`no_result`].
+async fn read_turn(stdout: tokio::process::ChildStdout) -> Result<Option<ClaudeTurn>, ClaudeError> {
     let mut lines = BufReader::new(stdout).lines();
     let mut session_id = String::new();
     let mut model = String::new();
@@ -365,20 +386,64 @@ async fn read_turn(stdout: tokio::process::ChildStdout) -> Result<ClaudeTurn, Cl
                     ));
                 }
                 let answer = result.result.unwrap_or(text);
-                return Ok(ClaudeTurn {
+                return Ok(Some(ClaudeTurn {
                     text: answer,
                     model,
                     session_id: result.session_id.unwrap_or(session_id),
                     duration_ms: result.duration_ms.unwrap_or_default(),
                     usage: result.usage.unwrap_or(Value::Null),
-                });
+                }));
             }
             Event::Other => {}
         }
     }
-    Err(ClaudeError::Protocol(
-        "the stream ended without a result".into(),
-    ))
+    Ok(None)
+}
+
+/// How many lines of the CLI's stderr a failure carries.
+///
+/// The diagnosis is at the end, and a `--verbose` run's progress chatter is
+/// not an error message.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// Read the CLI's stderr to the end, keeping the last few lines.
+///
+/// Read to the end because the point is to keep draining: a full pipe stops
+/// the CLI writing, which stops it producing stdout. A read failure ends the
+/// drain with whatever was collected — this is the diagnosis, and it must
+/// never become the failure.
+async fn stderr_tail(stderr: Option<tokio::process::ChildStderr>) -> String {
+    let Some(stderr) = stderr else {
+        return String::new();
+    };
+    let mut lines = BufReader::new(stderr).lines();
+    let mut kept: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
+    while let Ok(Some(line)) = lines.next_line().await {
+        if kept.len() == STDERR_TAIL_LINES {
+            kept.pop_front();
+        }
+        kept.push_back(line);
+    }
+    kept.into_iter().collect::<Vec<_>>().join("\n")
+}
+
+/// A stream that stopped without a `result`, with what the process actually
+/// did attached.
+///
+/// The sentence on its own — all this used to report — describes the symptom
+/// and none of the cause. A CLI that was killed, that could not start its own
+/// node runtime, or that refused the flags says so in its exit status and on
+/// stderr.
+fn no_result(status: Option<std::process::ExitStatus>, stderr: &str) -> ClaudeError {
+    let mut detail = "the stream ended without a result".to_owned();
+    if let Some(status) = status.filter(|status| !status.success()) {
+        detail.push_str(&format!(" ({status})"));
+    }
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        detail.push_str(&format!("; the CLI said: {stderr}"));
+    }
+    ClaudeError::Protocol(detail)
 }
 
 fn copy_safe_environment(command: &mut Command) {

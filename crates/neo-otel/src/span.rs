@@ -22,6 +22,32 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
+/// How many events one span will carry.
+///
+/// Events accumulate on the live builder until the span closes, and
+/// `Runtime::publish` routes every `AppEvent` onto whatever span is open.
+/// `AppEvent::TurnDelta` is published once per streamed token slice, so a
+/// turn that answered in two thousand tokens once built a span holding two
+/// thousand events, each carrying the whole serialized event — the answer
+/// over again, slice by slice. That span went out in one POST that most
+/// collectors refuse outright, and the exporter then dropped the batch
+/// whole. The cap turns "the whole turn is missing" into "the tail of a very
+/// chatty turn is missing", and `starkbot.events_dropped` says so on the
+/// span rather than leaving a reader to guess.
+///
+/// The publish site skips the high-rate variants as well; this is the bound
+/// that holds when a new one is added and nobody remembers to.
+const MAX_EVENTS: usize = 128;
+
+/// The longest string an attribute value will carry, in bytes.
+///
+/// Not every value is written by hand: a serialized `AppEvent` arrives as
+/// arbitrary JSON and is rendered into one string, and an answer or a page
+/// of text is as long as the model felt like being. Four kilobytes is more
+/// than a reader uses and small enough that one span stays in the kilobytes
+/// whatever it was handed.
+const MAX_ATTRIBUTE_BYTES: usize = 4_096;
+
 /// The span kinds Neo produces. A turn, a step and a navigator run are work
 /// this process did itself; a model round trip is a call out to somebody
 /// else, and a reader wants to see that distinction without parsing names.
@@ -54,6 +80,8 @@ pub struct SpanBuilder {
     elapsed: Duration,
     attributes: Vec<Value>,
     events: Vec<Value>,
+    /// How many events [`MAX_EVENTS`] refused, reported on the span itself.
+    dropped_events: u64,
     error: Option<String>,
 }
 
@@ -77,6 +105,7 @@ impl SpanBuilder {
             elapsed: Duration::ZERO,
             attributes: Vec::new(),
             events: Vec::new(),
+            dropped_events: 0,
             error: None,
         }
     }
@@ -108,12 +137,19 @@ impl SpanBuilder {
         self
     }
 
-    /// An integer attribute. Saturating, because a count that will not fit in
-    /// an `i64` is a count no collector can store either, and a span is not
-    /// worth losing over one field.
+    /// An integer attribute, or nothing.
+    ///
+    /// A value that will not fit in an `i64` is left off the span rather
+    /// than clamped. This used to saturate to `i64::MAX`, which is wrong in
+    /// a way that reads as right: `TryInto<i64>` fails for an out-of-range
+    /// *negative* as readily as a positive, so a number below `i64::MIN`
+    /// arrived at the collector as the largest positive integer there is.
+    /// An absent attribute is a hole a reader can see; a sign flip is not.
     #[must_use]
     pub fn int<V: TryInto<i64>>(mut self, key: &str, value: V) -> Self {
-        self.push(key, Value::from(value.try_into().unwrap_or(i64::MAX)));
+        if let Ok(value) = value.try_into() {
+            self.push(key, Value::from(value));
+        }
         self
     }
 
@@ -174,7 +210,14 @@ impl SpanBuilder {
         self.attributes.push(attribute(key, value));
     }
 
+    /// Note that something happened inside this span, up to [`MAX_EVENTS`]
+    /// times. Past the cap the event is counted and discarded, because a
+    /// span nobody can receive carries less than a truncated one.
     pub(crate) fn push_event(&mut self, event: Value) {
+        if self.events.len() >= MAX_EVENTS {
+            self.dropped_events += 1;
+            return;
+        }
         self.events.push(event);
     }
 
@@ -189,13 +232,20 @@ impl SpanBuilder {
     /// The finished span as OTLP sees it. The tracer supplies identity and
     /// the clock; everything else was decided at the call site.
     pub(crate) fn finish(
-        self,
+        mut self,
         trace_id: &str,
         span_id: &str,
         parent: Option<&str>,
         start_unix_nano: u128,
         end_unix_nano: u128,
     ) -> Value {
+        if self.dropped_events > 0 {
+            // On the span, not in a log line: the reader who needs to know
+            // the event list is incomplete is the one looking at the
+            // waterfall, and they are not reading this process's stderr.
+            let dropped = self.dropped_events;
+            self.push("starkbot.events_dropped", Value::from(dropped));
+        }
         let mut span = Map::new();
         span.insert("traceId".to_owned(), Value::String(trace_id.to_owned()));
         span.insert("spanId".to_owned(), Value::String(span_id.to_owned()));
@@ -236,18 +286,40 @@ pub(crate) fn attribute(key: &str, value: Value) -> Value {
 /// Integers become strings, for the reason given at the top of this module.
 /// A composite value is rendered rather than dropped: an `AppEvent`'s payload
 /// is arbitrary JSON, and a reader would rather see `{"run":"…"}` than
-/// nothing at all.
+/// nothing at all — bounded, because that payload is written by whatever
+/// produced the event and not by anybody thinking about span size.
 fn any_value(value: Value) -> Value {
     match value {
-        Value::String(text) => json!({ "stringValue": text }),
+        Value::String(text) => json!({ "stringValue": clamp(text) }),
         Value::Bool(flag) => json!({ "boolValue": flag }),
         Value::Number(number) => match (number.as_i64(), number.as_f64()) {
             (Some(integer), _) => json!({ "intValue": integer.to_string() }),
             (None, Some(double)) => json!({ "doubleValue": double }),
             (None, None) => json!({ "stringValue": number.to_string() }),
         },
-        other => json!({ "stringValue": other.to_string() }),
+        other => json!({ "stringValue": clamp(other.to_string()) }),
     }
+}
+
+/// A string attribute value, no longer than [`MAX_ATTRIBUTE_BYTES`].
+///
+/// Marked rather than silent: a value that just stops is a value a reader
+/// will believe, so the elision says how much of it is missing. Bytes are
+/// never fewer than characters, so the common case — every attribute
+/// written by hand in this repo — is one length compare and no scan.
+fn clamp(text: String) -> String {
+    if text.len() <= MAX_ATTRIBUTE_BYTES {
+        return text;
+    }
+    let mut end = MAX_ATTRIBUTE_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let elided = text.len() - end;
+    let mut clamped = text;
+    clamped.truncate(end);
+    clamped.push_str(&format!("… ({elided} more bytes elided)"));
+    clamped
 }
 
 /// One span event: something that happened at an instant inside a span.
@@ -375,5 +447,72 @@ mod tests {
             span["events"][0]["attributes"][0]["value"],
             json!({ "stringValue": "{\"type\":\"turn_started\"}" })
         );
+    }
+
+    /// Every `AppEvent` lands on whatever span is open and `TurnDelta`
+    /// arrives once per streamed token slice, so an unbounded event list is
+    /// a multi-megabyte span the collector refuses whole. The cap has to
+    /// hold, and the span has to say how much it swallowed — a short event
+    /// list that claims to be complete is worse than one that does not.
+    #[test]
+    fn a_span_keeps_only_its_first_events_and_says_how_many_it_dropped() {
+        let mut span = SpanBuilder::internal("invoke_agent");
+        for index in 0..MAX_EVENTS + 50 {
+            span.push_event(event(
+                "app_event.turn_delta",
+                &attributes(vec![("starkbot.seq", Value::from(index))]),
+                u128::try_from(index).unwrap_or(0),
+            ));
+        }
+        let span = span.finish("a".repeat(32).as_str(), "b".repeat(16).as_str(), None, 1, 2);
+
+        let events = span["events"].as_array().map(Vec::len);
+        assert_eq!(events, Some(MAX_EVENTS), "the event list grew past its cap");
+        // The first events are the ones kept: a turn's `turn_started` is
+        // worth more than the two-thousandth slice of its answer.
+        assert_eq!(span["events"][0]["timeUnixNano"], json!("0"));
+        assert_eq!(
+            span["attributes"][0],
+            json!({ "key": "starkbot.events_dropped", "value": { "intValue": "50" } })
+        );
+    }
+
+    /// An attribute value is not always written by hand: a serialized
+    /// `AppEvent`, an answer or a page of text arrives here at whatever
+    /// length its producer felt like. The bound is on bytes, and it holds
+    /// without splitting a character in half.
+    #[test]
+    fn a_long_attribute_value_is_truncated_on_a_character_boundary_and_says_so() {
+        // Two bytes per character, so a byte cap lands mid-character unless
+        // it is walked back — and an invalid `String` is not constructible,
+        // so getting this wrong is a panic, not a bad span.
+        let long = "é".repeat(MAX_ATTRIBUTE_BYTES);
+        let rendered = attribute("starkbot.answer", Value::String(long.clone()));
+        let value = rendered["value"]["stringValue"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(value.starts_with("éé"), "the head of the value was lost");
+        assert!(
+            value.len() < long.len(),
+            "a {}-byte value was carried whole",
+            long.len()
+        );
+        let tail: String = value
+            .chars()
+            .rev()
+            .take(40)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        assert!(
+            value.contains("more bytes elided"),
+            "the truncation was silent; the value ends `{tail}`"
+        );
+
+        // A value inside the bound is untouched, marker and all.
+        let short = attribute("starkbot.answer", Value::String("é".repeat(8)));
+        assert_eq!(short["value"]["stringValue"], json!("é".repeat(8)));
     }
 }

@@ -126,7 +126,11 @@ mod tests {
     use super::*;
 
     /// TextEdit is the one target A23 guarantees, because it ships with the
-    /// OS. If this fails, the machine is not a Mac and no app case can run.
+    /// OS. If this fails on a Mac, no app case can run.
+    ///
+    /// macOS-only by its own terms: the Linux targets are desktop entries
+    /// and arrive with L3.
+    #[cfg(target_os = "macos")]
     #[test]
     fn textedit_is_always_installed() {
         assert!(

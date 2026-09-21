@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Jev-driven navigator: a Rust port of browser-use/jev-ultrafast (MIT). One TypeSafe request per step picks operation + target."
+# An application crate, never a crates.io library.
 publish = false
 
 [lints]

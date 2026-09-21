@@ -14,7 +14,15 @@ workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# The exporter's diagnostics. `print_stdout` is denied workspace-wide and
+# `print_stderr` is not, but stderr is the alternate screen the TUI is
+# drawing on: `neo_otel::init("neo-tui")` runs inside ratatui.
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+# The OTLP transport is tested against a real HTTP server: the URL, the
+# headers, which statuses retry and whether `shutdown` flushes are all
+# things only a collector can observe.
+wiremock.workspace = true

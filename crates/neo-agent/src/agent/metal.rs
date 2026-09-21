@@ -94,6 +94,22 @@ pub const STOPPED: &str = "stopped";
 /// wording: the TUI renders a card by it.
 const STOPPED_STEP: &str = "stopped before this step finished";
 
+/// How a stopped tool call tells this module it was stopped.
+///
+/// metalcraft has no cancellation variant to return: a failing node's only
+/// channel out is a string — `GraphError::Node { message }`, stringified
+/// again into `RunOutcome::Failed { error }` — so a cancellation cannot
+/// travel up as a type. It travels as this marker instead, written in
+/// exactly one place ([`observed`]) and read in exactly one place
+/// ([`node_failure`]).
+///
+/// The marker exists because the classification used to be
+/// `error.to_string().contains("cancelled")` against the prose `"cancelled"`:
+/// any reword of the tool layer, and any vendor error that happened to
+/// mention the word, changed a stop into a failure or a failure into a stop.
+/// Nothing a vendor writes contains this.
+const CANCELLED_MARKER: &str = "starkbot.cancelled";
+
 /// The node a ReAct graph calls the model in. The mailbox may only deliver
 /// here — see [`mailbox`].
 const AGENT_NODE: &str = "agent";
@@ -518,16 +534,22 @@ impl Reporter {
     /// Seal a turn that broke. The partial answer is still persisted and
     /// announced: a failure halfway through a sentence should leave the
     /// sentence in the thread, not an empty bubble.
+    ///
+    /// `code` is [`error_code`], which is why it exists: a front end telling
+    /// a stopped turn from a broken one used to match a regex over `error`,
+    /// so any reworded message reclassified the card.
     pub(crate) fn fail(&self, error: &AgentError) {
         self.flush();
         if let Ok(tally) = self.tally.lock() {
             tally.record(&self.runtime, self.conversation);
         }
-        neo_otel::annotate(vec![("starkbot.error_code", json!(error_code(error)))]);
+        let code = error_code(error);
+        neo_otel::annotate(vec![("starkbot.error_code", json!(code))]);
         neo_otel::fail(&error.to_string());
         self.runtime.publish(AppEvent::TurnFailed {
             run: self.run,
             error: error.to_string(),
+            code: code.to_owned(),
         });
         let text = self.said();
         self.announce_answer(&text);
@@ -643,6 +665,10 @@ struct Browse {
     settings: Settings,
     run: RunId,
     cancel: tokio_util::sync::CancellationToken,
+    /// The screen hold this turn runs inside, if any — see
+    /// [`ChatRequest::screen`]. A headed browse would otherwise be refused
+    /// the screen by the lease its own caller holds.
+    screen: Option<crate::screen::ScreenScope>,
 }
 
 #[async_trait::async_trait]
@@ -688,7 +714,8 @@ impl Tool for Browse {
             // no attachment to a browser the user is using, and the confirm
             // threshold from settings — an agent turn has no confirm card, so
             // the safety gate must fail closed exactly as `neo nav` does (A9).
-            let options = BrowserOptions::unattended(&self.settings, &url, &goal);
+            let mut options = BrowserOptions::unattended(&self.settings, &url, &goal);
+            options.screen = self.screen;
             let run =
                 run_browser(self.reporter.runtime(), &options, self.run, &self.cancel).await?;
             Ok(run.observation)
@@ -703,6 +730,10 @@ struct App {
     settings: Settings,
     run: RunId,
     cancel: tokio_util::sync::CancellationToken,
+    /// The screen hold this turn runs inside, if any — see
+    /// [`ChatRequest::screen`]. An app run always takes the screen, so an
+    /// eval case inside its suite's lease depends on this.
+    screen: Option<crate::screen::ScreenScope>,
 }
 
 #[async_trait::async_trait]
@@ -747,7 +778,8 @@ impl Tool for App {
         let reporter = Arc::clone(&self.reporter);
         observed(&reporter, summary, async {
             let (app, goal) = required(app, goal, "app", "app")?;
-            let options = AppOptions::unattended(&self.settings, &app, &goal);
+            let mut options = AppOptions::unattended(&self.settings, &app, &goal);
+            options.screen = self.screen;
             let run = run_app(self.reporter.runtime(), &options, self.run, &self.cancel).await?;
             Ok(run.observation)
         })
@@ -886,9 +918,10 @@ async fn observed(
         }
         Err(ToolError::Cancelled(_)) => {
             reporter.step_note(STOPPED_STEP).await;
+            // The only place the marker is written. See [`CANCELLED_MARKER`].
             Err(GraphError::Node {
                 node: "tools".to_owned(),
-                message: "cancelled".to_owned(),
+                message: CANCELLED_MARKER.to_owned(),
             })
         }
         Err(error) => {
@@ -1182,7 +1215,7 @@ where
                 while let Ok(card) = cards.try_recv() {
                     reporter.apply(card);
                 }
-                return Ok(finish(reporter, request, outcome));
+                return finish(reporter, request, outcome);
             }
         }
     }
@@ -1202,12 +1235,14 @@ fn registry(reporter: &Arc<Reporter>, request: &ChatRequest, settings: &Settings
             settings: settings.clone(),
             run: request.run,
             cancel: request.cancel.clone(),
+            screen: request.screen,
         })
         .register(App {
             reporter: Arc::clone(reporter),
             settings: settings.clone(),
             run: request.run,
             cancel: request.cancel.clone(),
+            screen: request.screen,
         })
         .register(Inspect {
             reporter: Arc::clone(reporter),
@@ -1270,17 +1305,23 @@ fn inference_hooks(
 }
 
 /// Map metalcraft's ending onto Neo's.
+///
+/// `Err` for exactly one of the four endings. A failed run used to be
+/// returned as a `TurnOutcome` under a comment claiming "the caller gets the
+/// error", which it did not: `neo-tui` rendered a crashed turn as an answer
+/// and `neo-eval` scored it `error: None`, so `ExpectNoError` passed on every
+/// turn where a node blew up.
 fn finish(
     reporter: &Arc<Reporter>,
     request: &ChatRequest,
     outcome: RunOutcome<AgentState>,
-) -> TurnOutcome {
+) -> Result<TurnOutcome, AgentError> {
     match outcome {
         RunOutcome::Completed(state) => {
             if let Some(answer) = state.final_answer() {
                 reporter.whole_answer(answer);
             }
-            reporter.finish(false, false)
+            Ok(reporter.finish(false, false))
         }
         // The step budget, a guard, or a node asking for human input. Neo has
         // no guard and no interrupting node, so this is the budget — and a
@@ -1291,33 +1332,40 @@ fn finish(
                 reporter.whole_answer(answer);
             }
             reporter.delta(&exhausted_sentence(request.max_steps, reason));
-            reporter.finish(true, false)
+            Ok(reporter.finish(true, false))
         }
         // A stopped run keeps what it had already said: metalcraft pushes the
         // partial text into the state it hands back, so the thread and the
         // screen keep the half-finished sentence instead of losing it.
-        RunOutcome::Cancelled { state, .. } => {
-            if let Some(answer) = last_assistant(&state) {
-                reporter.whole_answer(answer);
+        RunOutcome::Cancelled { state, .. } => Ok(stopped(reporter, &state)),
+        RunOutcome::Failed { state, node, error } => {
+            // Classified, not assumed. A stop cannot reach this arm on
+            // metalcraft 1.2: its `ToolNode` turns a tool's error into a
+            // tool *result* and the executor's own token check returns
+            // `Cancelled`, so the only way here is a node that returned
+            // `Err` — today, a model call that failed. But this arm
+            // classified nothing at all, so the first stop that did arrive
+            // here would be published as a red error card over a turn the
+            // user chose to end, and `graph_error`'s check sat on a path node
+            // errors never take. One mapper, both arms.
+            let error = node_failure(&node, &error);
+            if error.is_cancelled() {
+                return Ok(stopped(reporter, &state));
             }
-            reporter.note(STOPPED);
-            reporter.finish(false, true)
-        }
-        RunOutcome::Failed { node, error, .. } => {
-            let error = AgentError::Graph(format!("{node}: {error}"));
             reporter.fail(&error);
-            // A failed run is still a turn that happened, and its partial
-            // answer is already persisted; the caller gets the error.
-            TurnOutcome {
-                run: reporter.run,
-                text: reporter.said(),
-                steps: Vec::new(),
-                exhausted: false,
-                cancelled: false,
-                usage: None,
-            }
+            Err(error)
         }
     }
+}
+
+/// Seal a turn the user stopped: whatever it had said, then the marker, then
+/// an ordinary finish. Shared by the two endings a stop can arrive on.
+fn stopped(reporter: &Arc<Reporter>, state: &AgentState) -> TurnOutcome {
+    if let Some(answer) = last_assistant(state) {
+        reporter.whole_answer(answer);
+    }
+    reporter.note(STOPPED);
+    reporter.finish(false, true)
 }
 
 /// The last thing the model said, whether or not it finished saying it.
@@ -1571,27 +1619,53 @@ impl Drop for LiveRun {
     }
 }
 
-/// A metalcraft failure as Neo's.
-fn graph_error(error: GraphError) -> AgentError {
-    // A cancelled node surfaces as a node error on the stream before the
-    // outcome does; reporting it as a failure would show a broken turn where
-    // the user pressed stop.
-    if error.to_string().contains("cancelled") {
+/// One classification for both ways a node failure reaches this turn.
+///
+/// metalcraft reports a failing node twice over: as an `Err(GraphError)` on
+/// the event stream, and as `RunOutcome::Failed { node, error }` where
+/// `error` is that same `GraphError` already stringified. A cancellation can
+/// arrive on either, and only the stream was ever classified — so a stop that
+/// came back as `Failed` was published as a red error card over a turn the
+/// user had chosen to end. Both paths call this, which is the point: there is
+/// one rule, and it reads a marker this crate wrote rather than prose a
+/// reword would break. See [`CANCELLED_MARKER`].
+fn node_failure(node: &str, message: &str) -> AgentError {
+    if message.contains(CANCELLED_MARKER) {
         return AgentError::Core(CoreError::Cancelled);
     }
-    AgentError::Graph(error.to_string())
+    AgentError::Graph(format!("{node}: {message}"))
+}
+
+/// A metalcraft failure as Neo's.
+fn graph_error(error: GraphError) -> AgentError {
+    match error {
+        GraphError::Node { node, message } => node_failure(&node, &message),
+        // Everything else is the graph itself refusing to run — no entry
+        // point, no edge, a journal that would not write — and no node
+        // produced it, so there is nothing to classify.
+        other => AgentError::Graph(other.to_string()),
+    }
 }
 
 /// A short stable name for a failure, so a report can count failures by cause
 /// without matching on message text that will be reworded.
+///
+/// This is the `code` [`AppEvent::TurnFailed`] carries, so a front end can
+/// tell a stopped turn from a broken one without matching on prose.
 pub(crate) fn error_code(error: &AgentError) -> &'static str {
     match error {
         AgentError::Runtime(_) => "agent_runtime",
+        AgentError::Tool(ToolError::Cancelled(_)) => "agent_cancelled",
         AgentError::Tool(_) => "agent_tool",
         AgentError::Request(_) => "agent_request",
         AgentError::Graph(_) => "agent_graph",
         AgentError::NoKey(_) => "agent_no_key",
-        AgentError::Core(_) => "agent_cancelled",
+        // Only `Cancelled` is a stop. The other `CoreError`s — an invalid
+        // setting, a provider refusal — used to be counted as cancellations
+        // here while `is_cancelled` correctly said they were not, so a report
+        // read a configuration failure as a user pressing stop.
+        AgentError::Core(CoreError::Cancelled) => "agent_cancelled",
+        AgentError::Core(_) => "agent_core",
     }
 }
 
@@ -1708,6 +1782,9 @@ mod tests {
         /// observable — a steered message arriving, and the model's own
         /// earlier sentence surviving.
         asked: Arc<Mutex<Vec<Vec<String>>>>,
+        /// Which round trip the vendor refuses, counted from one. `None` —
+        /// every other test — never refuses.
+        fails_on: Option<usize>,
     }
 
     impl Scripted {
@@ -1715,6 +1792,16 @@ mod tests {
             Self {
                 turns: Arc::new(Mutex::new(turns.into())),
                 asked: Arc::new(Mutex::new(Vec::new())),
+                fails_on: None,
+            }
+        }
+
+        /// A model that answers from the script until its `nth` call, which
+        /// it refuses — a vendor that broke mid-run.
+        fn failing_on(turns: Vec<Vec<Reply>>, nth: usize) -> Self {
+            Self {
+                fails_on: Some(nth),
+                ..Self::new(turns)
             }
         }
 
@@ -1745,7 +1832,16 @@ mod tests {
                 .iter()
                 .map(|message| serde_json::to_string(message).unwrap_or_default())
                 .collect();
-            self.asked.lock().expect("the log holds").push(messages);
+            let calls = {
+                let mut asked = self.asked.lock().expect("the log holds");
+                asked.push(messages);
+                asked.len()
+            };
+            if self.fails_on == Some(calls) {
+                return Err(CompletionError::ProviderError(
+                    "the vendor broke mid-run".to_owned(),
+                ));
+            }
             let replies = self
                 .turns
                 .lock()
@@ -2207,6 +2303,140 @@ mod tests {
                     && message.text == "Working on it"),
             "the partial answer survives in the thread"
         );
+    }
+
+    /// A node that blew up is not an answer.
+    ///
+    /// The `Failed` arm used to build the error, publish it, and then return
+    /// a `TurnOutcome` anyway — under a comment claiming "the caller gets the
+    /// error". `neo-tui` rendered the crashed turn as an answer and
+    /// `neo-eval` scored it `error: None`, so `ExpectNoError` passed on every
+    /// turn where a node failed. Every eval number produced before this was
+    /// suspect.
+    #[tokio::test]
+    async fn a_turn_whose_node_failed_is_an_error_and_not_an_answer() {
+        let mut fixture = Fixture::new(CancellationToken::new());
+        let (reporter, cards) = fixture.reporter();
+        // One good round trip, a tool call, then a vendor that refuses: the
+        // failure lands mid-run, with a partial answer already on the screen.
+        let model = Scripted::failing_on(
+            vec![vec![
+                Reply::Text("Opening it now."),
+                Reply::Call {
+                    name: "app",
+                    arguments: json!({"app": "Keynote", "goal": "retitle the deck"}),
+                },
+            ]],
+            2,
+        );
+        let tools = fixture.tools(Fake {
+            reporter: Arc::clone(&reporter),
+            observation: "Done · retitled".to_owned(),
+            during: None,
+        });
+
+        let error = drive(
+            &reporter,
+            cards,
+            &fixture.request,
+            &fixture.inference(),
+            model,
+            tools,
+        )
+        .await
+        .expect_err("a run whose node failed must not come back as a turn");
+
+        assert!(!error.is_cancelled(), "nobody stopped this turn: {error}");
+        assert_eq!(error_code(&error), "agent_graph");
+        let seen = shape(&fixture.seen());
+        assert!(
+            seen.iter().any(|line| line.starts_with("failed")),
+            "the failure is published as a failure: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|line| line.starts_with("finished")),
+            "a failed turn must not also finish: {seen:?}"
+        );
+    }
+
+    /// Both endings a stop can arrive on end the turn as a stop.
+    ///
+    /// metalcraft reports a cancellation as `RunOutcome::Cancelled` today —
+    /// the executor races every node against the token — and the `Failed`
+    /// arm is reached only by a node that returned `Err`. But the `Failed`
+    /// arm classified nothing at all, and `graph_error`'s
+    /// `error.to_string().contains("cancelled")` sat on a path node errors
+    /// never take, so the moment a stop did surface as a node failure it
+    /// would have been published as a red error card over a turn the user
+    /// chose to end. [`finish`] is exercised directly because that is the
+    /// contract: this arm, this marker, this disposition.
+    #[tokio::test]
+    async fn a_stop_that_surfaces_as_a_node_failure_is_still_a_stop() {
+        let mut fixture = Fixture::new(CancellationToken::new());
+        let (reporter, _cards) = fixture.reporter();
+        let mut state = AgentState::new("make the deck say Q3");
+        state
+            .messages
+            .push(AgentMessage::Assistant("Working on it".to_owned()));
+
+        let outcome = finish(
+            &reporter,
+            &fixture.request,
+            RunOutcome::Failed {
+                state,
+                node: "tools".to_owned(),
+                // Exactly what `observed` hands the graph, stringified the
+                // way the executor stringifies it.
+                error: GraphError::Node {
+                    node: "tools".to_owned(),
+                    message: CANCELLED_MARKER.to_owned(),
+                }
+                .to_string(),
+            },
+        )
+        .expect("a stop is an outcome, not an error, whichever arm it lands on");
+
+        assert!(outcome.cancelled);
+        assert_eq!(outcome.text, "Working on it");
+        let seen = shape(&fixture.seen());
+        assert!(
+            !seen.iter().any(|line| line.starts_with("failed")),
+            "a stopped turn is never published as a failure: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|line| line == &format!("note {STOPPED}")),
+            "and it says it was stopped: {seen:?}"
+        );
+    }
+
+    /// The marker is the whole mechanism, so the two things that would break
+    /// it silently are pinned: a vendor error that happens to use the word
+    /// "cancelled" is a failure, and only `CoreError::Cancelled` is a stop.
+    #[test]
+    fn only_the_marker_classifies_a_stop() {
+        let vendor = graph_error(GraphError::Node {
+            node: "agent".to_owned(),
+            message: "the request was cancelled by the upstream provider".to_owned(),
+        });
+        assert!(
+            !vendor.is_cancelled(),
+            "a vendor mentioning the word did not stop the run: {vendor}"
+        );
+        assert_eq!(error_code(&vendor), "agent_graph");
+
+        let stop = node_failure("tools", CANCELLED_MARKER);
+        assert!(stop.is_cancelled());
+        assert_eq!(error_code(&stop), "agent_cancelled");
+
+        // `is_cancelled` has always tested only `Cancelled`; `error_code`
+        // used to call every `CoreError` a cancellation, so a report read an
+        // invalid setting as a user pressing stop.
+        let misconfigured = AgentError::Core(CoreError::InvalidSetting {
+            field: "safety.on_task_floor",
+            reason: "below the floor".to_owned(),
+        });
+        assert!(!misconfigured.is_cancelled());
+        assert_eq!(error_code(&misconfigured), "agent_core");
     }
 
     /// A turn that never reaches the model records no cost: a row of zeroes

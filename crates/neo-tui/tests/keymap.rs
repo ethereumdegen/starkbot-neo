@@ -878,6 +878,7 @@ fn esc_stops_a_live_run_and_otherwise_asks_to_quit() {
     state.apply(AppEvent::TurnFailed {
         run: common::run_id(1),
         error: "cancelled".into(),
+        code: "agent_cancelled".into(),
     });
     assert_eq!(
         state.runs.first().map(|run| run.state.clone()),

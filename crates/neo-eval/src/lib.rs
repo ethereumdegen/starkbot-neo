@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use neo_agent::Runtime;
 use neo_agent::agent::{ChatMessage, ChatRequest};
+use neo_agent::screen::ScreenScope;
 use neo_core::{ActionKind, ActionSummary, AppEvent, ConversationId, Envelope, RunId, TurnUsage};
 use serde_json::{Value, json};
 use spice_framework::agent::{AgentConfig, AgentOutput, AgentUnderTest, ToolCall, Turn, Usage};
@@ -86,6 +87,17 @@ pub struct NeoAgent {
     /// The suite's stop signal, threaded into every turn so a cancelled eval
     /// does not leave a browser open and a document half typed.
     cancel: CancellationToken,
+    /// The screen lease the suite holds for its whole run, so each case's turn
+    /// can take the keyboard *inside* it.
+    ///
+    /// Without this every app case would be refused: the suite acquires the
+    /// screen once under its own run id ([`suite::run`]), while each case mints
+    /// a fresh run for its turn — `request.run` is what separates the per-case
+    /// traces, the `turns` rows and the desktop's run list, so the cases cannot
+    /// simply share one id. A lease that guessed at nesting from the run id
+    /// would therefore have to refuse them; the scope says plainly that this
+    /// turn runs inside a lease its caller already holds.
+    screen: Option<ScreenScope>,
 }
 
 impl NeoAgent {
@@ -94,11 +106,13 @@ impl NeoAgent {
         runtime: Arc<Runtime>,
         conversation: ConversationId,
         cancel: CancellationToken,
+        screen: Option<ScreenScope>,
     ) -> Self {
         Self {
             runtime,
             conversation,
             cancel,
+            screen,
         }
     }
 }
@@ -175,6 +189,7 @@ impl AgentUnderTest for NeoAgent {
             ChatRequest::new(self.conversation, vec![ChatMessage::user(user_message)]);
         request.max_steps = EVAL_MAX_STEPS;
         request.cancel = self.cancel.clone();
+        request.screen = self.screen;
 
         // `chat` has no progress callback any more: progress is events, so a
         // window, a terminal and this harness can all watch the same turn.
@@ -631,6 +646,7 @@ mod tests {
             AppEvent::TurnFailed {
                 run: RunId::new(),
                 error: "someone else's turn".to_owned(),
+                code: "agent_graph".to_owned(),
             }
         ));
         assert!(absorb(

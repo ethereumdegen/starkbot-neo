@@ -4,6 +4,7 @@ pub mod domain;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod paths;
 pub mod providers;
 pub mod registry;
 pub mod settings;

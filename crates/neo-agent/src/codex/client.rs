@@ -18,6 +18,9 @@ use url::Url;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const NOTIFICATION_CAPACITY: usize = 128;
 const PROVIDER_ID: &str = "chatgpt-codex";
+/// JSON-RPC's own "this method is not served". The app-server may ask the
+/// client for something; Neo answers none of it, and says so this way.
+const JSONRPC_METHOD_NOT_FOUND: i64 = -32_601;
 
 type BoxWriter = Pin<Box<dyn AsyncWrite + Send>>;
 type PendingResult = std::result::Result<Value, RpcFailure>;
@@ -36,8 +39,11 @@ pub enum CodexError {
     Rpc { code: i64, message: String },
     #[error("Codex app-server request `{method}` timed out")]
     Timeout { method: String },
-    #[error("Codex app-server exited")]
-    Exited,
+    /// The app-server is gone, and why. The reason is the read loop's last
+    /// word — a malformed line, a closed pipe, a read failure — and carrying
+    /// it is the difference between "exited" and a diagnosis.
+    #[error("Codex app-server exited: {0}")]
+    Exited(String),
     #[error("system clock failed: {0}")]
     Clock(#[from] std::time::SystemTimeError),
     #[error("system clock cannot fit in milliseconds")]
@@ -131,7 +137,11 @@ impl CodexLoginAttempt {
                     ));
                 }
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return Err(CodexError::Exited),
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(CodexError::Exited(
+                        "the notification stream closed while waiting for the login".to_owned(),
+                    ));
+                }
             }
         }
     }
@@ -148,6 +158,21 @@ struct ClientInner {
     notifications: broadcast::Sender<CodexNotification>,
     next_id: AtomicU64,
     request_timeout: Duration,
+    /// Why the read loop stopped, once it has.
+    ///
+    /// **This is what a later request checks.** `fail_pending` answered the
+    /// requests that were already waiting and nothing else, so the first
+    /// request issued after the loop died minted an id, inserted itself into
+    /// `pending`, wrote into a pipe nobody reads and then waited out the
+    /// whole `request_timeout` before reporting `Timeout` — the wrong
+    /// reason, once per request, for the rest of the process's life.
+    /// `CodexSupervisor::has_exited` existed for exactly this and was called
+    /// by nothing.
+    ///
+    /// Written and read under the `pending` lock, so a request cannot pass
+    /// the check and then insert itself into a map that has just been
+    /// drained for the last time.
+    closed: std::sync::OnceLock<String>,
 }
 
 #[derive(Debug)]
@@ -173,6 +198,7 @@ impl CodexClient {
             notifications,
             next_id: AtomicU64::new(1),
             request_timeout,
+            closed: std::sync::OnceLock::new(),
         });
         tokio::spawn(read_loop(reader, Arc::clone(&inner)));
         let client = Self { inner };
@@ -388,7 +414,11 @@ impl CodexClient {
                         "missed {skipped} Codex notifications"
                     )));
                 }
-                Err(broadcast::error::RecvError::Closed) => return Err(CodexError::Exited),
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(CodexError::Exited(
+                        "the notification stream closed mid-turn".to_owned(),
+                    ));
+                }
             }
         }
     }
@@ -409,10 +439,28 @@ impl CodexClient {
         self.notify("initialized", json!({})).await
     }
 
+    /// One request, answered by the read loop or refused at once.
+    ///
+    /// # Errors
+    ///
+    /// [`CodexError::Exited`] when the read loop has already stopped — which
+    /// is checked *before* an id is minted, because every request after that
+    /// point otherwise waited out the full `request_timeout` to report a
+    /// timeout that was really an exit. See [`ClientInner::closed`].
     async fn request(&self, method: &str, params: Value) -> Result<Value, CodexError> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
-        lock_pending(&self.inner)?.insert(id, sender);
+        {
+            // The latch is read under the `pending` lock that `close` sets it
+            // under. Without that ordering a request could pass the check,
+            // `close` could drain, and the request would still end up in a
+            // map nothing reads again — the same stall, just narrower.
+            let mut pending = lock_pending(&self.inner)?;
+            if let Some(reason) = self.inner.closed.get() {
+                return Err(CodexError::Exited(reason.clone()));
+            }
+            pending.insert(id, sender);
+        }
         if let Err(error) = self
             .write_message(&json!({ "method": method, "id": id, "params": params }))
             .await
@@ -421,7 +469,15 @@ impl CodexClient {
             return Err(error);
         }
         let response = match timeout(self.inner.request_timeout, receiver).await {
-            Ok(response) => response.map_err(|_| CodexError::Exited)?,
+            Ok(response) => response.map_err(|_| {
+                CodexError::Exited(
+                    self.inner
+                        .closed
+                        .get()
+                        .cloned()
+                        .unwrap_or_else(|| "the request was dropped unanswered".to_owned()),
+                )
+            })?,
             Err(_) => {
                 lock_pending(&self.inner)?.remove(&id);
                 return Err(CodexError::Timeout {
@@ -444,17 +500,7 @@ impl CodexClient {
     }
 
     async fn write_message(&self, message: &Value) -> Result<(), CodexError> {
-        let mut encoded = serde_json::to_vec(message)?;
-        if encoded.len() > MAX_MESSAGE_BYTES {
-            return Err(CodexError::Protocol(
-                "outbound message exceeds 1 MiB".into(),
-            ));
-        }
-        encoded.push(b'\n');
-        let mut writer = self.inner.writer.lock().await;
-        writer.write_all(&encoded).await?;
-        writer.flush().await?;
-        Ok(())
+        send_message(&self.inner, message).await
     }
 }
 
@@ -481,20 +527,25 @@ where
                     Ok(message) => message,
                     Err(error) => break format!("invalid JSON: {error}"),
                 };
-                if let Err(error) = dispatch_message(message, &inner) {
+                if let Err(error) = dispatch_message(message, &inner).await {
                     break error;
                 }
             }
             Err(error) => break format!("read failed: {error}"),
         }
     };
-    fail_pending(&inner, failure);
+    close(&inner, failure);
 }
 
-fn dispatch_message(message: Value, inner: &ClientInner) -> Result<(), String> {
+/// One line off the app-server, to whoever was waiting for it.
+///
+/// `Err` ends the read loop, so only a failure that makes the connection
+/// unusable belongs there. A message this client does not implement is not
+/// one of those — see [`refuse_request`].
+async fn dispatch_message(message: Value, inner: &ClientInner) -> Result<(), String> {
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
-        if message.get("method").is_some() {
-            return Err("server-initiated requests are disabled".into());
+        if let Some(method) = message.get("method").and_then(Value::as_str) {
+            return refuse_request(id, method, inner).await;
         }
         let sender = lock_pending(inner)
             .map_err(|error| error.to_string())?
@@ -523,6 +574,43 @@ fn dispatch_message(message: Value, inner: &ClientInner) -> Result<(), String> {
     let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
     let notification = parse_notification(method, params).map_err(|error| error.to_string())?;
     let _ = inner.notifications.send(notification);
+    Ok(())
+}
+
+/// Answer a server-initiated request with "method not found".
+///
+/// The app-server may ask its client for something — a permission, a piece
+/// of configuration. Neo serves none of it, and JSON-RPC already has a way
+/// to say so. Returning `Err` instead ended the read loop, and with it every
+/// request issued for the rest of the process's life, over one message that
+/// is merely unimplemented. Only a write failure ends the loop from here:
+/// the pipe really is gone then.
+async fn refuse_request(id: u64, method: &str, inner: &ClientInner) -> Result<(), String> {
+    let response = json!({
+        "id": id,
+        "error": {
+            "code": JSONRPC_METHOD_NOT_FOUND,
+            "message": format!("`{method}` is not served: this client answers no requests"),
+        }
+    });
+    send_message(inner, &response)
+        .await
+        .map_err(|error| format!("could not refuse `{method}`: {error}"))
+}
+
+/// One line to the app-server. A free function because the read loop writes
+/// too, and it holds an `Arc<ClientInner>` rather than a [`CodexClient`].
+async fn send_message(inner: &ClientInner, message: &Value) -> Result<(), CodexError> {
+    let mut encoded = serde_json::to_vec(message)?;
+    if encoded.len() > MAX_MESSAGE_BYTES {
+        return Err(CodexError::Protocol(
+            "outbound message exceeds 1 MiB".into(),
+        ));
+    }
+    encoded.push(b'\n');
+    let mut writer = inner.writer.lock().await;
+    writer.write_all(&encoded).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -717,14 +805,24 @@ fn lock_pending(
         .map_err(|_| CodexError::Protocol("pending-request lock poisoned".into()))
 }
 
-fn fail_pending(inner: &ClientInner, message: String) {
+/// Latch the connection closed and answer everything still waiting.
+///
+/// The latch goes up under the same lock the pending map is drained under,
+/// so [`CodexClient::request`] can never pass its check and then insert into
+/// a map that will not be read again. See [`ClientInner::closed`].
+fn close(inner: &ClientInner, reason: String) {
     let Ok(mut pending) = inner.pending.lock() else {
+        // Poisoned. The latch is still worth raising: a caller that cannot
+        // lock the map is told the lock is poisoned, and one that comes later
+        // is told the connection is gone, which is the truth in both cases.
+        let _ = inner.closed.set(reason);
         return;
     };
+    let _ = inner.closed.set(reason.clone());
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err(RpcFailure {
             code: -32_000,
-            message: message.clone(),
+            message: reason.clone(),
         }));
     }
 }
@@ -1026,6 +1124,115 @@ mod tests {
         assert_eq!(turn.turn_id, "turn-1");
         assert_eq!(turn.text, "Hi.");
         server.await.unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    /// A server-initiated request used to end the read loop, and with it
+    /// every request issued for the rest of the process's life. It is
+    /// answered instead, and the connection carries on.
+    #[tokio::test]
+    async fn a_server_initiated_request_is_refused_without_breaking_the_connection() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server_io);
+            let mut reader = BufReader::new(reader);
+            let initialize = read_message(&mut reader).await;
+            respond(&mut writer, &initialize, json!({})).await;
+            let _initialized = read_message(&mut reader).await;
+
+            // The app-server asks its client for something Neo does not
+            // serve.
+            send(
+                &mut writer,
+                json!({ "id": 9_001, "method": "item/requestApproval", "params": {} }),
+            )
+            .await;
+
+            // Two messages come back, in either order: the refusal, because a
+            // request has to be answered, and the client's own next request,
+            // because the connection has to have survived answering it.
+            let mut refused = false;
+            let mut served = false;
+            for _ in 0..2 {
+                let message = read_message(&mut reader).await;
+                if message["id"] == json!(9_001) {
+                    assert_eq!(message["error"]["code"], JSONRPC_METHOD_NOT_FOUND);
+                    refused = true;
+                } else {
+                    assert_eq!(message["method"], "account/read");
+                    respond(
+                        &mut writer,
+                        &message,
+                        json!({ "account": null, "requiresOpenaiAuth": false }),
+                    )
+                    .await;
+                    served = true;
+                }
+            }
+            assert!(refused, "the server-initiated request was never answered");
+            assert!(served, "the connection did not survive the refusal");
+        });
+
+        let (reader, writer) = tokio::io::split(client_io);
+        let client = CodexClient::connect(reader, writer, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let account = client
+            .read_account(false)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(account.status, ProviderAccountStatus::SignedOut);
+        server.await.unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    /// Every request after the read loop died waited out the whole
+    /// `request_timeout` and then reported `Timeout` — the wrong reason, for
+    /// 20 s, once per call, forever. The first request here is in flight when
+    /// the loop dies, so it is answered by the drain; its answer is the proof
+    /// the latch is up, which makes the second request's verdict
+    /// deterministic rather than a race with the reader.
+    #[tokio::test]
+    async fn a_request_after_the_read_loop_died_reports_the_exit_and_not_a_timeout() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server_io);
+            let mut reader = BufReader::new(reader);
+            let initialize = read_message(&mut reader).await;
+            respond(&mut writer, &initialize, json!({})).await;
+            let _initialized = read_message(&mut reader).await;
+
+            let first = read_message(&mut reader).await;
+            assert_eq!(first["method"], "account/read");
+            // Answered with a line that is not JSON, which ends the read loop
+            // for good. The pipe is left open, so the latch is the only thing
+            // that can tell a later caller anything.
+            writer
+                .write_all(b"{ not json\n")
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+            let _held_open = reader.read_line(&mut String::new()).await;
+        });
+
+        let (reader, writer) = tokio::io::split(client_io);
+        // A timeout far longer than this test can take, so passing cannot be
+        // the timeout firing.
+        let client = CodexClient::connect(reader, writer, Duration::from_secs(120))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        match client.read_account(false).await {
+            Err(CodexError::Timeout { .. }) => {
+                panic!("the drain did not answer the in-flight request")
+            }
+            Err(_) => {}
+            Ok(_) => panic!("a connection that died mid-request cannot answer"),
+        }
+        match client.read_account(false).await {
+            Err(CodexError::Exited(reason)) => {
+                assert!(reason.contains("invalid JSON"), "{reason}");
+            }
+            other => panic!("expected an exit, got {other:?}"),
+        }
+        server.abort();
     }
 
     async fn read_message(reader: &mut BufReader<tokio::io::ReadHalf<DuplexStream>>) -> Value {

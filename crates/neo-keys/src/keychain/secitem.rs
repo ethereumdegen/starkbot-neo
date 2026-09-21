@@ -11,7 +11,7 @@
 //! blob impossible. `SecItemAdd` takes arbitrary bytes and needs neither argv
 //! nor a terminal.
 //!
-//! Nothing from `security_framework` crosses this module's edge: the three
+//! Nothing from `security_framework` crosses this module's edge: the four
 //! functions below speak bytes and [`KeychainError`], so the shared code in
 //! the parent module compiles identically on every platform.
 
@@ -24,6 +24,22 @@ use super::KeychainError;
 
 /// `errSecItemNotFound` — nothing is stored under that account.
 const NOT_FOUND: i32 = -25300;
+
+/// `errSecInteractionNotAllowed` — the Keychain is locked and macOS will not
+/// unlock it without the user.
+const INTERACTION_NOT_ALLOWED: i32 = -25308;
+
+/// `errSecAuthFailed` — the user, or the item's access list, refused.
+const AUTH_FAILED: i32 = -25293;
+
+/// `errUserCanceled` — the authorization prompt was dismissed.
+const USER_CANCELED: i32 = -128;
+
+/// macOS always has a login Keychain: there is no session in which it is
+/// missing, so nothing here has to be probed the way Linux's session bus is.
+pub(super) fn available() -> bool {
+    true
+}
 
 pub(super) fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, KeychainError> {
     match get_generic_password(service, account) {
@@ -46,12 +62,22 @@ pub(super) fn delete(service: &str, account: &str) -> Result<(), KeychainError> 
     }
 }
 
-/// The framework's own code and message, neither of which can contain the
-/// stored value.
+/// The three outcomes a user can act on get their own variant; everything
+/// else carries the framework's own code and message, neither of which can
+/// contain the stored value. They used to collapse into one opaque error, and
+/// a caller that cannot tell a locked Keychain from a denied one can only say
+/// "keychain read failed" — which turned an unlock into a `bootstrap()` the
+/// user had no way to act on.
 fn failed(operation: &'static str, account: &str, error: &SecError) -> KeychainError {
-    KeychainError::Store {
-        operation,
-        account: account.to_owned(),
-        detail: format!("{} ({})", error.message().unwrap_or_default(), error.code()),
+    let account = account.to_owned();
+    match error.code() {
+        INTERACTION_NOT_ALLOWED => KeychainError::Locked { operation, account },
+        AUTH_FAILED => KeychainError::Denied { operation, account },
+        USER_CANCELED => KeychainError::Cancelled { operation, account },
+        code => KeychainError::Keychain {
+            operation,
+            account,
+            detail: format!("{} ({code})", error.message().unwrap_or_default()),
+        },
     }
 }

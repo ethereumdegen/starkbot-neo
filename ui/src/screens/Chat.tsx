@@ -32,19 +32,17 @@ function runOf(message: MessageView): string | null {
 }
 
 /**
- * The account a turn died for want of, read out of its failure text.
+ * The failure codes that mean "a key this turn needed is not stored".
  *
- * `TurnFailed` carries a rendered sentence — the structured error stops at
- * the command boundary, and only a command can answer with a `Fix` — so the
- * sentence is matched here. Two spellings, because two layers write one:
- * `AgentError::NoKey` says "no openai key is stored" and
- * `RuntimeError::MissingKey` quotes the account. The runs slice makes the
- * same bargain for cancellation, and the alternative is a dead end that
- * names a key and offers nothing to press.
+ * This used to be a regex over the failure text, and it existed only to
+ * rewrite a sentence the backend had already written. `TurnFailed` now
+ * carries the producer's own classification, so the sentence is shown as
+ * sent and the code decides whether Connections is worth offering.
+ *
+ * Two spellings, because two layers publish the event: `neo-agent`'s
+ * `AgentError::NoKey` and the desktop's `RuntimeError::MissingKey`.
  */
-function missingKeyOf(error: string): string | null {
-  return /no `?([\w-]+)`? key is stored/.exec(error)?.[1] ?? null;
-}
+const MISSING_KEY_CODES: Record<string, true> = { agent_no_key: true, missing_key: true };
 
 function Bubble({ message, steered }: { message: MessageView; steered: boolean }) {
   const tone = message.role === "user" ? chat.user : chat.agent;
@@ -99,7 +97,7 @@ export function Chat() {
 
   const live = current !== null && current.status === "running";
   const liveRun = live && current !== null ? current.run : null;
-  const failedForKey = current?.error == null ? null : missingKeyOf(current.error);
+  const failedForKey = current?.code != null && MISSING_KEY_CODES[current.code] === true;
   // What the closed pane is hiding, so the button is worth pressing: a live
   // turn says how much work is behind it, a settled one just offers itself.
   const turnLabel =
@@ -285,12 +283,11 @@ export function Chat() {
                   <span>turn</span>
                   <span className={chat.kind}>{current.status}</span>
                 </div>
-                <div className={chat.text}>
-                  {failedForKey === null
-                    ? current.error
-                    : `This turn needs the ${failedForKey} key and none is stored. Add it in Connections, then ask again.`}
-                </div>
-                {failedForKey !== null && (
+                {/* The backend's own sentence, not a second one written
+                    here: `AgentError::NoKey` and `RuntimeError::MissingKey`
+                    both name the account and the command that stores it. */}
+                <div className={chat.text}>{current.error}</div>
+                {failedForKey && (
                   <button className="link" onClick={() => setScreen("connections")}>
                     Open Connections
                   </button>

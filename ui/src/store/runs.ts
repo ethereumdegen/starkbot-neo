@@ -1,5 +1,4 @@
 import type { ActionSummary, AppEvent, RunId, RunKind, TurnUsage } from "../bridge/api";
-import type { NavEntry } from "./trace";
 
 export type RunStatus = "running" | "finished" | "failed" | "cancelled";
 
@@ -19,15 +18,6 @@ export interface RunStep {
   observation: string | null;
   durationMs: number | null;
   notes: string[];
-  /**
-   * The navigator lines this step produced, attached to the card that was
-   * open when they arrived.
-   *
-   * `NavStep` carries the navigator's own step counter, not the turn's, so
-   * there is no id to join on — but only one action can be in flight at a
-   * time, and it is the one whose observation has not arrived yet.
-   */
-  nav: NavEntry[];
 }
 
 export interface RunRecord {
@@ -69,6 +59,14 @@ export interface RunRecord {
   /** What the run answered with, once it has. */
   text: string | null;
   error: string | null;
+  /**
+   * How the failure was classified, as `TurnFailed.code` carried it.
+   *
+   * The sentence in `error` is written for a person and gets reworded; this
+   * is the name the producer gave the failure, which is what a screen may
+   * branch on. `null` until a run fails.
+   */
+  code: string | null;
   /** The step budget ran out rather than the model answering. */
   exhausted: boolean;
   usage: TurnUsage | null;
@@ -81,6 +79,44 @@ export interface RunsState {
 }
 
 export const initialRuns: RunsState = { order: [], byId: {} };
+
+/**
+ * How many runs the list keeps, mirroring `neo_tui::runs::RUNS_CAP`.
+ *
+ * This window is meant to stay open all day and every run it hears of — its
+ * own, the TUI's, a `neo` invocation in a terminal — lands here, so an
+ * uncapped list is a leak with a render pass attached to it. A *running*
+ * run is never dropped: it is the one `Stop` has to be able to reach.
+ *
+ * It also bounds everything hanging off a record, `stream` included: an
+ * answer is as long as one turn made it, and at most this many are held.
+ */
+export const RUNS_CAP = 50;
+
+/**
+ * How many step cards one run keeps, mirroring `neo_tui::state`'s
+ * `TURN_CARD_CAP`. The oldest goes first: a long run's interesting end is
+ * its tail, and the whole trace is in the store regardless.
+ */
+const TURN_CARD_CAP = 40;
+
+/** Drop the oldest settled runs until the list is back inside `RUNS_CAP`. */
+function prune(state: RunsState): RunsState {
+  if (state.order.length <= RUNS_CAP) {
+    return state;
+  }
+  const order = state.order.slice();
+  const byId = { ...state.byId };
+  // `order` is newest first, so the oldest candidate is at the back.
+  for (let index = order.length - 1; index >= 0 && order.length > RUNS_CAP; index -= 1) {
+    if (byId[order[index]].status === "running") {
+      continue;
+    }
+    delete byId[order[index]];
+    order.splice(index, 1);
+  }
+  return { order, byId };
+}
 
 /**
  * A run this window never started still has to be renderable.
@@ -109,10 +145,11 @@ function ensure(state: RunsState, run: RunId, kind: RunKind, at: number): RunsSt
     stopped: false,
     text: null,
     error: null,
+    code: null,
     exhausted: false,
     usage: null,
   };
-  return { order: [run, ...state.order], byId: { ...state.byId, [run]: record } };
+  return prune({ order: [run, ...state.order], byId: { ...state.byId, [run]: record } });
 }
 
 function patch(state: RunsState, run: RunId, change: Partial<RunRecord>): RunsState {
@@ -133,10 +170,10 @@ function withStep(record: RunRecord, step: number, change: Partial<RunStep>): Ru
       observation: null,
       durationMs: null,
       notes: [],
-      nav: [],
       ...change,
     };
-    return [...record.steps, blank].sort((left, right) => left.step - right.step);
+    const steps = [...record.steps, blank].sort((left, right) => left.step - right.step);
+    return steps.length > TURN_CARD_CAP ? steps.slice(steps.length - TURN_CARD_CAP) : steps;
   }
   const steps = record.steps.slice();
   steps[index] = { ...record.steps[index], ...change };
@@ -153,18 +190,34 @@ function withStep(record: RunRecord, step: number, change: Partial<RunStep>): Ru
 const STOPPED = "stopped";
 
 /**
- * Cancellation arrives as a failure when it comes from inside a tool — but
- * it is not a defect, and colouring a deliberate stop the same red as a
- * crashed run trains people to ignore red.
+ * The failure codes that mean "the user stopped this", not "this broke".
+ *
+ * Cancellation arrives as a failure when it comes from inside a tool, and
+ * colouring a deliberate stop the same red as a crashed run trains people
+ * to ignore red. This used to be decided by running `/cancel/i` over the
+ * sentence — a reword on either side of the bridge silently reclassified
+ * every stopped run — so `TurnFailed` carries the producer's own name for
+ * the failure and this reads that instead.
+ *
+ * Two spellings because two layers publish the event: `neo-agent`
+ * classifies its own turns (`agent::metal::error_code`) and the desktop
+ * commands classify theirs (`UiError`'s `CANCELLED`).
  */
-function statusFor(error: string): RunStatus {
-  return /cancel/i.test(error) ? "cancelled" : "failed";
-}
+const CANCELLED_CODES: Record<string, true> = { cancelled: true, agent_cancelled: true };
 
 /**
  * `at` is the envelope's timestamp rather than `Date.now()`: the reducer has
  * to be a pure function of the event stream for the tests to mean anything,
  * and a replayed stream must produce the same durations it did live.
+ *
+ * `nav_step` is deliberately absent. It used to `ensure` a `running` record
+ * and then discard the result when no step card was open, which is how one
+ * Inspect press — `run_ax` mints a run id for a round trip that is not a
+ * run — left a record nothing would ever settle: a climbing "N running"
+ * badge and the 500 ms timer that badge keeps alive, for the life of the
+ * window. The lines themselves are kept once, by the trace slice; a
+ * navigator run this window started is named by `registerRun`, and one it
+ * did not is a run whose end it would never hear about.
  */
 export function reduceRuns(state: RunsState, event: AppEvent, at: number): RunsState {
   switch (event.type) {
@@ -246,26 +299,10 @@ export function reduceRuns(state: RunsState, event: AppEvent, at: number): RunsS
     case "turn_failed": {
       const seeded = ensure(state, event.run, "chat", at);
       return patch(seeded, event.run, {
-        status: statusFor(event.error),
+        status: CANCELLED_CODES[event.code] === true ? "cancelled" : "failed",
         endedAt: at,
         error: event.error,
-      });
-    }
-    /**
-     * A navigator line belongs to the action that is running. `NavStep`
-     * carries the navigator's own counter, so joining on the number would
-     * file a browser's third move under the turn's third step.
-     */
-    case "nav_step": {
-      const seeded = ensure(state, event.run, "nav", at);
-      const record = seeded.byId[event.run];
-      const open = record.steps.find((row) => row.observation === null);
-      if (open === undefined) {
-        return seeded;
-      }
-      const entry: NavEntry = { step: event.step, line: event.line, kind: event.kind };
-      return patch(seeded, event.run, {
-        steps: withStep(record, open.step, { nav: [...open.nav, entry] }),
+        code: event.code,
       });
     }
     case "eval_case":

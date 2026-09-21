@@ -129,6 +129,16 @@ fn answer(operation: &str) -> Value {
     json!({ "model": "jev-test", "answers": answers, "usage": { "input_tokens": 11 } })
 }
 
+/// Jev's answer with all four safety heads attached.
+fn guarded_answer(operation: &str, risk: f64) -> Value {
+    let mut body = answer(operation);
+    for head in ["outward", "destructive", "spends", "on_task"] {
+        let value = if head == "on_task" { 0.95 } else { risk };
+        body["answers"][head] = json!({ "type": "noul", "noul": value });
+    }
+    body
+}
+
 async fn jev(server: &MockServer, answers: Vec<Value>) -> TypeSafe {
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
@@ -148,6 +158,7 @@ fn config() -> RunConfig {
         safety_heads: false,
         confirm_at: 0.4,
         denied_origins: Vec::new(),
+        on_task_floor: 0.0,
     }
 }
 
@@ -159,24 +170,37 @@ fn guarded_config() -> RunConfig {
     }
 }
 
-/// Jev's answer with the four safety heads attached at the given probability.
-fn guarded_answer(operation: &str, risk: f64) -> Value {
-    let mut body = answer(operation);
-    for head in ["outward", "destructive", "spends", "on_task"] {
-        let value = if head == "on_task" { 0.95 } else { risk };
-        body["answers"][head] = json!({ "type": "noul", "noul": value });
-    }
-    body
+/// Drive one run to whatever it returns, retaining its events and wire requests.
+async fn run_with(
+    config: &RunConfig,
+    observer: FakeObserver,
+    answers: Vec<Value>,
+) -> (
+    Result<Outcome, jev_nav::NavError>,
+    Navigator<FakeObserver>,
+    Vec<StepEvent>,
+    Vec<Value>,
+) {
+    let server = MockServer::start().await;
+    let jev = jev(&server, answers).await;
+    let mut navigator = Navigator::new(observer, jev, None);
+    let mut steps = Vec::new();
+    let outcome = navigator.run(config, |step| steps.push(step.clone())).await;
+    let requests = server
+        .received_requests()
+        .await
+        .expect("recording is on")
+        .iter()
+        .map(|request| request.body_json().unwrap_or(Value::Null))
+        .collect();
+    (outcome, navigator, steps, requests)
 }
 
 async fn drive_guarded(
     observer: FakeObserver,
     answers: Vec<Value>,
 ) -> (Result<Outcome, jev_nav::NavError>, Navigator<FakeObserver>) {
-    let server = MockServer::start().await;
-    let jev = jev(&server, answers).await;
-    let mut navigator = Navigator::new(observer, jev, None);
-    let outcome = navigator.run(&guarded_config(), |_| {}).await;
+    let (outcome, navigator, _, _) = run_with(&guarded_config(), observer, answers).await;
     (outcome, navigator)
 }
 
@@ -189,20 +213,13 @@ async fn drive(
     Vec<StepEvent>,
     usize, // Jev requests
 ) {
-    let server = MockServer::start().await;
-    let jev = jev(&server, answers).await;
-    let mut navigator = Navigator::new(observer, jev, None);
-    let mut steps = Vec::new();
-    let outcome = navigator
-        .run(&config(), |step| steps.push(step.clone()))
-        .await
-        .expect("the scripted run completes");
-    let requests = server
-        .received_requests()
-        .await
-        .expect("recording is on")
-        .len();
-    (outcome, navigator, steps, requests)
+    let (outcome, navigator, steps, requests) = run_with(&config(), observer, answers).await;
+    (
+        outcome.expect("the scripted run completes"),
+        navigator,
+        steps,
+        requests.len(),
+    )
 }
 
 #[tokio::test]

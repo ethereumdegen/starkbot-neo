@@ -17,6 +17,7 @@ use neo_core::{
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 
+use crate::connection::write_transaction;
 use crate::{ReadPool, Result, StoreError, Writer};
 
 /// A message on its way into the thread. The store assigns the id and the
@@ -179,7 +180,7 @@ impl ConversationRepository {
         };
         let row = stored.clone();
         self.writer.execute(move |connection| {
-            let transaction = connection.transaction()?;
+            let transaction = write_transaction(connection)?;
             let conversation = row.conversation_id.to_string();
             let seq: i64 = transaction.query_row(
                 "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = ?1",
@@ -241,7 +242,7 @@ impl ConversationRepository {
         let row = message.clone();
         let append = append.to_owned();
         self.writer.execute(move |connection| {
-            let transaction = connection.transaction()?;
+            let transaction = write_transaction(connection)?;
             let conversation = row.conversation_id.to_string();
             let existing: Option<String> = match &run {
                 Some(run) => transaction
@@ -333,7 +334,7 @@ impl ConversationRepository {
         };
         let row = stored.clone();
         self.writer.execute(move |connection| {
-            let transaction = connection.transaction()?;
+            let transaction = write_transaction(connection)?;
             let conversation = row.conversation_id.to_string();
             let duration = i64::try_from(row.duration_ms)
                 .map_err(|_| StoreError::ValueOverflow("turns.duration_ms"))?;

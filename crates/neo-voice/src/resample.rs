@@ -72,6 +72,7 @@ pub(crate) fn to_pcm16(samples: &[f32]) -> Vec<i16> {
 /// thing that would catch a scaling bug — running on every platform.
 #[cfg(any(target_os = "macos", test))]
 #[must_use]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn from_pcm16(pcm16: &[i16]) -> Vec<f32> {
     pcm16
         .iter()

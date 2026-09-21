@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Minimal Chrome DevTools Protocol client: launch a managed Chrome, flat sessions, evaluate, input, capture."
+# An application crate, never a crates.io library.
 publish = false
 
 [lints]

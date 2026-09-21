@@ -176,13 +176,13 @@ fn actions_of(table: &ElementTable) -> Vec<Action> {
         }
     }
     for control in &table.controls {
-        let id = match control {
-            Control::ScrollUp => "SCROLL_UP",
-            Control::ScrollDown => "SCROLL_DOWN",
-            Control::Wait => "WAIT",
+        let (id, kind) = match control {
+            Control::ScrollUp => ("SCROLL_UP", "scroll"),
+            Control::ScrollDown => ("SCROLL_DOWN", "scroll"),
+            Control::Wait => ("WAIT", "wait"),
         };
         let mut action = Map::new();
-        action.insert("kind".into(), json!("control"));
+        action.insert("kind".into(), json!(kind));
         action.insert("id".into(), json!(id));
         action.insert("label".into(), json!(id));
         actions.push(action);
@@ -315,9 +315,7 @@ impl Observer for AxObserver {
             return Err(stale("the app changed since this decision"));
         }
         // A wait is the navigator's own pause: nothing to ask the app.
-        if action.get("kind").and_then(Value::as_str) == Some("control")
-            && action.get("id").and_then(Value::as_str) == Some("WAIT")
-        {
+        if action.get("kind").and_then(Value::as_str) == Some("wait") {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             return Ok(());
         }
@@ -347,7 +345,7 @@ fn ax_action_of(
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if kind == "control" {
+    if kind == "scroll" {
         let direction = match action.get("id").and_then(Value::as_str).unwrap_or_default() {
             "SCROLL_UP" => ScrollDir::Up,
             "SCROLL_DOWN" => ScrollDir::Down,

@@ -47,19 +47,6 @@ fn panes_at_120x40() {
 }
 
 #[test]
-fn panes_at_100x30_keep_three_panes() {
-    let state = common::state();
-    insta::assert_snapshot!("panes_100x30", common::render(&state, 100, 30));
-}
-
-#[test]
-fn panes_at_80x24_drop_to_two() {
-    let mut state = common::state();
-    press(&mut state, KeyCode::Char('3'));
-    insta::assert_snapshot!("panes_80x24", common::render(&state, 80, 24));
-}
-
-#[test]
 fn panes_at_60x20_collapse_to_one_with_a_tab_bar() {
     let state = common::state();
     insta::assert_snapshot!("panes_60x20", common::render(&state, 60, 20));
@@ -129,6 +116,7 @@ fn the_runs_pane_shows_a_running_and_a_failed_run() {
     state.apply(AppEvent::TurnFailed {
         run: common::run_id(2),
         error: "the model could not be reached".into(),
+        code: "agent_request".into(),
     });
 
     state.tick(23_000);

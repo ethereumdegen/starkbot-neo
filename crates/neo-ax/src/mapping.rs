@@ -3,12 +3,22 @@
 //! Pure: it reads a `RawNode` and answers what Jev may do with it. No AX call
 //! happens here, so every row of the table in the plan is unit-testable.
 //!
-//! Off macOS nothing reaches it — the walker and the actor that call it are
-//! `cfg(target_os = "macos")` — but it stays compiled rather than gated away
-//! with them: these are pure functions whose tests *are* the executable form
-//! of the plan's table, and the Linux lane is where that spec is cheapest to
-//! keep running.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+//! # One policy, two vocabularies
+//!
+//! 17 §3.1 asks for "the same sets in `atspi::Role` terms; one table, not
+//! two policies", and this is how that is kept true. The sets below —
+//! `CLICK_ROLES`, `TEXT_ROLES`, `SELECT_ROLES`, `DECORATION_ROLES`,
+//! `TUNNEL_ROLES`, `MODAL_ROLES`, `BUSY_ROLES` — are the policy, and they
+//! are keyed on one *canonical* role vocabulary: the `AX…` names, because
+//! that is the vocabulary Jev, the packs, the fixtures and
+//! `plans/01-accessibility.md` already speak. The macOS backend produces
+//! those names natively. The AT-SPI backend translates into them once, in
+//! [`canonical_role`] below, which sits here rather than in
+//! `backend::atspi` precisely so that a role added to a policy set and a
+//! role arriving from a toolkit cannot drift into different files.
+//!
+//! Nothing downstream of this module knows which backend produced a
+//! `RawNode`.
 
 use crate::raw::RawNode;
 use crate::types::{Checked, Operation, State};
@@ -74,6 +84,132 @@ const MODAL_SUBROLES: [&str; 3] = ["AXDialog", "AXSystemDialog", "AXSystemFloati
 
 /// Roles that mean "the app is busy".
 const BUSY_ROLES: [&str; 2] = ["AXProgressIndicator", "AXBusyIndicator"];
+
+/// The AT-SPI2 role vocabulary, said in the canonical one.
+///
+/// Returns `(role, subrole)` in `AX…` terms, which is the only vocabulary
+/// the sets above and [`display_role`] know. `states` is consulted where
+/// AT-SPI splits with a state what macOS splits with a role: a single-line
+/// `Text` is a field, a multi-line one is an area.
+///
+/// Measured deviations from what a reading of the two APIs would suggest,
+/// each of which cost a run on this machine:
+///
+/// * AT-SPI has no *subrole*, so `Dialog` and `Alert` become
+///   `AXWindow`/`AXDialog` — the subrole `MODAL_SUBROLES` already knows.
+///   `State::Modal` is **not** required: Chromium sets it on a `<dialog>`,
+///   WebKitGTK does not set it on `role="dialog" aria-modal="true"`, and a
+///   dialog that is not treated as modal leaves Jev acting on the window
+///   behind it.
+/// * `ToggleButton` is `AXCheckBox` with the `AXToggle` subrole rather
+///   than a button, so its on/off state reaches `State::checked` instead of
+///   being invisible.
+/// * `PageTab` is `AXRadioButton`/`AXTabButton`, which is exactly the shape
+///   AppKit publishes for a tab and what `display_role` renders as `tab`.
+/// * `ListItem` is `AXRow`: it is what a web `role="option"` arrives as
+///   from both Chromium and WebKitGTK, and a row is selectable.
+#[cfg(target_os = "linux")]
+pub(crate) fn canonical_role(
+    role: atspi::Role,
+    states: atspi::StateSet,
+) -> (&'static str, Option<&'static str>) {
+    use atspi::{Role, State};
+
+    let multi_line = states.contains(State::MultiLine);
+    match role {
+        // Clickable.
+        Role::Button | Role::PushButtonMenu => ("AXButton", None),
+        Role::ToggleButton => ("AXCheckBox", Some("AXToggle")),
+        Role::CheckBox => ("AXCheckBox", None),
+        Role::RadioButton => ("AXRadioButton", None),
+        Role::Link => ("AXLink", None),
+        Role::MenuItem | Role::CheckMenuItem | Role::RadioMenuItem | Role::TearoffMenuItem => {
+            ("AXMenuItem", None)
+        }
+        Role::PageTab => ("AXRadioButton", Some("AXTabButton")),
+        Role::SpinButton => ("AXIncrementor", None),
+        Role::Slider | Role::Dial => ("AXSlider", None),
+        Role::ColorChooser => ("AXColorWell", None),
+
+        // Typed into.
+        Role::PasswordText => ("AXSecureTextField", None),
+        Role::Entry | Role::Text | Role::Editbar | Role::DateEditor => {
+            if multi_line {
+                ("AXTextArea", None)
+            } else {
+                ("AXTextField", None)
+            }
+        }
+        Role::ComboBox | Role::Autocomplete => ("AXComboBox", None),
+
+        // Chosen from.
+        Role::PageTabList => ("AXTabGroup", None),
+        Role::ListItem | Role::TableRow => ("AXRow", None),
+        Role::TreeItem => ("AXRow", Some("AXOutlineRow")),
+        Role::List | Role::ListBox => ("AXList", None),
+        Role::Table => ("AXTable", None),
+        Role::Tree | Role::TreeTable => ("AXOutline", None),
+        Role::TableCell => ("AXCell", None),
+        Role::ColumnHeader | Role::TableColumnHeader => ("AXColumnHeader", None),
+        Role::RowHeader | Role::TableRowHeader => ("AXRowHeader", None),
+
+        // Structure that carries a name worth showing as a container.
+        Role::MenuBar => ("AXMenuBar", None),
+        Role::Menu | Role::PopupMenu => ("AXMenu", None),
+        Role::ToolBar => ("AXToolbar", None),
+        Role::ScrollPane | Role::Viewport => ("AXScrollArea", None),
+        Role::Frame | Role::Window | Role::InternalFrame | Role::DesktopFrame => ("AXWindow", None),
+        Role::Dialog | Role::Alert => ("AXWindow", Some("AXDialog")),
+        Role::Application => ("AXApplication", None),
+        Role::DocumentWeb => ("AXWebArea", None),
+
+        // Text that is read, not driven.
+        Role::Label | Role::Static | Role::Paragraph | Role::Caption | Role::BlockQuote => {
+            ("AXStaticText", None)
+        }
+        Role::Heading => ("AXHeading", None),
+        Role::Image | Role::Icon | Role::Canvas | Role::DrawingArea => ("AXImage", None),
+
+        // Busy.
+        Role::ProgressBar | Role::LevelBar => ("AXProgressIndicator", None),
+
+        // Pure chrome.
+        Role::ScrollBar => ("AXScrollBar", None),
+        Role::Separator => ("AXSplitter", None),
+        Role::Ruler => ("AXRuler", None),
+
+        // Anonymous wrappers. `AXGroup` and friends tunnel when they carry
+        // no label and no action, which is what these overwhelmingly are:
+        // a GTK window is a dozen nested `Filler`s before the first widget.
+        Role::SplitPane => ("AXSplitGroup", None),
+        Role::Panel
+        | Role::Filler
+        | Role::Grouping
+        | Role::Section
+        | Role::Landmark
+        | Role::Form
+        | Role::RootPane
+        | Role::LayeredPane
+        | Role::OptionPane
+        | Role::GlassPane
+        | Role::Header
+        | Role::Footer
+        | Role::Article
+        | Role::StatusBar
+        | Role::InfoBar
+        | Role::Notification
+        | Role::ToolTip
+        | Role::HTMLContainer
+        | Role::DocumentFrame
+        | Role::DocumentText
+        | Role::DocumentSpreadsheet
+        | Role::DocumentPresentation
+        | Role::DocumentEmail
+        | Role::Terminal => ("AXGroup", None),
+
+        _ => ("AXUnknown", None),
+    }
+}
 
 /// Lower-cased, de-`AX`-ed role as Jev sees it.
 pub(crate) fn display_role(role: &str, subrole: Option<&str>) -> String {
@@ -178,8 +314,16 @@ pub(crate) fn operations(node: &RawNode, is_menu_leaf: bool) -> Vec<Operation> {
     }
 
     let editable_web = role == "AXWebArea" && node.settable_value;
-    if (TEXT_ROLES.contains(&role) || editable_web) && (node.settable_value || node.focused) {
+    let typeable = node.settable_value || node.focused || node.focusable_text;
+    if (TEXT_ROLES.contains(&role) || editable_web) && typeable {
         ops.push(Operation::TypeText);
+    }
+
+    // A text field the backend can focus is also worth a CLICK even when it advertises no
+    // action: clicking is how a navigator puts the caret somewhere before typing, and a row
+    // with no operation at all is a row it cannot reach.
+    if TEXT_ROLES.contains(&role) && node.focusable_text && !ops.contains(&Operation::Click) {
+        ops.push(Operation::Click);
     }
 
     // SELECT only when the choices are already known: a pop-up button that

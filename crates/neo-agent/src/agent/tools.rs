@@ -214,6 +214,21 @@ fn cancelled() -> ToolError {
     ToolError::Cancelled(CoreError::Cancelled)
 }
 
+/// Why the navigator has no Jev client, in the words that are true.
+///
+/// Every failure of [`Runtime::jev`] used to collapse into
+/// [`ToolError::MissingJevKey`], so a Keychain that would not open, a store
+/// that could not be read and an unparseable `TYPESAFE_ENDPOINT` all told the
+/// user to add a TypeSafe key in Connections — a key they already had. Only a
+/// genuinely absent key is that message; everything else is reported as the
+/// runtime failure it was.
+fn jev_unavailable(error: RuntimeError) -> ToolError {
+    match error {
+        RuntimeError::MissingKey(_) => ToolError::MissingJevKey,
+        other => ToolError::from(other),
+    }
+}
+
 /// The single confirm threshold a [`RunConfig`] carries.
 ///
 /// Settings hold one threshold per safety head — `outward`, `destructive`,
@@ -262,6 +277,12 @@ pub struct BrowserOptions {
     pub safety_heads: bool,
     /// The probability at which a safety head stops the run.
     pub confirm_at: f64,
+    /// The screen hold this run is part of, when it is part of one.
+    ///
+    /// Only a headed run takes the screen at all, and only work nested
+    /// inside somebody else's hold needs this: see
+    /// [`crate::screen::ScreenScope`]. `None` contends for the screen.
+    pub screen: Option<crate::screen::ScreenScope>,
 }
 
 impl BrowserOptions {
@@ -292,6 +313,7 @@ impl BrowserOptions {
             attach: Vec::new(),
             safety_heads: true,
             confirm_at,
+            screen: None,
         }
     }
 }
@@ -304,6 +326,11 @@ pub struct AppOptions {
     pub goal: String,
     pub safety_heads: bool,
     pub confirm_at: f64,
+    /// The screen hold this run is part of, when it is part of one. An app
+    /// run always takes the screen, so a turn running inside somebody else's
+    /// hold — an eval case inside its suite — has to say so or be refused.
+    /// See [`crate::screen::ScreenScope`].
+    pub screen: Option<crate::screen::ScreenScope>,
 }
 
 impl AppOptions {
@@ -331,6 +358,7 @@ impl AppOptions {
             goal: goal.into(),
             safety_heads: true,
             confirm_at,
+            screen: None,
         }
     }
 }
@@ -400,7 +428,7 @@ async fn browse(
         return Err(error);
     }
     let settings = runtime.settings()?;
-    let jev = runtime.jev().map_err(|_| ToolError::MissingJevKey)?;
+    let jev = runtime.jev().map_err(jev_unavailable)?;
     // Nothing is launched until something can type. A run that discovers
     // this at its first `TYPE_TEXT` has already opened a browser and burned
     // several steps, and then reads like a navigator failure (16 §4, B5).
@@ -484,6 +512,7 @@ async fn browse(
         // The user's own denied list (10 §7). A refusal here is not a card:
         // no approval makes a denied host allowed.
         denied_origins: settings.safety.denied_origins.clone(),
+        on_task_floor: settings.safety.on_task_floor,
     };
     progress.launch(format!("\ngoal: {}\n", options.goal));
     // One navigator run is one task, which is what a confirm card is filed
@@ -497,7 +526,12 @@ async fn browse(
     let outcome = {
         let mut on_step = |step: &jev_nav::StepEvent| {
             timings.push(step);
-            neo_otel::record(jev_step(step));
+            // Asked before the span is built, not inside `record`: a
+            // `SpanBuilder` per step is an allocation nobody reads when
+            // there is no exporter.
+            if neo_otel::enabled() {
+                neo_otel::record(jev_step(step));
+            }
             progress.decision(NavSurface::Browser, step);
         };
         // `jev-nav` has no stop of its own, so the token races the whole run
@@ -516,21 +550,32 @@ async fn browse(
 
     // Where the run ended, and what the page says. Both are read before the
     // browser goes away, because the next decision is made from them.
-    let ended_at = navigator
-        .observer
-        .page()
-        .evaluate("[location.href, document.title]")
-        .await
-        .ok()
-        .map(|value| value.to_string());
-    let text = navigator
-        .observer
-        .page()
-        .evaluate("document.body ? document.body.innerText : ''")
-        .await
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .map(|text| clamp(&text));
+    //
+    // A stopped run reads neither. `neo-cdp`'s `call` carries a 30 s deadline
+    // of its own, so two evaluates against a page wedged enough to be worth
+    // stopping cost a minute before `close` was even reached — and nobody
+    // sees what they produce, because a stopped run returns
+    // [`ToolError::Cancelled`] rather than an observation.
+    let (ended_at, text) = if cancel.is_cancelled() {
+        (None, None)
+    } else {
+        let ended_at = navigator
+            .observer
+            .page()
+            .evaluate("[location.href, document.title]")
+            .await
+            .ok()
+            .map(|value| value.to_string());
+        let text = navigator
+            .observer
+            .page()
+            .evaluate("document.body ? document.body.innerText : ''")
+            .await
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .map(|text| clamp(&text));
+        (ended_at, text)
+    };
     let steps = navigator.history().len();
     let protocol_calls = browser.calls().saturating_sub(calls_before);
     let page = navigator.observer.page();
@@ -541,7 +586,7 @@ async fn browse(
     // Either way the browser lives on — closing it would throw away the
     // logins that are the whole reason the profile persists.
     if matches!(outcome, Some(Ok(Outcome::Done))) && !options.headless {
-        activate(runtime, run, page, &progress, &options.url).await;
+        activate(runtime, run, page, &progress, options).await;
     }
     match temporary {
         // A throwaway profile is about to be deleted, so its Chrome has to
@@ -610,8 +655,12 @@ pub async fn run_app(
 ) -> Result<AppRun, ToolError> {
     // Held for the whole run: driving an app is keystrokes into the frontmost
     // window, and a second run typing into a different window mid-goal does
-    // not produce two results, it produces one wrong one.
-    let _screen = runtime.acquire_screen(run, format!("drive {}", options.app))?;
+    // not produce two results, it produces one wrong one. This is the only
+    // mutual exclusion on the keyboard — the `flock` behind it is released by
+    // the kernel when a run dies, which the TTL-based `leases` row that used
+    // to sit beside it was not.
+    let _screen =
+        runtime.acquire_screen_within(options.screen, run, format!("drive {}", options.app))?;
     neo_otel::in_span(
         surface_run("app", &options.app, &options.goal),
         drive_app(runtime, options, run, cancel),
@@ -642,36 +691,13 @@ async fn drive_app(
     // (16 §4, B5). Taking the keyboard first would make a refusal look like
     // a busy machine.
     let settings = runtime.settings()?;
-    let jev = runtime.jev().map_err(|_| ToolError::MissingJevKey)?;
+    let jev = runtime.jev().map_err(jev_unavailable)?;
     let Some(text) = runtime.text_helper(&settings) else {
         let error = ToolError::NoTextHelper;
         finish_run(0, Err(&error));
         return Err(error);
     };
 
-    // Exclusive use of the keyboard and of this app, for as long as the run
-    // lasts. Every action here is a global CGEvent or an `AXPress` on whatever
-    // is frontmost, so a second Starkbot driving another app at the same
-    // moment would type into it. The guard releases on every exit path.
-    let _keyboard = match runtime.hold(
-        neo_store::Resource::Keyboard,
-        &format!("driving {}", options.app),
-    ) {
-        Ok(guard) => guard,
-        Err(error) => {
-            let error = ToolError::from(error);
-            finish_run(0, Err(&error));
-            return Err(error);
-        }
-    };
-    let _app = match runtime.hold(neo_store::Resource::App(options.app.clone()), &options.goal) {
-        Ok(guard) => guard,
-        Err(error) => {
-            let error = ToolError::from(error);
-            finish_run(0, Err(&error));
-            return Err(error);
-        }
-    };
     let mut progress = Progress::new(runtime, run);
 
     let started = Instant::now();
@@ -721,6 +747,7 @@ async fn drive_app(
         safety_heads: options.safety_heads,
         confirm_at: options.confirm_at,
         denied_origins: settings.safety.denied_origins.clone(),
+        on_task_floor: settings.safety.on_task_floor,
     };
     progress.launch(format!("\ngoal: {}\n", options.goal));
     let task_id = neo_core::TaskId::new();
@@ -730,7 +757,9 @@ async fn drive_app(
     let outcome = {
         let mut on_step = |step: &jev_nav::StepEvent| {
             timings.push(step);
-            neo_otel::record(jev_step(step));
+            if neo_otel::enabled() {
+                neo_otel::record(jev_step(step));
+            }
             progress.decision(NavSurface::App, step);
         };
         tokio::select! {
@@ -952,14 +981,20 @@ impl Timings {
 /// it asks for the lease rather than assuming it: a run that finishes while
 /// an app run is typing must not pull the frontmost window out from under
 /// it. A tab left in the background is still open and still holds the work.
+///
+/// The ask is nested in [`BrowserOptions::screen`] when the caller already
+/// holds the lease — an eval case running its turns inside one hold — or the
+/// one moment a browse needs the screen would be refused by its own suite.
 async fn activate(
     runtime: &Arc<Runtime>,
     run: RunId,
     page: &neo_cdp::Page,
     progress: &Progress<'_>,
-    url: &str,
+    options: &BrowserOptions,
 ) {
-    let left_behind = match runtime.acquire_screen(run, format!("show {url}")) {
+    let acquired =
+        runtime.acquire_screen_within(options.screen, run, format!("show {}", options.url));
+    let left_behind = match acquired {
         Ok(_screen) => page.activate().await.err().map(|error| error.to_string()),
         Err(busy) => Some(busy.to_string()),
     };
@@ -1301,6 +1336,10 @@ mod tests {
                 safety_heads: true,
                 confirm_at: 0.4,
                 denied_origins: Vec::new(),
+                // The fixture answers `on_task` calm, so the tripwire is
+                // asked for and never trips: the label is what must stop the
+                // run here.
+                on_task_floor: 0.3,
             };
             let run = {
                 let runtime = Arc::clone(&runtime);

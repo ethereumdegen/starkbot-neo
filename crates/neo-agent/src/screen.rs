@@ -23,15 +23,22 @@
 //! machine — which a lock file holding a PID, checked by hand, always
 //! eventually does.
 //!
-//! # Why it is re-entrant within a process
+//! # Why nesting is explicit
 //!
 //! A suite holds the screen across its cases, and each case then runs an app
 //! turn that wants the screen too. That nesting is legitimate: the work
 //! already owns the keyboard and is subdividing its own turn. `flock` cannot
-//! express it (two file descriptors in one process contend exactly as two
-//! processes do), so re-entrancy is tracked in memory *above* the file lock,
-//! and the rule is stated in the only terms that are true: **the process
-//! holding the screen may subdivide its own work; another process may not.**
+//! express it — two file descriptors in one process contend exactly as two
+//! processes do — so it is tracked in memory *above* the file lock.
+//!
+//! What it is tracked *by* is a [`ScreenScope`] the holder hands down, not
+//! "this process already holds it". That older rule excluded nothing within a
+//! process: two unrelated runs in one TUI were both granted the keyboard and
+//! typed into each other's window, which is the exact failure the lease
+//! exists to prevent. The rule is now stated in terms that are true: **work
+//! that presents the live hold's scope, or that runs under the same `RunId`,
+//! may subdivide that hold; everything else is refused exactly as another
+//! process is.**
 //!
 //! # What it deliberately does not cover
 //!
@@ -45,6 +52,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use neo_core::RunId;
@@ -54,6 +62,28 @@ use time::OffsetDateTime;
 
 /// The lock file, beside the store whose runs contend for it.
 const LOCK_FILE: &str = "screen.lock";
+
+/// Identifies one live hold, so work nested inside it can prove it belongs.
+///
+/// A hold cannot be recognised from the acquiring [`RunId`]. The eval suite
+/// holds the screen across its cases and each case runs an agent turn under a
+/// run id of its own, and that id is what separates the per-case traces, the
+/// `turns` row and the desktop's run registry — collapsing them would cost
+/// more than the lease is worth. Nor can nesting be inferred from "this
+/// process already holds it": that is the permissive rule that let two
+/// unrelated runs in one process type at once.
+///
+/// So it is passed. A holder hands its scope to the work it starts
+/// ([`ScreenGuard::scope`]), and [`ScreenLease::acquire_within`] grants an
+/// acquisition that presents the scope of the hold that is actually live.
+/// There is no public constructor and the counter is process-local, so a
+/// scope can be neither forged nor carried in from another process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenScope(u64);
+
+/// The next scope number. Monotonic, so a scope from a hold that has already
+/// ended never matches the one that is live now.
+static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 /// Who holds the screen, recorded in the lock file so a refusal can say so.
 ///
@@ -126,6 +156,9 @@ struct Held {
     file: File,
     holder: Holder,
     depth: usize,
+    /// What nested work has to present to be let in. Minted when the file
+    /// lock is taken, so it names this hold and no later one.
+    scope: ScreenScope,
 }
 
 impl ScreenLease {
@@ -143,7 +176,32 @@ impl ScreenLease {
     /// Non-blocking on purpose: a caller that waited would leave a user
     /// staring at a UI that says nothing while another window types. The
     /// refusal names the holder so the front end can offer to stop it.
+    ///
+    /// Work that is *part of* a hold this process already has presents that
+    /// hold's [`ScreenScope`] through [`ScreenLease::acquire_within`]; this
+    /// entry point presents none and is therefore refused while any other
+    /// run holds the screen.
     pub fn acquire(&self, run: RunId, what: impl Into<String>) -> Result<ScreenGuard, ScreenBusy> {
+        self.acquire_within(None, run, what)
+    }
+
+    /// [`ScreenLease::acquire`] for work nested inside a hold that already
+    /// exists.
+    ///
+    /// `scope` is the scope of the hold this work belongs to, or `None` when
+    /// it belongs to none. A nested acquisition that presents the live hold's
+    /// scope — or that runs under the holder's own `RunId` — is granted and
+    /// counted, so the screen stays held until every guard is dropped.
+    /// Everything else is refused exactly as another process is, including a
+    /// second, unrelated run in this process: `flock` is per open file
+    /// description, so without this the file lock excluded every process
+    /// except the one that could actually interleave keystrokes.
+    pub fn acquire_within(
+        &self,
+        scope: Option<ScreenScope>,
+        run: RunId,
+        what: impl Into<String>,
+    ) -> Result<ScreenGuard, ScreenBusy> {
         let what = what.into();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| {
             // A panic while holding the lease must not make the screen
@@ -153,11 +211,14 @@ impl ScreenLease {
         });
 
         if let Some(held) = state.as_mut() {
-            // This process already drives the screen: it may subdivide its
-            // own work. See the module docs.
+            if scope != Some(held.scope) && held.holder.run != run {
+                return Err(ScreenBusy::HeldBy(held.holder.clone()));
+            }
+            // The holder subdividing its own work. See the module docs.
             held.depth += 1;
             return Ok(ScreenGuard {
                 lease: self.clone(),
+                scope: held.scope,
             });
         }
 
@@ -187,6 +248,7 @@ impl ScreenLease {
             what,
             since: OffsetDateTime::now_utc(),
         };
+        let scope = ScreenScope(NEXT_SCOPE.fetch_add(1, Ordering::Relaxed));
         // Best effort: the lock is what excludes, the record only explains.
         // A failed write costs a helpful message, not correctness.
         write_holder(&file, &holder);
@@ -194,10 +256,12 @@ impl ScreenLease {
             file,
             holder,
             depth: 1,
+            scope,
         });
 
         Ok(ScreenGuard {
             lease: self.clone(),
+            scope,
         })
     }
 
@@ -248,6 +312,16 @@ impl ScreenLease {
 /// `?` on any step in between cannot leak the lease.
 pub struct ScreenGuard {
     lease: ScreenLease,
+    scope: ScreenScope,
+}
+
+impl ScreenGuard {
+    /// The token to hand to work that runs *inside* this hold, so that work
+    /// is granted the screen instead of refused. See [`ScreenScope`].
+    #[must_use]
+    pub fn scope(&self) -> ScreenScope {
+        self.scope
+    }
 }
 
 impl std::fmt::Debug for ScreenGuard {
@@ -332,19 +406,20 @@ mod tests {
             .expect("the screen is free again");
     }
 
-    /// A suite holds the screen and each of its cases runs an app turn. The
-    /// nesting has to work, or eval deadlocks against itself the moment the
-    /// lease exists.
+    /// A suite holds the screen and each of its cases runs an app turn under
+    /// a run id of its own. The nesting has to work — eval deadlocks against
+    /// itself otherwise — and it works because the suite hands its scope
+    /// down, not because the two happen to share a process.
     #[test]
-    fn the_process_holding_the_screen_may_subdivide_its_own_work() {
+    fn work_that_presents_the_live_scope_may_subdivide_the_hold() {
         let dir = tempfile::tempdir().expect("a temporary data directory");
         let mine = lease(dir.path(), "neo-cli");
         let theirs = lease(dir.path(), "neo-desktop");
 
         let suite = mine.acquire(RunId::new(), "eval suite").expect("suite");
         let case = mine
-            .acquire(RunId::new(), "drive TextEdit")
-            .expect("a nested acquisition is allowed");
+            .acquire_within(Some(suite.scope()), RunId::new(), "drive TextEdit")
+            .expect("a case inside the suite's lease is allowed");
 
         // Still exclusive to this process while nested.
         assert!(theirs.acquire(RunId::new(), "navigate").is_err());
@@ -358,6 +433,69 @@ mod tests {
         theirs
             .acquire(RunId::new(), "navigate")
             .expect("released at depth zero");
+    }
+
+    /// The case the lease existed for and did not cover. `flock` is per open
+    /// file description, so before the scope was passed explicitly *any*
+    /// second acquisition in the holding process was granted — two runs in one
+    /// TUI typed into each other's window while the file lock held off every
+    /// process that was not going to interfere.
+    #[test]
+    fn a_second_unrelated_run_in_the_same_process_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let lease = lease(dir.path(), "neo-tui");
+
+        let driving = RunId::new();
+        let held = lease
+            .acquire(driving, "drive TextEdit")
+            .expect("the screen");
+
+        let refused = lease
+            .acquire(RunId::new(), "drive Keynote")
+            .expect_err("an unrelated run must be refused, process or not");
+        let holder = refused.holder().expect("the refusal names the holder");
+        assert_eq!(holder.run, driving);
+        assert!(refused.to_string().contains("drive TextEdit"));
+
+        // A scope that is not the live one is worth no more than none at all.
+        drop(held);
+        let next = lease
+            .acquire(RunId::new(), "eval suite")
+            .expect("free again");
+        let stale = next.scope();
+        drop(next);
+        let other = lease.acquire(RunId::new(), "drive Numbers").expect("free");
+        assert!(
+            lease
+                .acquire_within(Some(stale), RunId::new(), "drive Keynote")
+                .is_err(),
+            "a scope from a hold that has ended must not open the one that is live"
+        );
+        drop(other);
+    }
+
+    /// The holder's own run may re-enter without carrying a token: a run that
+    /// has the keyboard subdividing itself is the same work, and `crate::ax`
+    /// takes the screen again inside a run that already holds it.
+    #[test]
+    fn the_holders_own_run_may_re_enter_without_a_scope() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let lease = lease(dir.path(), "neo-cli");
+
+        let run = RunId::new();
+        let outer = lease.acquire(run, "drive TextEdit").expect("the screen");
+        let inner = lease
+            .acquire(run, "read TextEdit")
+            .expect("the same run may subdivide its own work");
+
+        drop(inner);
+        assert_eq!(
+            lease.holder().map(|holder| holder.run),
+            Some(run),
+            "the inner release must not drop a hold the outer run still has"
+        );
+        drop(outer);
+        assert_eq!(lease.holder(), None);
     }
 
     /// The record explains; the lock excludes. A leftover record with no live
