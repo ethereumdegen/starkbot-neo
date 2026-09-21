@@ -870,8 +870,22 @@ impl Actor {
         // app that draws its own widgets answers the hit test with the
         // canvas or the window, whose frame *encloses* the target. That is
         // not something on top of it.
+        //
+        // The mirror case is just as common and was refused: a GTK entry
+        // answers its own centre with the text node *inside* it, and a
+        // rectangle contained by the target is the target's own content —
+        // zenity's entry was unfillable because of it.
         let hit_frame = self.bus.extents(&hit).await.unwrap_or_default();
-        if hit_frame.is_visible_size() && hit_frame.contains_rect(frame) {
+        // A hit with no measurable rectangle has answered nothing, and
+        // "nothing" is not "something is on top of it". Under Wayland a
+        // toolkit cannot place its widgets on the screen at all: zenity's
+        // dialog and the entry inside it both report the origin, and the
+        // entry's own centre hit-tests to a label of size 0×0. Reading that
+        // as occlusion made every GTK control unpressable.
+        if !hit_frame.is_visible_size() {
+            return None;
+        }
+        if hit_frame.contains_rect(frame) || frame.contains_rect(&hit_frame) {
             return None;
         }
         Some(StaleReason::Occluded {
@@ -1082,6 +1096,14 @@ impl Actor {
         // first — except in a grid, where the parent manages its own
         // descendants and ⌃A would select the whole sheet rather than the
         // cell's contents. Typing into a selected cell replaces it anyway.
+        //
+        // Nothing is pressed here to "wake" the field. A bare Space sent
+        // ahead of the clear is a Space *into the application* whenever the
+        // focused node is not really taking text, and an app that binds
+        // single keys acts on it: degen-video-studio's console lost focus to
+        // the transport that way, and every keystroke after it — the delete,
+        // the ⌃A, the value itself — went to the window instead of the
+        // field, which then reported the old text and failed the write.
         let in_grid = match self.bus.parent(element).await {
             Some(parent) => self
                 .bus
@@ -1096,11 +1118,6 @@ impl Actor {
             .await
             .is_some_and(|t| !t.trim().is_empty());
         if has_text && !in_grid {
-            self.post_key(Key::Space, &[])?;
-            self.input()?
-                .press_key(Key::Delete, &[])
-                .and(Ok(()))
-                .unwrap_or(());
             self.select_all()?;
         }
         self.post_text(text)?;

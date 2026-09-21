@@ -150,7 +150,7 @@ impl<'a> Walker<'a> {
             help: None,
             identifier: None,
             url: None,
-            enabled: shallow.states.contains(State::Enabled),
+            enabled: actionable(shallow.states),
             focused: shallow.states.contains(State::Focused),
             selected: shallow.states.contains(State::Selected),
             expanded: shallow
@@ -527,7 +527,7 @@ impl<'a> Walker<'a> {
                             id,
                             path: path.clone(),
                             shortcut,
-                            enabled: read.states.contains(State::Enabled),
+                            enabled: actionable(read.states),
                         });
                     }
                 } else {
@@ -539,6 +539,18 @@ impl<'a> Walker<'a> {
             }
         }
     }
+}
+
+/// Can this node be acted on?
+///
+/// `ENABLED` and `SENSITIVE` are separate states in AT-SPI, and a toolkit may
+/// publish either or both: a GTK 3 entry in a zenity dialog advertises
+/// `sensitive`, `focusable`, `focused` and `editable` — and no `enabled` at
+/// all. Requiring `ENABLED` therefore reported *every* GTK widget as
+/// disabled, and the guard refused to press a button or fill a field in any
+/// of them. Screen readers read the pair the same way this does.
+fn actionable(states: StateSet) -> bool {
+    states.contains(State::Enabled) || states.contains(State::Sensitive)
 }
 
 /// `State::Checked` in the form `mapping::state_of` parses.

@@ -56,8 +56,9 @@ impl Observer for FakeObserver {
         &mut self,
         _observation: &Value,
         _action: Option<&Action>,
-    ) -> Result<bool, ObserveError> {
-        Ok(self.freshness.pop_front().unwrap_or(true))
+    ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError> {
+        let fresh = self.freshness.pop_front().unwrap_or(true);
+        Ok((!fresh).then(|| "the scripted surface moved".into()))
     }
 
     async fn act(
@@ -67,8 +68,8 @@ impl Observer for FakeObserver {
         text: Option<&str>,
     ) -> Result<(), ObserveError> {
         // Same contract as `CdpObserver::act`: a stale surface executes nothing.
-        if !Observer::fresh(self, observation, Some(action)).await? {
-            return Err(ObserveError::Stale("target changed since this decision"));
+        if let Some(reason) = Observer::fresh(self, observation, Some(action)).await? {
+            return Err(ObserveError::Stale(reason));
         }
         self.acted
             .push(json!({ "label": action.get("label"), "text": text }));
@@ -343,7 +344,9 @@ async fn a_surface_that_is_never_fresh_stops_the_run() {
     assert_eq!(
         outcome,
         Outcome::Blocked {
-            reason: BlockReason::Unstable
+            reason: BlockReason::Unstable {
+                reason: "the scripted surface moved".to_owned()
+            }
         }
     );
     assert_eq!(steps.len(), jev_nav::rules::MAX_CONSECUTIVE_STALE);

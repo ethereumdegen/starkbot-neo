@@ -11,8 +11,14 @@ use crate::policy::Action;
 #[derive(Debug, thiserror::Error)]
 pub enum ObserveError {
     /// The decision no longer refers to the observed surface: observe again, decide again.
+    ///
+    /// Owned for the same reason [`Self::Uncertain`] is: the accessibility
+    /// path's reasons are built at runtime by the guard — "app not frontmost
+    /// (pid 812 is)", "label changed: Send → Sending" — and a fixed
+    /// `&'static str` threw every one of them away, leaving a blocked run
+    /// saying only that *something* changed under it.
     #[error("stale page: {0}")]
-    Stale(&'static str),
+    Stale(std::borrow::Cow<'static, str>),
     /// A mutation may already have happened; never retried blindly.
     ///
     /// Owned rather than `&'static str` because the accessibility path's
@@ -41,11 +47,14 @@ pub trait Observer: Send {
     /// Is the surface still the one the decision was made on? With an `action`,
     /// only that target and its context need be unchanged; without one, the
     /// whole surface must be.
+    ///
+    /// `None` is fresh; `Some(reason)` names what moved, in the words the
+    /// surface itself used.
     async fn fresh(
         &mut self,
         observation: &Value,
         action: Option<&Action>,
-    ) -> Result<bool, ObserveError>;
+    ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError>;
 
     /// Execute one chosen action; `text` is the value for a fill.
     ///

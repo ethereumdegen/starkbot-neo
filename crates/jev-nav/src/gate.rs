@@ -148,8 +148,11 @@ pub enum BlockReason {
     NotWeb { scheme: String },
     /// The decision named nothing executable.
     NoAction,
-    /// The surface would not hold still.
-    Unstable,
+    /// The surface would not hold still, and what the last guard saw move:
+    /// "nothing could be executed" alone names no cause, and the cause — an
+    /// app that never came forward, a label that rewrites itself, a window
+    /// that keeps changing identity — is the whole diagnosis.
+    Unstable { reason: String },
     /// A question went out and nothing came back in time.
     Unanswered,
     /// A budget ran out.
@@ -165,9 +168,10 @@ impl std::fmt::Display for BlockReason {
             Self::DeniedOrigin { host } => write!(f, "{host} is on the denied list"),
             Self::NotWeb { scheme } => write!(f, "`{scheme}:` is not a web page"),
             Self::NoAction => f.write_str("the decision named no executable action"),
-            Self::Unstable => {
-                f.write_str("the surface changed under every decision; nothing could be executed")
-            }
+            Self::Unstable { reason } => write!(
+                f,
+                "the surface changed under every decision; nothing could be executed: {reason}"
+            ),
             Self::Unanswered => f.write_str("nobody answered, so I stopped where I was"),
             Self::Budget { what } => write!(f, "the {what} budget ran out"),
         }

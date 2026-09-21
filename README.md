@@ -44,7 +44,7 @@ you to find out mid-task:
 | | macOS | Linux |
 | --- | --- | --- |
 | Dictation | on-device, no key, no network | none: `gpt-transcribe` with an OpenAI key is the only path in |
-| `neo app` (native apps) | the Accessibility API | not yet — AT-SPI is the Linux path and `neo-ax` refuses by name until it lands |
+| `neo app` (native apps) | the Accessibility API | AT-SPI on the session bus; `neo doctor` reports the bus and whether it is enabled. A field that already holds text is the known gap: clearing it needs ⌃A, which a WebKitGTK window under Wayland reads as a bare `a` |
 | Desktop shell | Tauri with the macOS private API and a floating panel | plain webkit2gtk windows; no panel |
 
 Credentials go to the login Keychain on macOS and to whatever owns
@@ -54,7 +54,10 @@ under `~/Library/Application Support/com.starkbot.neo` on macOS and the XDG
 base directories (`~/.local/share/starkbot-neo` and friends) on Linux.
 
 Building the desktop shell on Linux needs webkit2gtk 4.1, GTK 3, libsoup 3
-and ALSA headers; `neo` itself needs none of them.
+and ALSA headers; `neo` itself needs none of them. `neo gui` sets
+`WEBKIT_DISABLE_DMABUF_RENDERER` for itself on an NVIDIA Wayland session,
+where WebKit's DMABUF renderer commits a buffer with no acquire point and the
+compositor closes the window a second after it opens.
 
 ## Run
 

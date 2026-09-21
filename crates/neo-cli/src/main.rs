@@ -613,15 +613,18 @@ async fn run_gui(build: bool) -> Result<()> {
     let root = workspace_root()?;
     let action = if build { "build" } else { "dev" };
     eprintln!("neo gui: cargo tauri {action} in {}", root.display());
-    let status = Command::new("cargo")
-        .arg("tauri")
-        .arg(action)
-        .current_dir(&root)
-        .status()
-        .await
-        .context(
-            "could not start `cargo tauri`. Install the Tauri CLI with `cargo install tauri-cli`",
-        )?;
+    let mut command = Command::new("cargo");
+    command.arg("tauri").arg(action).current_dir(&root);
+    if let Some((variable, value)) = webkit_dmabuf_workaround() {
+        eprintln!(
+            "neo gui: {variable}={value} — WebKit's DMABUF renderer trips this \
+             compositor's explicit-sync check"
+        );
+        command.env(variable, value);
+    }
+    let status = command.status().await.context(
+        "could not start `cargo tauri`. Install the Tauri CLI with `cargo install tauri-cli`",
+    )?;
     if !status.success() {
         return Err(anyhow!(
             "`cargo tauri {action}` exited with {}",
@@ -631,6 +634,30 @@ async fn run_gui(build: bool) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The one environment variable a Linux desktop start may need set for it.
+///
+/// WebKitGTK's DMABUF renderer and the NVIDIA driver disagree about explicit
+/// sync: the web process takes a `wp_linux_drm_syncobj_surface_v1` and then
+/// commits a buffer with no acquire point, so the compositor drops the
+/// connection with `wl_display.error(…, "Missing acquire timeline")`. What
+/// the user sees is a window that appears and dies a second later, reported
+/// as `Gdk-Message: Error 71 (Protocol error)` — and every start does it,
+/// because Hyprland and KWin both advertise the protocol. Turning the
+/// renderer off falls back to shared-memory buffers: slower, and present.
+///
+/// Narrow on purpose. Mesa drives the same path correctly, so the variable is
+/// set only where the fault is, and an explicit value from the user always
+/// wins over this.
+fn webkit_dmabuf_workaround() -> Option<(&'static str, &'static str)> {
+    const VARIABLE: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if !cfg!(target_os = "linux") || std::env::var_os(VARIABLE).is_some() {
+        return None;
+    }
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let nvidia = Path::new("/sys/module/nvidia_drm").exists();
+    (wayland && nvidia).then_some((VARIABLE, "1"))
 }
 
 /// The checkout holding `src-tauri`.

@@ -154,11 +154,11 @@ impl CdpObserver {
         {
             Err(error) if context_lost(&error) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation"))
+                Err(ObserveError::Stale("document changed during evaluation".into()))
             }
             Err(CdpError::Exception(_)) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation"))
+                Err(ObserveError::Stale("document changed during evaluation".into()))
             }
             other => Ok(other?),
         }
@@ -180,10 +180,10 @@ impl CdpObserver {
                     if let Some(frame_id) = action.get("frame_id").and_then(Value::as_str) {
                         self.frame_contexts.remove(frame_id);
                     }
-                    Err(ObserveError::Stale("frame changed during evaluation"))
+                    Err(ObserveError::Stale("frame changed during evaluation".into()))
                 }
                 Err(CdpError::Exception(_)) => {
-                    Err(ObserveError::Stale("frame changed during evaluation"))
+                    Err(ObserveError::Stale("frame changed during evaluation".into()))
                 }
                 other => Ok(other?),
             };
@@ -196,11 +196,11 @@ impl CdpObserver {
         {
             Err(error) if context_lost(&error) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation"))
+                Err(ObserveError::Stale("document changed during evaluation".into()))
             }
             Err(CdpError::Exception(_)) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation"))
+                Err(ObserveError::Stale("document changed during evaluation".into()))
             }
             other => Ok(other?),
         }
@@ -320,12 +320,12 @@ impl CdpObserver {
         Observer::observe(self).await
     }
 
-    /// Is the page still what the decision was made on?
+    /// Is the page still what the decision was made on? `None` is fresh.
     pub async fn fresh(
         &mut self,
         observation: &Value,
         action: Option<&Action>,
-    ) -> Result<bool, ObserveError> {
+    ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError> {
         Observer::fresh(self, observation, action).await
     }
 
@@ -391,7 +391,7 @@ impl Observer for CdpObserver {
                 Ok(Value::Null) | Err(ObserveError::Stale(_)) if attempt < 9 => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                Ok(Value::Null) => return Err(ObserveError::Stale("document is navigating")),
+                Ok(Value::Null) => return Err(ObserveError::Stale("document is navigating".into())),
                 Ok(mut observation) => {
                     if self.attachments.is_empty()
                         && let Some(actions) = observation["actions"].as_array_mut()
@@ -403,7 +403,7 @@ impl Observer for CdpObserver {
                 Err(error) => return Err(error),
             }
         }
-        Err(ObserveError::Stale("page did not settle"))
+        Err(ObserveError::Stale("page did not settle".into()))
     }
 
     /// Click/select compare the target and its nearby context; everything else
@@ -412,7 +412,7 @@ impl Observer for CdpObserver {
         &mut self,
         observation: &Value,
         action: Option<&Action>,
-    ) -> Result<bool, ObserveError> {
+    ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError> {
         let kind = action
             .and_then(|action| action.get("kind"))
             .and_then(Value::as_str)
@@ -441,10 +441,11 @@ impl Observer for CdpObserver {
                 .get("frame_page_key")
                 .unwrap_or(&observation["page_key"]);
             let expected = json!([expected_page_key, observation["guards"][node.to_string()]]);
-            return Ok(current == expected);
+            return Ok((current != expected).then(|| "the target or its context changed".into()));
         }
         let current = self.snapshot().await?;
-        Ok(current["marker"] == observation["marker"])
+        Ok((current["marker"] != observation["marker"])
+            .then(|| "the page changed since this decision".into()))
     }
 
     async fn act(
@@ -453,8 +454,8 @@ impl Observer for CdpObserver {
         observation: &Value,
         text: Option<&str>,
     ) -> Result<(), ObserveError> {
-        if !Observer::fresh(self, observation, Some(action)).await? {
-            return Err(ObserveError::Stale("page changed since this decision"));
+        if let Some(reason) = Observer::fresh(self, observation, Some(action)).await? {
+            return Err(ObserveError::Stale(reason));
         }
         let kind = action
             .get("kind")
@@ -489,7 +490,7 @@ impl Observer for CdpObserver {
                         ));
                     }
                     (_, Ok(Value::Null)) => {
-                        return Err(ObserveError::Stale("target changed or is covered"));
+                        return Err(ObserveError::Stale("target changed or is covered".into()));
                     }
                     (_, other) => other?,
                 };
@@ -520,9 +521,9 @@ impl Observer for CdpObserver {
                     .get("local_node")
                     .or_else(|| action.get("node"))
                     .and_then(Value::as_u64)
-                    .ok_or(ObserveError::Stale("file input has no observed node"))?;
+                    .ok_or(ObserveError::Stale("file input has no observed node".into()))?;
                 if self.attachments.is_empty() {
-                    return Err(ObserveError::Stale("no attachment was supplied"));
+                    return Err(ObserveError::Stale("no attachment was supplied".into()));
                 }
                 let context_id = match action.get("context_id").and_then(Value::as_u64) {
                     Some(context_id) => context_id,
@@ -536,10 +537,10 @@ impl Observer for CdpObserver {
                 let key = action
                     .get("key")
                     .and_then(Value::as_str)
-                    .ok_or(ObserveError::Stale("key target is missing"))?;
+                    .ok_or(ObserveError::Stale("key target is missing".into()))?;
                 self.page.press_key(key).await?;
             }
-            _ => return Err(ObserveError::Stale("unknown action kind")),
+            _ => return Err(ObserveError::Stale("unknown action kind".into())),
         }
         let mut recorded = action.clone();
         if kind == "fill" {

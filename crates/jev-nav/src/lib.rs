@@ -135,6 +135,7 @@ pub struct StepEvent {
     pub usage: Value,
 }
 
+
 pub struct RunConfig {
     pub goal: String,
     /// Ask the risk heads (`rules::SAFETY`) on every step.
@@ -326,12 +327,14 @@ impl<O: Observer> Navigator<O> {
             };
 
             if matches!(decision.operation.as_str(), "DONE" | "BLOCKED") {
-                if !self.observer.fresh(&observation, None).await? {
+                if let Some(reason) = self.observer.fresh(&observation, None).await? {
                     event.stale = true;
                     on_step(&event);
                     consecutive_stale += 1;
                     if consecutive_stale >= MAX_CONSECUTIVE_STALE {
-                        return Ok(self.blocked(BlockReason::Unstable));
+                        return Ok(self.blocked(BlockReason::Unstable {
+                            reason: reason.into_owned(),
+                        }));
                     }
                     (observation, observe_ms) = self.reobserve().await?;
                     continue;
@@ -451,12 +454,14 @@ impl<O: Observer> Navigator<O> {
                 .await
             {
                 Ok(()) => {}
-                Err(ObserveError::Stale(_)) => {
+                Err(ObserveError::Stale(reason)) => {
                     event.stale = true;
                     on_step(&event);
                     consecutive_stale += 1;
                     if consecutive_stale >= MAX_CONSECUTIVE_STALE {
-                        return Ok(self.blocked(BlockReason::Unstable));
+                        return Ok(self.blocked(BlockReason::Unstable {
+                            reason: reason.into_owned(),
+                        }));
                     }
                     (observation, observe_ms) = self.reobserve().await?;
                     continue;

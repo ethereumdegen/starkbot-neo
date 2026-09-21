@@ -1224,8 +1224,8 @@ mod tests {
                 &mut self,
                 _observation: &Value,
                 _action: Option<&Action>,
-            ) -> Result<bool, ObserveError> {
-                Ok(true)
+            ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError> {
+                Ok(None)
             }
 
             async fn act(

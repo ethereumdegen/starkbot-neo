@@ -14,8 +14,8 @@
 
 use async_trait::async_trait;
 use neo_ax::{
-    AppSel, AxAction, AxError, AxHandle, Control, Element, ElementTable, Freshness, Key, Modifier,
-    Operation, ScrollDir,
+    AppSel, AxAction, AxError, AxHandle, Control, Element, ElementTable, Key, Modifier, Operation,
+    ScrollDir,
 };
 use serde_json::{Map, Value, json};
 
@@ -67,8 +67,8 @@ impl AxObserver {
     }
 }
 
-fn stale(reason: &'static str) -> ObserveError {
-    ObserveError::Stale(reason)
+fn stale(reason: impl Into<std::borrow::Cow<'static, str>>) -> ObserveError {
+    ObserveError::Stale(reason.into())
 }
 
 fn observe_error(error: AxError) -> ObserveError {
@@ -263,12 +263,12 @@ impl Observer for AxObserver {
         &mut self,
         observation: &Value,
         action: Option<&Action>,
-    ) -> Result<bool, ObserveError> {
+    ) -> Result<Option<std::borrow::Cow<'static, str>>, ObserveError> {
         let marker = observation["marker"].as_str().unwrap_or_default();
         // An observation this observer did not just take cannot be judged:
         // the indices, refs and frames a guard needs are gone.
         let Some(table) = self.table_for(observation) else {
-            return Ok(false);
+            return Ok(Some("that observation is no longer the current one".into()));
         };
         let node = action
             .and_then(|action| action.get("node"))
@@ -279,18 +279,18 @@ impl Observer for AxObserver {
                 .and_then(|index| table.guard_for(index))
             {
                 Some(guard) => guard,
-                None => return Ok(false),
+                None => return Ok(Some("that element is not in the current observation".into())),
             },
             None => table.guard_window(),
         };
-        if matches!(
-            self.ax.guard(&guard).await.map_err(observe_error)?,
-            Freshness::Stale(_)
-        ) {
-            return Ok(false);
+        // The guard's own sentence is the diagnosis — which check failed, and
+        // against what — so it travels instead of being flattened into one
+        // fixed line.
+        if let Some(reason) = self.ax.guard(&guard).await.map_err(observe_error)?.reason() {
+            return Ok(Some(reason.into()));
         }
         if node.is_some() {
-            return Ok(true);
+            return Ok(None);
         }
         // No target means the whole surface has to still be the one Jev
         // judged — the check that decides whether a `DONE` is believed. The
@@ -302,7 +302,8 @@ impl Observer for AxObserver {
         // newest generation actable), which is why it is confined to the
         // no-target check: nothing executes after one.
         let current = self.ax.table(&self.app).await.map_err(observe_error)?;
-        Ok(content_of(&current) == content_part(marker))
+        Ok((content_of(&current) != content_part(marker))
+            .then(|| "the surface no longer holds what Jev judged".into()))
     }
 
     async fn act(
@@ -311,8 +312,8 @@ impl Observer for AxObserver {
         observation: &Value,
         text: Option<&str>,
     ) -> Result<(), ObserveError> {
-        if !Observer::fresh(self, observation, Some(action)).await? {
-            return Err(stale("the app changed since this decision"));
+        if let Some(reason) = Observer::fresh(self, observation, Some(action)).await? {
+            return Err(stale(reason));
         }
         // A wait is the navigator's own pause: nothing to ask the app.
         if action.get("kind").and_then(Value::as_str) == Some("wait") {

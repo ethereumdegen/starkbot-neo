@@ -103,9 +103,15 @@ neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
 spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
-# Tauri validates this feature against the macOS config from its build script,
-# before target-specific dependency features are visible.
-tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
+# `macos-private-api` is not here: it is a macOS-only feature and the Linux
+# shell (11.2 L4) links the same crate without it. `src-tauri` adds it back
+# under its own macOS target table.
+#
+# Enabling it for every target instead makes `tauri-build` refuse the Linux
+# build outright — the feature is on, `tauri.conf.json` never asks for the
+# private API, and the allowlist check fails with "remove the
+# `macos-private-api` feature" before a line of the shell compiles.
+tauri = { version = "2.11.0", default-features = false, features = ["wry"] }
 tauri-build = "2.5.6"
 command-fds = "0.3.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
