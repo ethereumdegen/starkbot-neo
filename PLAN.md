@@ -26,6 +26,7 @@ record. It wins over every other document, including this one.
 | Doc | Owns |
 |---|---|
 | [00-decisions](plans/00-decisions.md) | every firm decision, vocabulary, crate map, milestones, open questions |
+| [16-remediation](plans/16-remediation.md) | **what is wrong with the code that exists**, and in what order to fix it: R0 restore CI, R1 safety + truth, R2 user state, R3 navigator contract, R4 resource lifecycle, R5 delete, R6 telemetry |
 | [10-navigator](plans/10-navigator.md) | `jev-nav` — Rust port of `browser-use/jev-ultrafast`: the step loop, TypeSafe wire format, `CdpObserver`, managed Chrome, safety heads, `AxObserver` |
 | [03-agent](plans/03-agent.md) | `neo-judge` + `neo-agent` — intake + routing, queue, router, Sol orchestrator on metalcraft, `Gated<T>`, rules, confirms, trace, caps |
 | [12-media-apps](plans/12-media-apps.md) | **media through apps**: the editors Powermove + Diffusion Studio and the generator Degen Media Studio, driven by Jev + accessibility; the `media-apps` Jev-enablement pack; commanding Powermove's agent; S8 smoke tests |
