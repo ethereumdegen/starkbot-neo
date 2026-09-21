@@ -167,7 +167,10 @@ mod tests {
     #[test]
     fn matching_rate_is_a_passthrough() {
         let input = sine(440.0, TARGET_RATE, 0.1, 0.3);
-        assert_eq!(resample_to_target(&input, TARGET_RATE).expect("resample"), input);
+        assert_eq!(
+            resample_to_target(&input, TARGET_RATE).expect("resample"),
+            input
+        );
     }
 
     #[test]

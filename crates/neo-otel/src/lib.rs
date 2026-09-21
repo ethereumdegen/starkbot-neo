@@ -8,9 +8,10 @@
 //! Starkbot Trace. Nothing here knows which, and nothing here depends on any
 //! of them.
 //!
-//! With no endpoint configured there is no exporter, no background task and
-//! no work at any call site. That is the default, and it is the reason this
-//! can be called from the hot path without a second thought.
+//! With no endpoint configured there is no exporter and no background task,
+//! and every entry point here returns after one load. That is the default.
+//! It does not make a *call site* free — arguments are built before they are
+//! passed, which is why [`enabled`] exists for callers on a hot path.
 //!
 //! Three standard environment variables configure it, because a user who has
 //! configured any other OpenTelemetry producer has already configured this
@@ -35,6 +36,6 @@ mod tracer;
 
 pub use span::{SpanBuilder, SpanKind};
 pub use tracer::{
-    Attached, annotate, attach, attached, event, fail, flush, in_span, init, new_span_id,
+    Attached, annotate, attach, attached, enabled, event, fail, in_span, init, new_span_id,
     new_trace_id, record, record_attached, shutdown, surface,
 };

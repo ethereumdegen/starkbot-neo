@@ -24,12 +24,23 @@
 //! task-locals. Nothing in Neo produces spans from a detached task today,
 //! and a root span is a degradation rather than a failure if something does.
 //!
-//! # Why nothing costs anything when tracing is off
+//! # What tracing off actually costs
 //!
 //! With no `OTEL_EXPORTER_OTLP_ENDPOINT`, [`init`] leaves the tracer
 //! disabled and every entry point here returns before it allocates a span
-//! id, scopes a task-local or touches a queue. An unobserved Neo pays one
-//! atomic load per call site.
+//! id, scopes a task-local or touches a queue: one `OnceLock` load and a
+//! branch.
+//!
+//! What that does *not* buy is a free call site, and this header used to
+//! claim it did — "an unobserved Neo pays one atomic load per call site".
+//! A caller that builds its arguments before calling pays for them whether
+//! or not anybody is listening, and the busiest caller in Neo did exactly
+//! that: `Runtime::publish` serialised every `AppEvent` to JSON, formatted
+//! an event name and allocated a `Vec` before [`event`] got a chance to say
+//! that nobody was watching — once per streamed token slice. [`enabled`] is
+//! the cheap question to ask before doing that work. The entry points here
+//! still check for themselves, so a caller that forgets has a performance
+//! bug and never a correctness one.
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -125,7 +136,7 @@ pub fn new_span_id() -> String {
 /// Run `future` inside `span`: the span is opened now, closed when the
 /// future resolves, and everything traced inside it becomes its child.
 pub async fn in_span<T>(span: SpanBuilder, future: impl Future<Output = T>) -> T {
-    match enabled() {
+    match active() {
         Some(tracer) => tracer.in_span(span, future).await,
         None => future.await,
     }
@@ -169,7 +180,7 @@ pub async fn attach<T>(attached: Attached, future: impl Future<Output = T>) -> T
 /// navigator step, one inference round trip. Parented to whatever span this
 /// task is inside, or a root of its own when it is inside none.
 pub fn record(span: SpanBuilder) {
-    if let Some(tracer) = enabled() {
+    if let Some(tracer) = active() {
         tracer.record(span, None);
     }
 }
@@ -180,7 +191,7 @@ pub fn record(span: SpanBuilder) {
 /// per-call hook handed to another crate is a plain `Fn`, and it fires on
 /// the task that crate spawned, where the task-local is not.
 pub fn record_attached(attached: &Attached, span: SpanBuilder) {
-    if let Some(tracer) = enabled() {
+    if let Some(tracer) = active() {
         tracer.record(span, attached.0.as_deref());
     }
 }
@@ -191,7 +202,7 @@ pub fn record_attached(attached: &Attached, span: SpanBuilder) {
 /// from a background poll — the event becomes a zero-length root span, so
 /// it is still in the trace rather than silently discarded.
 pub fn event(name: &str, attributes: Vec<(&'static str, Value)>) {
-    if let Some(tracer) = enabled() {
+    if let Some(tracer) = active() {
         tracer.event(name, attributes);
     }
 }
@@ -203,7 +214,7 @@ pub fn event(name: &str, attributes: Vec<(&'static str, Value)>) {
 /// the span is the only thing holding it. This is the active-span API an
 /// OpenTelemetry SDK exposes for exactly that reason.
 pub fn annotate(attributes: Vec<(&'static str, Value)>) {
-    if enabled().is_none() {
+    if !enabled() {
         return;
     }
     with_open(|builder| {
@@ -215,7 +226,7 @@ pub fn annotate(attributes: Vec<(&'static str, Value)>) {
 
 /// Mark the span this task is inside as failed.
 pub fn fail(message: &str) {
-    if enabled().is_none() {
+    if !enabled() {
         return;
     }
     with_open(|builder| builder.set_failed(message));
@@ -234,25 +245,31 @@ fn with_open(edit: impl FnOnce(&mut SpanBuilder)) {
     });
 }
 
-/// Ask for everything queued to be sent, without waiting. For an exit path
-/// that cannot await; [`shutdown`] is the one that guarantees delivery.
-pub fn flush() {
-    if let Some(exporter) = enabled().and_then(|tracer| tracer.exporter.as_ref()) {
-        exporter.flush();
-    }
-}
-
 /// Send what is left and stop. Called on the way out of a command, because a
 /// `neo ask` finishes in well under the two-second flush interval and would
 /// otherwise take its spans to the grave.
 pub async fn shutdown() {
-    if let Some(exporter) = enabled().and_then(|tracer| tracer.exporter.as_ref()) {
+    if let Some(exporter) = active().and_then(|tracer| tracer.exporter.as_ref()) {
         exporter.shutdown().await;
     }
 }
 
+/// Whether anything is listening.
+///
+/// The question a caller asks before building something only a trace would
+/// want. Every entry point in this module asks it too, so this is never
+/// required for correctness — it is there because the arguments are the
+/// expensive part: `Runtime::publish` serialises an `AppEvent` to JSON for
+/// every event it fans out, and a navigator step builds a whole
+/// [`SpanBuilder`] per step. One `OnceLock` load, no allocation, cheap
+/// enough to ask per event.
+#[must_use]
+pub fn enabled() -> bool {
+    active().is_some()
+}
+
 /// The tracer, if there is one and it has somewhere to send spans.
-fn enabled() -> Option<&'static Tracer> {
+fn active() -> Option<&'static Tracer> {
     TRACER.get().filter(|tracer| tracer.exporter.is_some())
 }
 
@@ -414,7 +431,10 @@ mod tests {
             assert_eq!(trace.len(), 32, "trace id `{trace}`");
             assert_eq!(span.len(), 16, "span id `{span}`");
             assert!(
-                trace.chars().chain(span.chars()).all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                trace
+                    .chars()
+                    .chain(span.chars())
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
                 "`{trace}` / `{span}` is not lowercase hex"
             );
         }
@@ -512,7 +532,10 @@ mod tests {
         let (tracer, mut receiver) = tracer(16);
         tracer
             .in_span(SpanBuilder::internal("invoke_agent"), async {
-                tracer.event("app_event.turn_step", vec![("starkbot.step", Value::from(1))]);
+                tracer.event(
+                    "app_event.turn_step",
+                    vec![("starkbot.step", Value::from(1))],
+                );
             })
             .await;
         let spans = queued(&mut receiver);
@@ -532,9 +555,23 @@ mod tests {
 
     /// With no endpoint there is no exporter, and the cheap path has to stay
     /// cheap: no task-local scope, no span ids, no queue.
+    ///
+    /// The free entry points read the process-global `TRACER`, so this test
+    /// *establishes* the state it is about instead of assuming it — the
+    /// assumption it used to make ("no test initialises an endpoint") would
+    /// have quietly become untrue, and the test meaningless, the day one
+    /// did. `get_or_init` either installs the disabled tracer or hands back
+    /// whatever got there first, and the assertion below fails loudly in the
+    /// second case rather than passing on an enabled one.
     #[tokio::test]
     async fn a_disabled_tracer_records_nothing_and_opens_no_scope() {
-        assert!(enabled().is_none(), "no test initialises an endpoint");
+        let installed = TRACER.get_or_init(|| Tracer { exporter: None });
+        assert!(
+            installed.exporter.is_none(),
+            "something installed an exporter in this process, so this test can no longer observe the disabled path"
+        );
+        assert!(!enabled());
+
         let inside = in_span(SpanBuilder::internal("invoke_agent"), async {
             CURRENT.try_with(|_| ()).is_ok()
         })
@@ -544,7 +581,7 @@ mod tests {
         event("app_event.notice", Vec::new());
         annotate(vec![("starkbot.answer", Value::from("hello"))]);
         fail("nothing is listening");
-        flush();
+        shutdown().await;
     }
 
     /// A collector that stops reading must cost memory that is bounded, and
@@ -576,7 +613,10 @@ mod tests {
             .await;
         let spans = queued(&mut receiver);
         assert_eq!(spans[0]["attributes"][0]["key"], "starkbot.steps");
-        assert_eq!(spans[0]["attributes"][0]["value"], serde_json::json!({ "intValue": "2" }));
+        assert_eq!(
+            spans[0]["attributes"][0]["value"],
+            serde_json::json!({ "intValue": "2" })
+        );
         assert_eq!(
             spans[0]["status"],
             serde_json::json!({ "code": 2, "message": "the vendor refused" })

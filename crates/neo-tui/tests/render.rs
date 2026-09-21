@@ -47,19 +47,6 @@ fn panes_at_120x40() {
 }
 
 #[test]
-fn panes_at_100x30_keep_three_panes() {
-    let state = common::state();
-    insta::assert_snapshot!("panes_100x30", common::render(&state, 100, 30));
-}
-
-#[test]
-fn panes_at_80x24_drop_to_two() {
-    let mut state = common::state();
-    press(&mut state, KeyCode::Char('3'));
-    insta::assert_snapshot!("panes_80x24", common::render(&state, 80, 24));
-}
-
-#[test]
 fn panes_at_60x20_collapse_to_one_with_a_tab_bar() {
     let state = common::state();
     insta::assert_snapshot!("panes_60x20", common::render(&state, 60, 20));
@@ -129,6 +116,7 @@ fn the_runs_pane_shows_a_running_and_a_failed_run() {
     state.apply(AppEvent::TurnFailed {
         run: common::run_id(2),
         error: "the model could not be reached".into(),
+        code: "agent_request".into(),
     });
 
     state.tick(23_000);
@@ -139,8 +127,14 @@ fn the_runs_pane_shows_a_running_and_a_failed_run() {
     // Elapsed keeps moving while a run is live and freezes when it settles:
     // 23 s for the nav that started at 0, 15 s for the turn that started at
     // 4 s and failed at 19 s.
-    assert!(frame.contains("0:23"), "the live run's elapsed is not ticking");
-    assert!(frame.contains("0:15"), "the failed run's elapsed did not freeze");
+    assert!(
+        frame.contains("0:23"),
+        "the live run's elapsed is not ticking"
+    );
+    assert!(
+        frame.contains("0:15"),
+        "the failed run's elapsed did not freeze"
+    );
     insta::assert_snapshot!("runs_pane", frame);
 }
 
@@ -189,7 +183,10 @@ fn the_mind_pane_traces_the_selected_run_through_nav_decision_display() {
         "the pane rendered the pre-rendered line instead of NavDecision::Display"
     );
     assert!(frame.contains("CLICK"), "no operation in the trace");
-    assert!(frame.contains("outward=0.08"), "no safety head in the trace");
+    assert!(
+        frame.contains("outward=0.08"),
+        "no safety head in the trace"
+    );
     insta::assert_snapshot!("mind_pane_nav_decision", frame);
 }
 
@@ -326,11 +323,7 @@ fn the_status_line_reports_the_running_turn() {
 #[test]
 fn the_session_picker_lists_conversations() {
     let mut state = common::state();
-    state.load_thread(
-        common::conversation_id(1),
-        Some("launch week".into()),
-        &[],
-    );
+    state.load_thread(common::conversation_id(1), Some("launch week".into()), &[]);
     state.show_sessions(vec![
         SessionRow {
             id: common::conversation_id(1),

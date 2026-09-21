@@ -19,10 +19,11 @@ pub(crate) fn encode(pcm16: &[i16], sample_rate: u32) -> Result<Vec<u8>, VoiceEr
     let encode = |detail: String| VoiceError::Encode { detail };
     // 44-byte header plus the samples: exactly one allocation.
     let mut cursor = Cursor::new(Vec::with_capacity(44 + pcm16.len() * 2));
-    let mut writer =
-        hound::WavWriter::new(&mut cursor, spec).map_err(|e| encode(e.to_string()))?;
+    let mut writer = hound::WavWriter::new(&mut cursor, spec).map_err(|e| encode(e.to_string()))?;
     for sample in pcm16 {
-        writer.write_sample(*sample).map_err(|e| encode(e.to_string()))?;
+        writer
+            .write_sample(*sample)
+            .map_err(|e| encode(e.to_string()))?;
     }
     writer.finalize().map_err(|e| encode(e.to_string()))?;
     Ok(cursor.into_inner())

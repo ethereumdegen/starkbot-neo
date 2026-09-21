@@ -14,7 +14,7 @@ use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
 use url::Url;
 
-use super::{Transcript, Transcriber, wav};
+use super::{Transcriber, Transcript, wav};
 use crate::capture::Utterance;
 use crate::error::VoiceError;
 
@@ -24,8 +24,29 @@ pub const HOSTED_BASE: &str = "https://api.openai.com";
 /// The only transcription model offered (K3 hides the deprecated ids).
 pub const MODEL: &str = "gpt-transcribe";
 
-/// Per the plan's latency budget: 8 s, one retry.
-const TIMEOUT: Duration = Duration::from_secs(8);
+/// Per the plan's latency budget for a short utterance: 8 s, one retry.
+///
+/// This is a floor, not the whole budget. `reqwest`'s timeout covers the
+/// upload as well as the answer, so a flat 8 s against `MAX_UTTERANCE` —
+/// two minutes, roughly 3.8 MB of 16 kHz mono WAV — made every long
+/// dictation fail deterministically, then retry once and fail again. The
+/// budget grows with what has to be sent.
+const BASE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// What the upload half of the budget assumes of the user's uplink.
+///
+/// 256 KiB/s is a slow home connection, not a fast one, and deliberately: a
+/// number picked to be generous produces a timeout that fires on a link
+/// that would have finished. The point is that a two-minute dictation gets
+/// a budget it can actually complete inside, not that this is measured.
+const UPLOAD_BYTES_PER_SECOND: u64 = 256 * 1_024;
+
+/// The ceiling on the derived budget. `capture::MAX_UTTERANCE` already caps
+/// the payload, so this only binds when a caller builds an `Utterance` by
+/// hand — but a transcription that can hang for minutes is not a
+/// transcription a push-to-talk key should be able to start.
+const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
 const RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// How much of an error body is worth keeping in a message.
@@ -50,26 +71,34 @@ impl OpenAiTranscriber {
                 detail: format!("the built-in base URL is invalid: {e}"),
             })?,
         };
-        let endpoint = base
-            .join("/v1/audio/transcriptions")
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+        let endpoint =
+            base.join("/v1/audio/transcriptions")
+                .map_err(|e| VoiceError::Transport {
+                    detail: e.to_string(),
+                })?;
 
         // The audited credential boundary clippy.toml points at: the secret
         // becomes one `Authorization` header, marked sensitive so it is
         // redacted from any header dump, and nothing else.
         #[allow(clippy::disallowed_methods)]
-        let mut header = HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(
-            |_| VoiceError::Transport { detail: "the OpenAI key is not a valid header value".into() },
-        )?;
+        let mut header =
+            HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| {
+                VoiceError::Transport {
+                    detail: "the OpenAI key is not a valid header value".into(),
+                }
+            })?;
         header.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, header);
 
+        // No timeout on the client: it is set per request, from the size of
+        // the WAV that request is carrying.
         let client = Client::builder()
             .default_headers(headers)
-            .timeout(TIMEOUT)
             .build()
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::Transport {
+                detail: e.to_string(),
+            })?;
         Ok(Self { endpoint, client })
     }
 
@@ -77,7 +106,9 @@ impl OpenAiTranscriber {
         let audio = Part::bytes(wav)
             .file_name("utterance.wav")
             .mime_str("audio/wav")
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::Transport {
+                detail: e.to_string(),
+            })?;
         Ok(Form::new()
             .part("file", audio)
             .text("model", MODEL)
@@ -89,6 +120,7 @@ impl OpenAiTranscriber {
 impl Transcriber for OpenAiTranscriber {
     async fn transcribe(&self, utterance: &Utterance) -> Result<Transcript, VoiceError> {
         let wav = wav::encode(&utterance.pcm16, utterance.sample_rate)?;
+        let timeout = timeout_for(wav.len());
         let started = Instant::now();
 
         let mut last: Option<VoiceError> = None;
@@ -99,6 +131,7 @@ impl Transcriber for OpenAiTranscriber {
             let response = self
                 .client
                 .post(self.endpoint.clone())
+                .timeout(timeout)
                 .multipart(Self::form(wav.clone())?)
                 .send()
                 .await;
@@ -107,7 +140,9 @@ impl Transcriber for OpenAiTranscriber {
                 Err(error) => {
                     // No URL, no header: `reqwest`'s Display can carry the
                     // request URL, and that is all we ever want of it.
-                    last = Some(VoiceError::Transport { detail: error.to_string() });
+                    last = Some(VoiceError::Transport {
+                        detail: error.to_string(),
+                    });
                     continue;
                 }
             };
@@ -118,13 +153,19 @@ impl Transcriber for OpenAiTranscriber {
             }
             let mut detail = body;
             detail.truncate(MAX_ERROR_BODY);
-            let error = VoiceError::Provider { provider: "openai", status: status.as_u16(), detail };
+            let error = VoiceError::Provider {
+                provider: "openai",
+                status: status.as_u16(),
+                detail,
+            };
             if !retryable(status) {
                 return Err(error);
             }
             last = Some(error);
         }
-        Err(last.unwrap_or(VoiceError::Transport { detail: "no attempt was made".into() }))
+        Err(last.unwrap_or(VoiceError::Transport {
+            detail: "no attempt was made".into(),
+        }))
     }
 
     fn name(&self) -> &'static str {
@@ -132,17 +173,32 @@ impl Transcriber for OpenAiTranscriber {
     }
 }
 
+/// The request budget for a `bytes`-long upload: [`BASE_TIMEOUT`] plus the
+/// time the bytes themselves need, capped at [`MAX_TIMEOUT`].
+fn timeout_for(bytes: usize) -> Duration {
+    let upload = u64::try_from(bytes).unwrap_or(u64::MAX) / UPLOAD_BYTES_PER_SECOND;
+    BASE_TIMEOUT
+        .saturating_add(Duration::from_secs(upload))
+        .min(MAX_TIMEOUT)
+}
+
 fn retryable(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 fn parse(body: &str, elapsed: Duration) -> Result<Transcript, VoiceError> {
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| VoiceError::BadResponse { provider: "openai", detail: e.to_string() })?;
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| VoiceError::BadResponse {
+            provider: "openai",
+            detail: e.to_string(),
+        })?;
     let text = value
         .get("text")
         .and_then(serde_json::Value::as_str)
-        .ok_or(VoiceError::BadResponse { provider: "openai", detail: "no `text` field".into() })?;
+        .ok_or(VoiceError::BadResponse {
+            provider: "openai",
+            detail: "no `text` field".into(),
+        })?;
     Ok(Transcript {
         text: text.to_owned(),
         // The endpoint reports logprobs, not a confidence; claiming one would
@@ -166,6 +222,37 @@ mod tests {
             sample_rate: 16_000,
             duration: Duration::from_millis(250),
         }
+    }
+
+    /// `reqwest`'s timeout covers the upload, so a flat 8 s against the
+    /// 120 s `MAX_UTTERANCE` cap meant a long dictation timed out every
+    /// time, retried once, and timed out again — deterministically, with
+    /// the user's two minutes of speech thrown away both times.
+    #[test]
+    fn the_request_budget_grows_with_the_upload_and_then_stops() {
+        assert_eq!(
+            timeout_for(0),
+            BASE_TIMEOUT,
+            "a short utterance lost its floor"
+        );
+
+        // `crate::capture::MAX_UTTERANCE` of 16 kHz mono PCM16.
+        let longest = 120 * 16_000 * 2;
+        let budget = timeout_for(longest);
+        assert!(
+            budget > Duration::from_secs(20),
+            "{longest} bytes got {budget:?}, which a slow uplink cannot finish inside"
+        );
+        assert!(
+            budget <= MAX_TIMEOUT,
+            "the longest allowed utterance is past the ceiling"
+        );
+
+        assert_eq!(
+            timeout_for(usize::MAX),
+            MAX_TIMEOUT,
+            "the budget is unbounded"
+        );
     }
 
     fn transcriber(base: &str) -> OpenAiTranscriber {
@@ -211,18 +298,29 @@ mod tests {
             body.contains(r#"name="file"; filename="utterance.wav""#),
             "no named WAV part in the body"
         );
-        assert!(body.contains("Content-Type: audio/wav"), "the part is not typed as WAV");
-        assert!(body.contains("RIFF") && body.contains("WAVE"), "the part is not a WAV file");
+        assert!(
+            body.contains("Content-Type: audio/wav"),
+            "the part is not typed as WAV"
+        );
+        assert!(
+            body.contains("RIFF") && body.contains("WAVE"),
+            "the part is not a WAV file"
+        );
         assert!(body.contains(r#"name="model""#), "no model field");
         assert!(body.contains(MODEL), "the model field is not `{MODEL}`");
-        assert!(body.contains(r#"name="response_format""#), "no response_format field");
+        assert!(
+            body.contains(r#"name="response_format""#),
+            "no response_format field"
+        );
     }
 
     #[tokio::test]
     async fn the_credential_travels_in_the_header_and_never_in_the_url_or_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "ok"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "ok"})),
+            )
             .mount(&server)
             .await;
         transcriber(&server.uri())
@@ -233,7 +331,10 @@ mod tests {
         let requests = server.received_requests().await.unwrap_or_default();
         let request = requests.first().expect("one request");
         assert_eq!(
-            request.headers.get("authorization").and_then(|v| v.to_str().ok()),
+            request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
             Some("Bearer sk-test")
         );
         assert!(!request.url.as_str().contains("sk-test"));
@@ -255,7 +356,11 @@ mod tests {
             .expect_err("429 should surface");
         assert!(matches!(
             error,
-            VoiceError::Provider { provider: "openai", status: 429, .. }
+            VoiceError::Provider {
+                provider: "openai",
+                status: 429,
+                ..
+            }
         ));
     }
 
@@ -273,7 +378,11 @@ mod tests {
             .await
             .expect_err("401 should surface");
         match error {
-            VoiceError::Provider { status: 401, detail, .. } => assert!(detail.contains("bad key")),
+            VoiceError::Provider {
+                status: 401,
+                detail,
+                ..
+            } => assert!(detail.contains("bad key")),
             other => panic!("expected a 401 verdict, got {other}"),
         }
     }
@@ -290,7 +399,13 @@ mod tests {
             .transcribe(&utterance())
             .await
             .expect_err("a shapeless body should surface");
-        assert!(matches!(error, VoiceError::BadResponse { provider: "openai", .. }));
+        assert!(matches!(
+            error,
+            VoiceError::BadResponse {
+                provider: "openai",
+                ..
+            }
+        ));
     }
 
     #[test]

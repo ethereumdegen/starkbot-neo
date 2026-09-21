@@ -251,7 +251,9 @@ impl FieldKind {
             Self::OptionalText(value) => value.clone().unwrap_or_else(|| "system default".into()),
             Self::Int(value) => value.to_string(),
             Self::Float(value) => format!("{value:.2}"),
-            Self::Choice { options, current } => (*options.get(*current).unwrap_or(&"?")).to_owned(),
+            Self::Choice { options, current } => {
+                (*options.get(*current).unwrap_or(&"?")).to_owned()
+            }
             Self::List(values) => {
                 if values.is_empty() {
                     "none".to_owned()
@@ -658,6 +660,14 @@ pub enum Command {
     CheckKey {
         account: String,
     },
+    /// Repaint the whole screen (`Ctrl-L`).
+    ///
+    /// Marking the state dirty would only re-diff against a back buffer
+    /// that already agrees with what ratatui believes is on the display —
+    /// which repairs nothing, and the case this key exists for is exactly
+    /// the one where they disagree, because something else wrote over the
+    /// terminal. Only the loop holds the terminal, so it is a command.
+    Redraw,
     ReBootstrap,
 }
 
@@ -691,7 +701,10 @@ impl std::fmt::Debug for Command {
                 .field("run", run)
                 .field("chars", &text.chars().count())
                 .finish(),
-            Self::Nav { options } => formatter.debug_struct("Nav").field("options", options).finish(),
+            Self::Nav { options } => formatter
+                .debug_struct("Nav")
+                .field("options", options)
+                .finish(),
             Self::AppGoal { app, goal } => formatter
                 .debug_struct("AppGoal")
                 .field("app", app)
@@ -771,6 +784,7 @@ impl std::fmt::Debug for Command {
                 .field("account", account)
                 .finish(),
             Self::ReBootstrap => formatter.write_str("ReBootstrap"),
+            Self::Redraw => formatter.write_str("Redraw"),
         }
     }
 }
@@ -1116,7 +1130,11 @@ impl State {
     /// elapsed would actually change, so an idle front end still draws zero
     /// frames (14 §4).
     pub fn tick(&mut self, now_ms: u64) {
-        let before = self.runs.iter().any(Run::is_live).then(|| self.elapsed_second());
+        let before = self
+            .runs
+            .iter()
+            .any(Run::is_live)
+            .then(|| self.elapsed_second());
         self.now_ms = now_ms;
         if let Some(before) = before
             && before != self.elapsed_second()
@@ -1261,11 +1279,9 @@ impl State {
     /// at a turn that never read it; the ordinary send path records it and
     /// the stored row takes its place.
     pub fn steer_missed(&mut self, text: &str) {
-        if let Some(index) = self
-            .thread
-            .iter()
-            .rposition(|row| row.steered && row.text == text && self.pending_steers.contains(&row.id))
-        {
+        if let Some(index) = self.thread.iter().rposition(|row| {
+            row.steered && row.text == text && self.pending_steers.contains(&row.id)
+        }) {
             let row = self.thread.remove(index);
             self.pending_steers.retain(|id| *id != row.id);
         }
@@ -1750,9 +1766,7 @@ impl State {
                 let trace = nav_trace(line, kind);
                 run.last = trace.text.clone();
                 run.push(trace.kind, trace.text.clone());
-                if chat
-                    && let Some(card) = self.turn.as_mut().and_then(TurnProgress::live_card)
-                {
+                if chat && let Some(card) = self.turn.as_mut().and_then(TurnProgress::live_card) {
                     card.detail = Some(trace.text);
                 }
             }
@@ -1815,7 +1829,7 @@ impl State {
             Action::AskQuit => self.quit_prompt = true,
             Action::ConfirmQuit => self.quit = true,
             Action::CancelQuit => self.quit_prompt = false,
-            Action::Redraw => {}
+            Action::Redraw => return Some(Command::Redraw),
             Action::ToggleHelp => self.help = !self.help,
             Action::CloseOverlay => {
                 if self.help {
@@ -1955,10 +1969,7 @@ impl State {
             }
             Action::ToggleListen => {
                 let enabled = self.settings.listen.enabled;
-                self.status = Some(format!(
-                    "listen.enabled → {}",
-                    bool_label(!enabled)
-                ));
+                self.status = Some(format!("listen.enabled → {}", bool_label(!enabled)));
                 return Some(Command::PatchSettings {
                     section: "listen",
                     patch: json!({ "enabled": !enabled }),
@@ -2424,7 +2435,8 @@ impl State {
             .iter()
             .any(|run| run.kind == RunKind::Eval && run.state.live())
         {
-            self.status = Some("an eval suite is already running — the cases share the keyboard".into());
+            self.status =
+                Some("an eval suite is already running — the cases share the keyboard".into());
             return None;
         }
         Some(Command::Eval { selection })
@@ -3238,9 +3250,9 @@ const fn run_of(event: &AppEvent) -> Option<RunId> {
 /// end that renders "stopped" the instant `x` is pressed is lying about all
 /// three.
 fn stop_notice(runs: &[Run]) -> String {
-    let browser = runs
-        .iter()
-        .any(|run| run.state == RunState::Stopping && matches!(run.kind, RunKind::Nav | RunKind::Chat));
+    let browser = runs.iter().any(|run| {
+        run.state == RunState::Stopping && matches!(run.kind, RunKind::Nav | RunKind::Chat)
+    });
     if browser {
         "stopping — the run closes its Chrome as it unwinds; pages it already changed stay changed"
             .to_owned()
@@ -3300,26 +3312,128 @@ pub struct CommandSpec {
 }
 
 pub const COMMAND_LINE: [CommandSpec; 20] = [
-    CommandSpec { name: "nav", args: "<url> <goal> [--headed] [--profile P] [--no-safety]", help: "drive a web page to a goal", unavailable: None },
-    CommandSpec { name: "app", args: "<app> <goal>", help: "drive a native application to a goal", unavailable: None },
-    CommandSpec { name: "ax", args: "trusted|apps|table|press|set|menu|type|key", help: "one direct accessibility call", unavailable: None },
-    CommandSpec { name: "eval", args: "[--filter F] [--tag T] [--once] [--list]", help: "run the app-control suite", unavailable: None },
-    CommandSpec { name: "stop", args: "", help: "cancel the selected run — Esc, while live", unavailable: None },
-    CommandSpec { name: "kill", args: "", help: "cancel every live run", unavailable: None },
-    CommandSpec { name: "new", args: "[title]", help: "start a conversation", unavailable: None },
-    CommandSpec { name: "sessions", args: "", help: "switch conversation", unavailable: None },
-    CommandSpec { name: "rename", args: "<title>", help: "retitle this conversation", unavailable: None },
-    CommandSpec { name: "settings", args: "[section]", help: "open Settings", unavailable: None },
-    CommandSpec { name: "keys", args: "", help: "open Connections & keys", unavailable: None },
-    CommandSpec { name: "models", args: "[refresh]", help: "open Models, or re-read the catalogue", unavailable: None },
-    CommandSpec { name: "doctor", args: "", help: "re-run the readiness checks", unavailable: None },
-    CommandSpec { name: "help", args: "", help: "the keymap", unavailable: None },
-    CommandSpec { name: "quit", args: "", help: "leave — the key is Ctrl-Q", unavailable: None },
-    CommandSpec { name: "packs", args: "", help: "capability packs", unavailable: Some(":packs needs the pack registry, which is not built yet") },
-    CommandSpec { name: "soul", args: "", help: "edit soul.md", unavailable: Some(":soul needs the soul buffer, which is not built yet") },
-    CommandSpec { name: "pause", args: "", help: "pause the queue", unavailable: Some(":pause needs the queue worker, which is not built yet") },
-    CommandSpec { name: "resume", args: "", help: "resume the queue", unavailable: Some(":resume needs the queue worker, which is not built yet") },
-    CommandSpec { name: "listen", args: "on|off", help: "microphone", unavailable: Some(":listen needs the always-on listener; `m` toggles the setting and `v` dictates") },
+    CommandSpec {
+        name: "nav",
+        args: "<url> <goal> [--headed] [--profile P] [--no-safety]",
+        help: "drive a web page to a goal",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "app",
+        args: "<app> <goal>",
+        help: "drive a native application to a goal",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "ax",
+        args: "trusted|apps|table|press|set|menu|type|key",
+        help: "one direct accessibility call",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "eval",
+        args: "[--filter F] [--tag T] [--once] [--list]",
+        help: "run the app-control suite",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "stop",
+        args: "",
+        help: "cancel the selected run — Esc, while live",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "kill",
+        args: "",
+        help: "cancel every live run",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "new",
+        args: "[title]",
+        help: "start a conversation",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "sessions",
+        args: "",
+        help: "switch conversation",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "rename",
+        args: "<title>",
+        help: "retitle this conversation",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "settings",
+        args: "[section]",
+        help: "open Settings",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "keys",
+        args: "",
+        help: "open Connections & keys",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "models",
+        args: "[refresh]",
+        help: "open Models, or re-read the catalogue",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "doctor",
+        args: "",
+        help: "re-run the readiness checks",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "help",
+        args: "",
+        help: "the keymap",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "quit",
+        args: "",
+        help: "leave — the key is Ctrl-Q",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "packs",
+        args: "",
+        help: "capability packs",
+        unavailable: Some(":packs needs the pack registry, which is not built yet"),
+    },
+    CommandSpec {
+        name: "soul",
+        args: "",
+        help: "edit soul.md",
+        unavailable: Some(":soul needs the soul buffer, which is not built yet"),
+    },
+    CommandSpec {
+        name: "pause",
+        args: "",
+        help: "pause the queue",
+        unavailable: Some(":pause needs the queue worker, which is not built yet"),
+    },
+    CommandSpec {
+        name: "resume",
+        args: "",
+        help: "resume the queue",
+        unavailable: Some(":resume needs the queue worker, which is not built yet"),
+    },
+    CommandSpec {
+        name: "listen",
+        args: "on|off",
+        help: "microphone",
+        unavailable: Some(
+            ":listen needs the always-on listener; `m` toggles the setting and `v` dictates",
+        ),
+    },
 ];
 
 /// The subcommands `:ax` accepts, for completion and for the help overlay.
@@ -3359,10 +3473,7 @@ fn complete_command(prefix: &str) -> Option<String> {
 }
 
 /// The one candidate with this prefix, or nothing when it is ambiguous.
-fn unique<'a>(
-    candidates: impl Iterator<Item = &'a str>,
-    prefix: &str,
-) -> Option<&'a str> {
+fn unique<'a>(candidates: impl Iterator<Item = &'a str>, prefix: &str) -> Option<&'a str> {
     let mut found = None;
     for candidate in candidates {
         if candidate.starts_with(prefix) {
@@ -3469,7 +3580,9 @@ pub const fn account_status_label(status: ProviderAccountStatus) -> &'static str
         ProviderAccountStatus::SignedOut => "signed out",
         ProviderAccountStatus::Connected => "connected",
         ProviderAccountStatus::RateLimited => "rate limited",
-        ProviderAccountStatus::Unavailable => "unavailable",
+        // Not "unavailable": the check could not be made, which is not a
+        // claim about the account. See `neo_core::ProviderAccountStatus`.
+        ProviderAccountStatus::Unavailable => "could not check",
     }
 }
 
@@ -3531,9 +3644,10 @@ fn summarize(event: &AppEvent) -> Activity {
         // The ring counts the slice rather than repeating the answer: the
         // text is already on screen in the conversation, and a ring full of
         // half-words is unreadable.
-        AppEvent::TurnDelta { seq, text, .. } => {
-            ("turn", format!("delta #{seq} · {} char(s)", text.chars().count()))
-        }
+        AppEvent::TurnDelta { seq, text, .. } => (
+            "turn",
+            format!("delta #{seq} · {} char(s)", text.chars().count()),
+        ),
         AppEvent::TurnSteered { text, .. } => ("turn", format!("steered · {text}")),
         AppEvent::TurnCost { usage, .. } => (
             "turn",
@@ -3548,7 +3662,11 @@ fn summarize(event: &AppEvent) -> Activity {
             "turn",
             format!(
                 "{steps} step(s) · {}",
-                if *exhausted { "budget spent" } else { "answered" }
+                if *exhausted {
+                    "budget spent"
+                } else {
+                    "answered"
+                }
             ),
         ),
         // `error` is built from our own error types, which cannot format a
@@ -3560,7 +3678,9 @@ fn summarize(event: &AppEvent) -> Activity {
         } => ("eval", format!("{}/{total} {case}", index + 1)),
         AppEvent::TaskUpserted { task } => ("task", format!("{} {:?}", task.id, task.status)),
         AppEvent::TaskRemoved { id } => ("task", format!("removed {id}")),
-        AppEvent::QueueState { paused, reasons, .. } => (
+        AppEvent::QueueState {
+            paused, reasons, ..
+        } => (
             "queue",
             format!(
                 "{} · {}",
@@ -3598,11 +3718,12 @@ fn summarize(event: &AppEvent) -> Activity {
         AppEvent::Latency {
             step_ms_p50,
             jev_ms_p50,
-        } => ("latency", format!("step {step_ms_p50}ms · jev {jev_ms_p50}ms")),
+        } => (
+            "latency",
+            format!("step {step_ms_p50}ms · jev {jev_ms_p50}ms"),
+        ),
         AppEvent::SettingsChanged { .. } => ("settings", "changed".into()),
-        AppEvent::ModelsChanged { models } => {
-            ("models", format!("{} models", models.models.len()))
-        }
+        AppEvent::ModelsChanged { models } => ("models", format!("{} models", models.models.len())),
         AppEvent::KeyStatus { account, status } => {
             ("key", format!("{account} · {}", key_label(*status)))
         }
@@ -3614,9 +3735,7 @@ fn summarize(event: &AppEvent) -> Activity {
             "update",
             format!("{version} · {}", if *ready { "ready" } else { "pending" }),
         ),
-        AppEvent::Notice { level, code, text } => {
-            ("notice", format!("{level:?} {code} · {text}"))
-        }
+        AppEvent::Notice { level, code, text } => ("notice", format!("{level:?} {code} · {text}")),
         AppEvent::TaskEnded { id, status } => ("task", format!("{id} ended {status:?}")),
     };
     Activity { kind, detail }

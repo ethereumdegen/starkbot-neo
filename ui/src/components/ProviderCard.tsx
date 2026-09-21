@@ -11,11 +11,16 @@ export interface LoginState {
   working: boolean;
 }
 
+// `unavailable` means the check could not be made — an offline laptop, a
+// provider outage — never that the account is gone; only `signed_out` says
+// that. Deliberately not `fail`: a red card for "we could not reach the
+// vendor" reads as "your subscription ended", which is the exact confusion
+// `neo_core::ProviderAccountStatus` documents.
 const STATUS: Record<ProviderAccountStatus, { tone: Tone; label: string }> = {
   connected: { tone: "ok", label: "Connected" },
   signed_out: { tone: "unknown", label: "Signed out" },
   rate_limited: { tone: "warn", label: "Rate limited" },
-  unavailable: { tone: "fail", label: "Unavailable" },
+  unavailable: { tone: "unknown", label: "Could not check" },
 };
 
 export function ProviderCard({

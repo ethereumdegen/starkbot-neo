@@ -335,8 +335,8 @@ mod tests {
 
     #[test]
     fn an_anthropic_snapshot_is_dated_and_never_resolved() {
-        let model = classify(PROVIDER_ANTHROPIC, "claude-sonnet-4-5-20250929")
-            .expect("a known family");
+        let model =
+            classify(PROVIDER_ANTHROPIC, "claude-sonnet-4-5-20250929").expect("a known family");
         assert!(model.dated);
         assert_eq!(model.version, vec![4, 5]);
 

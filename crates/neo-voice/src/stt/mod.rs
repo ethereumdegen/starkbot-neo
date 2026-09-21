@@ -66,7 +66,9 @@ pub fn transcriber(
 fn on_device() -> Result<Box<dyn Transcriber>, VoiceError> {
     match AppleTranscriber::new() {
         Ok(transcriber) => Ok(Box::new(transcriber)),
-        Err(error) => Err(VoiceError::NoTranscriber { on_device: error.to_string() }),
+        Err(error) => Err(VoiceError::NoTranscriber {
+            on_device: error.to_string(),
+        }),
     }
 }
 

@@ -41,7 +41,10 @@ async fn openai_sends_a_bearer_header_and_reports_present() {
     let validator = OpenAiKeyValidator::new(base(&server))
         .expect("a client builds")
         .requiring("sol-latest");
-    let state = validator.validate(&secret()).await.expect("a 200 is readable");
+    let state = validator
+        .validate(&secret())
+        .await
+        .expect("a 200 is readable");
 
     assert_eq!(state, KeyState::Present);
     let requests = server.received_requests().await.expect("recording is on");
@@ -65,7 +68,10 @@ async fn a_catalog_without_the_configured_model_is_limited() {
         .requiring("sol-latest");
 
     assert_eq!(
-        validator.validate(&secret()).await.expect("a 200 is readable"),
+        validator
+            .validate(&secret())
+            .await
+            .expect("a 200 is readable"),
         KeyState::Limited
     );
 }
@@ -82,7 +88,10 @@ async fn a_rejected_key_is_invalid() {
     let validator = OpenAiKeyValidator::new(base(&server)).expect("a client builds");
 
     assert_eq!(
-        validator.validate(&secret()).await.expect("a 401 is a verdict"),
+        validator
+            .validate(&secret())
+            .await
+            .expect("a 401 is a verdict"),
         KeyState::Invalid
     );
 }
@@ -99,7 +108,10 @@ async fn a_server_fault_leaves_the_key_unjudged() {
     let validator = OpenAiKeyValidator::new(base(&server)).expect("a client builds");
 
     assert_eq!(
-        validator.validate(&secret()).await.expect("no verdict is not an error"),
+        validator
+            .validate(&secret())
+            .await
+            .expect("no verdict is not an error"),
         KeyState::Unchecked
     );
 }
@@ -112,7 +124,10 @@ async fn an_unreachable_vendor_leaves_the_key_unjudged() {
     let validator = OpenAiKeyValidator::new(base).expect("a client builds");
 
     assert_eq!(
-        validator.validate(&secret()).await.expect("offline is not an error"),
+        validator
+            .validate(&secret())
+            .await
+            .expect("offline is not an error"),
         KeyState::Unchecked
     );
 }
@@ -134,7 +149,10 @@ async fn anthropic_sends_its_own_header_pair() {
         .requiring("claude-sonnet-5");
 
     assert_eq!(
-        validator.validate(&secret()).await.expect("a 200 is readable"),
+        validator
+            .validate(&secret())
+            .await
+            .expect("a 200 is readable"),
         KeyState::Present
     );
     let requests = server.received_requests().await.expect("recording is on");
@@ -260,7 +278,12 @@ async fn a_refresh_caches_the_classified_catalog() {
         .map(|model| model.info.reference.id.clone())
         .collect();
     assert_eq!(
-        neo_core::resolve(neo_core::PROVIDER_OPENAI, neo_core::SOL_LATEST, &catalog_ids).as_deref(),
+        neo_core::resolve(
+            neo_core::PROVIDER_OPENAI,
+            neo_core::SOL_LATEST,
+            &catalog_ids
+        )
+        .as_deref(),
         Some("gpt-5.6-sol")
     );
 }

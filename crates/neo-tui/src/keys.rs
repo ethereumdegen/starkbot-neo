@@ -91,7 +91,9 @@ pub enum Action {
     /// Clear the whole buffer. A prompt that pre-fills — a model id, a
     /// settings field — is otherwise only editable one backspace at a time.
     PromptDeleteLine,
-    ResolveConfirm { approve: bool },
+    ResolveConfirm {
+        approve: bool,
+    },
     ToggleRemember,
     ShowMe,
     AnswerAsk(u8),

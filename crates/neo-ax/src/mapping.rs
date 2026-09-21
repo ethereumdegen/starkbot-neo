@@ -96,13 +96,19 @@ pub(crate) fn is_decoration(node: &RawNode) -> bool {
 pub(crate) fn is_tunnel(node: &RawNode) -> bool {
     TUNNEL_ROLES.contains(&node.role.as_str())
         && node.label().is_empty()
-        && !node.actions.iter().any(|a| PRESS_ACTIONS.contains(&a.as_str()))
+        && !node
+            .actions
+            .iter()
+            .any(|a| PRESS_ACTIONS.contains(&a.as_str()))
 }
 
 /// Whether the node is a sheet or modal dialog.
 pub(crate) fn is_modal(node: &RawNode) -> bool {
     MODAL_ROLES.contains(&node.role.as_str())
-        || node.subrole.as_deref().is_some_and(|s| MODAL_SUBROLES.contains(&s))
+        || node
+            .subrole
+            .as_deref()
+            .is_some_and(|s| MODAL_SUBROLES.contains(&s))
 }
 
 /// Whether the node says the app is working on something.
@@ -125,7 +131,10 @@ pub(crate) fn is_table_worthy(node: &RawNode) -> bool {
     CLICK_ROLES.contains(&node.role.as_str())
         || TEXT_ROLES.contains(&node.role.as_str())
         || SELECT_ROLES.contains(&node.role.as_str())
-        || node.actions.iter().any(|a| PRESS_ACTIONS.contains(&a.as_str()))
+        || node
+            .actions
+            .iter()
+            .any(|a| PRESS_ACTIONS.contains(&a.as_str()))
         || (node.settable_value && !node.role.is_empty())
 }
 
@@ -152,7 +161,10 @@ pub(crate) fn operations(node: &RawNode, is_menu_leaf: bool) -> Vec<Operation> {
 
     let mut ops = Vec::new();
     let role = node.role.as_str();
-    let has_press = node.actions.iter().any(|a| PRESS_ACTIONS.contains(&a.as_str()));
+    let has_press = node
+        .actions
+        .iter()
+        .any(|a| PRESS_ACTIONS.contains(&a.as_str()));
 
     if CLICK_ROLES.contains(&role) || has_press {
         ops.push(Operation::Click);
@@ -257,7 +269,10 @@ mod tests {
         secure.subrole = Some("AXSecureTextField".into());
         secure.settable_value = true;
         secure.focused = true;
-        assert!(operations(&secure, false).is_empty(), "a secure field is never operable");
+        assert!(
+            operations(&secure, false).is_empty(),
+            "a secure field is never operable"
+        );
     }
 
     #[test]
@@ -270,9 +285,16 @@ mod tests {
     #[test]
     fn select_needs_options_that_are_known_while_closed() {
         let mut popup = node("AXPopUpButton");
-        assert_eq!(operations(&popup, false), vec![Operation::Click], "closed pop-up stays CLICK");
+        assert_eq!(
+            operations(&popup, false),
+            vec![Operation::Click],
+            "closed pop-up stays CLICK"
+        );
         popup.options = vec!["A".into(), "B".into()];
-        assert_eq!(operations(&popup, false), vec![Operation::Click, Operation::Select]);
+        assert_eq!(
+            operations(&popup, false),
+            vec![Operation::Click, Operation::Select]
+        );
 
         let mut group = node("AXRadioGroup");
         group.options = vec!["One".into()];
@@ -300,8 +322,14 @@ mod tests {
     fn display_role_deaxes_and_special_cases_secure_and_search_fields() {
         assert_eq!(display_role("AXButton", None), "button");
         assert_eq!(display_role("AXTextField", None), "textfield");
-        assert_eq!(display_role("AXTextField", Some("AXSearchField")), "searchfield");
-        assert_eq!(display_role("AXTextField", Some("AXSecureTextField")), "securefield");
+        assert_eq!(
+            display_role("AXTextField", Some("AXSearchField")),
+            "searchfield"
+        );
+        assert_eq!(
+            display_role("AXTextField", Some("AXSecureTextField")),
+            "securefield"
+        );
         assert_eq!(display_role("AXSecureTextField", None), "securefield");
         assert_eq!(display_role("AXStaticText", None), "text");
         assert_eq!(display_role("AXRadioButton", Some("AXTabButton")), "tab");

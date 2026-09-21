@@ -142,6 +142,14 @@ pub struct KeyInfo {
 /// front ends, which never link `neo-keys` — speaks a single vocabulary.
 pub use neo_keys::{KeySource, KeyState, KeyStatus};
 
+/// What the last look at a subscription account found.
+///
+/// `Unavailable` is *"we could not find out"*, not *"it is gone"*. A transport
+/// failure, a provider outage or an offline laptop all land here, because the
+/// rule the API-key path already follows — reachability never condemns a
+/// credential (`key_check.rs`) — applies to a subscription too. Only a refusal
+/// the vendor actually issued is `SignedOut`. A front end must therefore
+/// render it neutrally: it is not a failure the user can act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAccountStatus {

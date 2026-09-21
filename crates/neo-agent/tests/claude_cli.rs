@@ -143,7 +143,9 @@ async fn a_failed_turn_reports_the_cli_message() {
     let claude = client(
         home.path(),
         CONNECTED,
-        &[r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model overloaded"}"#],
+        &[
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model overloaded"}"#,
+        ],
     );
 
     match claude.complete_text("hello").await {
@@ -158,7 +160,9 @@ async fn nothing_runs_without_a_subscription() {
     let claude = client(
         home.path(),
         SIGNED_OUT,
-        &[r#"{"type":"result","subtype":"success","is_error":false,"result":"should never be read"}"#],
+        &[
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"should never be read"}"#,
+        ],
     );
 
     assert!(matches!(

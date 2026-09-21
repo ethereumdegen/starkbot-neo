@@ -15,9 +15,9 @@
 //! the orange microphone indicator off only when nothing holds the device, so
 //! "not recording" is visibly true.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -44,6 +44,26 @@ const LEVEL_DECAY: f32 = 0.85;
 
 /// How long `stop` waits for the capture thread to hand the samples over.
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long [`Microphone::drop`] waits for the device to be released.
+///
+/// Much shorter than [`STOP_TIMEOUT`], because nobody is waiting for the
+/// samples: the only reason to wait at all is that macOS keeps the orange
+/// microphone indicator lit until the stream is dropped. A quit path that
+/// blocks is worse than an indicator that lingers a moment.
+const DROP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// What cpal's error callback leaves behind when the host tears the stream
+/// down mid-recording — a device unplugged with the key still held, which is
+/// the realistic way this fires.
+///
+/// A `Mutex<Option<String>>` and not an atomic flag because the host's own
+/// message is the only thing that says *which* device went away, and it is
+/// what [`VoiceError::Device`] carries. Legal here in a way it would not be
+/// two functions down: this is the error callback, not the realtime one. It
+/// fires on cpal's thread, at most a handful of times, and nothing in the
+/// audio path ever waits on this lock.
+type StreamError = Arc<Mutex<Option<String>>>;
 
 /// One audio input, as offered to the device picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,9 +173,10 @@ impl Microphone {
             .default_input_device()
             .and_then(|device| device.id().ok())
             .map(|id| id.id().to_owned());
-        let devices = host
-            .input_devices()
-            .map_err(|e| VoiceError::Device { call: "input_devices", detail: e.to_string() })?;
+        let devices = host.input_devices().map_err(|e| VoiceError::Device {
+            call: "input_devices",
+            detail: e.to_string(),
+        })?;
         Ok(devices
             .filter_map(|device| {
                 let id = device.id().ok()?.id().to_owned();
@@ -176,7 +197,9 @@ impl Microphone {
         let host = cpal::default_host();
         match device {
             None => {
-                let device = host.default_input_device().ok_or(VoiceError::NoInputDevice)?;
+                let device = host
+                    .default_input_device()
+                    .ok_or(VoiceError::NoInputDevice)?;
                 Ok(Self {
                     device_id: None,
                     name: device.to_string(),
@@ -241,11 +264,18 @@ impl Microphone {
                 // microphone mid-recording; the samples die with it.
                 let _ = done_tx.send(outcome);
             })
-            .map_err(|e| VoiceError::CaptureThread { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::CaptureThread {
+                detail: e.to_string(),
+            })?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => {
-                self.session = Some(Session { stop, level, done: done_rx, thread });
+                self.session = Some(Session {
+                    stop,
+                    level,
+                    done: done_rx,
+                    thread,
+                });
                 Ok(())
             }
             Ok(Err(error)) => {
@@ -263,20 +293,47 @@ impl Microphone {
 
     /// Stop recording and return the utterance. Push-to-talk key-up.
     ///
-    /// The device is closed before this returns, whatever the outcome.
+    /// The device is closed before this returns whenever the capture thread
+    /// is still answering, and this returns either way. That distinction is
+    /// the fix for a real wedge: the timeout below used to be followed by an
+    /// unconditional `join()`, so a thread stuck inside a CoreAudio call for
+    /// a device that had just vanished blocked the caller *forever*, after
+    /// the code above had already decided it had timed out. The caller is
+    /// the TUI's event loop.
     pub fn stop(&mut self) -> Result<Utterance, VoiceError> {
         let session = self.session.take().ok_or(VoiceError::NotRecording)?;
         session.stop.store(true, Ordering::Relaxed);
         let captured = match session.done.recv_timeout(STOP_TIMEOUT) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(VoiceError::CaptureThread {
-                detail: "the thread did not release the device within 5s".into(),
-            }),
-            Err(RecvTimeoutError::Disconnected) => Err(VoiceError::CaptureThread {
-                detail: "the thread panicked".into(),
-            }),
+            // Reporting on `done` is the thread's last statement, so all
+            // that is left to join on is its own teardown — and the report
+            // comes after the stream has been dropped, which is what makes
+            // "the device is closed before this returns" true.
+            Ok(result) => {
+                let _ = session.thread.join();
+                result
+            }
+            // Detached on purpose, and the one case where the device may
+            // still be open when this returns. The thread keeps its stop
+            // flag and releases the device if the host call ever comes back;
+            // dropping the handle is what detaches it.
+            Err(RecvTimeoutError::Timeout) => {
+                drop(session.thread);
+                Err(VoiceError::CaptureThread {
+                    detail: format!(
+                        "the thread did not release the device within {}s",
+                        STOP_TIMEOUT.as_secs()
+                    ),
+                })
+            }
+            // The sender was dropped without a report, so the thread has
+            // already panicked: this join cannot block.
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = session.thread.join();
+                Err(VoiceError::CaptureThread {
+                    detail: "the thread panicked".into(),
+                })
+            }
         };
-        let _ = session.thread.join();
 
         let captured = captured?;
         if captured.overflows > 0 {
@@ -286,7 +343,9 @@ impl Microphone {
             );
         }
         if captured.overflowed {
-            return Err(VoiceError::TooLong { limit: MAX_UTTERANCE });
+            return Err(VoiceError::TooLong {
+                limit: MAX_UTTERANCE,
+            });
         }
         Utterance::from_mono(&captured.samples, captured.sample_rate)
     }
@@ -305,10 +364,31 @@ impl Microphone {
 }
 
 impl Drop for Microphone {
+    /// Ask the thread to stop and give it [`DROP_TIMEOUT`] to say it has.
+    ///
+    /// Bounded for the same reason as [`Microphone::stop`], and more
+    /// tightly: `drop` runs on whatever thread let the handle go — for the
+    /// TUI, its event loop — and a wedged capture thread used to block it
+    /// here with no deadline at all. Waiting for the report rather than
+    /// joining blind is what makes the wait bounded: the report is the
+    /// thread's last statement, so a thread that has sent it is a thread
+    /// whose `join` returns immediately.
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
             session.stop.store(true, Ordering::Relaxed);
-            let _ = session.thread.join();
+            match session.done.recv_timeout(DROP_TIMEOUT) {
+                // Either the samples arrived or the thread panicked; in both
+                // cases it is done and this join returns at once.
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                    let _ = session.thread.join();
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        "the capture thread did not release the microphone in time; detaching it"
+                    );
+                    drop(session.thread);
+                }
+            }
         }
     }
 }
@@ -330,11 +410,17 @@ fn capture(
             return Err(error);
         }
     };
-    let Started { stream, mut consumer, sample_rate, overflows } = started;
+    let Started {
+        stream,
+        mut consumer,
+        sample_rate,
+        overflows,
+        stream_error,
+    } = started;
 
     let mut accumulator = Accumulator::new(sample_rate, MAX_UTTERANCE);
     let mut peak = 0.0f32;
-    loop {
+    let failed = loop {
         let finishing = stop.load(Ordering::Relaxed);
         let mut batch_peak = 0.0f32;
         while let Ok(sample) = consumer.pop() {
@@ -345,15 +431,32 @@ fn capture(
         }
         peak = batch_peak.max(peak * LEVEL_DECAY);
         level.store(peak.min(1.0).to_bits(), Ordering::Relaxed);
+        // Checked every tick rather than only at the end: once the host has
+        // torn the stream down no more samples are coming, so draining on is
+        // a busy loop over a dead device.
+        if let Some(detail) = take_stream_error(&stream_error) {
+            break Some(detail);
+        }
         if finishing || accumulator.overflowed {
-            break;
+            break None;
         }
         std::thread::sleep(DRAIN_INTERVAL);
-    }
+    };
 
     // Drop the stream before returning: the orange indicator goes out here.
     drop(stream);
     level.store(0.0f32.to_bits(), Ordering::Relaxed);
+
+    // Read once more after the stream is gone, for the unplug that lands in
+    // the same tick the key was released: without this the caller gets an
+    // `Ok` utterance holding whatever prefix arrived, which is a confidently
+    // truncated transcript and the worst of the available outcomes.
+    if let Some(detail) = failed.or_else(|| take_stream_error(&stream_error)) {
+        return Err(VoiceError::Device {
+            call: "input_stream",
+            detail,
+        });
+    }
 
     Ok(Captured {
         samples: accumulator.samples,
@@ -363,49 +466,77 @@ fn capture(
     })
 }
 
+/// The host's message, if the stream failed. A poisoned lock means the
+/// callback panicked while holding it, which is itself a stream that cannot
+/// be trusted, so it reads as a failure rather than as silence.
+fn take_stream_error(stream_error: &StreamError) -> Option<String> {
+    match stream_error.lock() {
+        Ok(mut held) => held.take(),
+        Err(_) => Some("the stream error callback panicked".to_owned()),
+    }
+}
+
 struct Started {
     stream: cpal::Stream,
     consumer: rtrb::Consumer<f32>,
     sample_rate: u32,
     overflows: Arc<AtomicU64>,
+    stream_error: StreamError,
 }
 
 fn open_stream(device_id: Option<&str>) -> Result<Started, VoiceError> {
     let host = cpal::default_host();
     let device = match device_id {
-        None => host.default_input_device().ok_or(VoiceError::NoInputDevice)?,
+        None => host
+            .default_input_device()
+            .ok_or(VoiceError::NoInputDevice)?,
         Some(wanted) => host
             .input_devices()
-            .map_err(|e| VoiceError::Device { call: "input_devices", detail: e.to_string() })?
+            .map_err(|e| VoiceError::Device {
+                call: "input_devices",
+                detail: e.to_string(),
+            })?
             .find(|device| device.id().ok().is_some_and(|id| id.id() == wanted))
             .ok_or_else(|| VoiceError::UnknownDevice {
                 requested: wanted.to_owned(),
                 available: Vec::new(),
             })?,
     };
-    let supported = device.default_input_config().map_err(|e| VoiceError::Device {
-        call: "default_input_config",
-        detail: e.to_string(),
-    })?;
+    let supported = device
+        .default_input_config()
+        .map_err(|e| VoiceError::Device {
+            call: "default_input_config",
+            detail: e.to_string(),
+        })?;
     let sample_rate = supported.sample_rate();
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
 
     let (producer, consumer) = rtrb::RingBuffer::<f32>::new(sample_rate as usize * RING_SECONDS);
     let overflows = Arc::new(AtomicU64::new(0));
+    let stream_error: StreamError = Arc::new(Mutex::new(None));
 
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(&device, &config, producer, &overflows),
-        SampleFormat::I16 => build::<i16>(&device, &config, producer, &overflows),
-        SampleFormat::I32 => build::<i32>(&device, &config, producer, &overflows),
-        SampleFormat::U16 => build::<u16>(&device, &config, producer, &overflows),
-        other => Err(VoiceError::UnsupportedFormat { format: other.to_string() }),
+        SampleFormat::F32 => build::<f32>(&device, &config, producer, &overflows, &stream_error),
+        SampleFormat::I16 => build::<i16>(&device, &config, producer, &overflows, &stream_error),
+        SampleFormat::I32 => build::<i32>(&device, &config, producer, &overflows, &stream_error),
+        SampleFormat::U16 => build::<u16>(&device, &config, producer, &overflows, &stream_error),
+        other => Err(VoiceError::UnsupportedFormat {
+            format: other.to_string(),
+        }),
     }?;
-    stream
-        .play()
-        .map_err(|e| VoiceError::Device { call: "stream.play", detail: e.to_string() })?;
+    stream.play().map_err(|e| VoiceError::Device {
+        call: "stream.play",
+        detail: e.to_string(),
+    })?;
 
-    Ok(Started { stream, consumer, sample_rate, overflows })
+    Ok(Started {
+        stream,
+        consumer,
+        sample_rate,
+        overflows,
+        stream_error,
+    })
 }
 
 fn build<T>(
@@ -413,6 +544,7 @@ fn build<T>(
     config: &StreamConfig,
     mut producer: rtrb::Producer<f32>,
     overflows: &Arc<AtomicU64>,
+    stream_error: &StreamError,
 ) -> Result<cpal::Stream, VoiceError>
 where
     T: SizedSample,
@@ -420,6 +552,7 @@ where
 {
     let channels = usize::from(config.channels).max(1);
     let overflows = Arc::clone(overflows);
+    let stream_error = Arc::clone(stream_error);
     device
         .build_input_stream(
             *config,
@@ -433,12 +566,29 @@ where
                     }
                 }
             },
+            // cpal's *error* callback, not the realtime one: allocating and
+            // taking a lock here is fine, and warning and moving on is not.
+            // A stream the host has torn down delivers no more samples, and
+            // a `stop` that reported `Ok` on the prefix that did arrive was
+            // a confidently truncated transcript — the user dictates a
+            // sentence, sees half of it, and has no way to know why.
             move |error| {
-                tracing::warn!(%error, "input stream error");
+                let detail = error.to_string();
+                tracing::warn!(%error, "the input stream failed; the recording will be refused");
+                if let Ok(mut held) = stream_error.lock()
+                    && held.is_none()
+                {
+                    // First report wins: the useful one is the failure that
+                    // ended the stream, not whatever followed it.
+                    *held = Some(detail);
+                }
             },
             None,
         )
-        .map_err(|e| VoiceError::Device { call: "build_input_stream", detail: e.to_string() })
+        .map_err(|e| VoiceError::Device {
+            call: "build_input_stream",
+            detail: e.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -459,13 +609,48 @@ mod tests {
 
         assert!(!accumulator.push(1.0), "the cap did not hold");
         assert!(accumulator.overflowed);
-        assert_eq!(accumulator.samples.len(), 1_000, "it kept growing past the cap");
+        assert_eq!(
+            accumulator.samples.len(),
+            1_000,
+            "it kept growing past the cap"
+        );
 
         // Still refusing, still not growing.
         for _ in 0..10_000 {
             assert!(!accumulator.push(1.0));
         }
         assert_eq!(accumulator.samples.len(), 1_000);
+    }
+
+    /// A stream failure that does not reach `stop` is a truncated
+    /// transcript the user is given no reason to doubt, so the one path
+    /// that could swallow it — a callback that panicked while holding the
+    /// lock — reports a failure rather than silence.
+    #[test]
+    fn a_stream_failure_survives_a_poisoned_lock_rather_than_reading_as_silence() {
+        let reported: StreamError = Arc::new(Mutex::new(Some("device disappeared".to_owned())));
+        assert_eq!(
+            take_stream_error(&reported).as_deref(),
+            Some("device disappeared")
+        );
+        assert_eq!(
+            take_stream_error(&reported),
+            None,
+            "the report was not consumed"
+        );
+
+        let poisoned: StreamError = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&poisoned);
+        let panicked = std::thread::spawn(move || {
+            let _guard = held.lock().expect("an uncontended lock");
+            panic!("the callback panicked with the lock held");
+        })
+        .join();
+        assert!(panicked.is_err(), "the thread was supposed to panic");
+        assert!(
+            take_stream_error(&poisoned).is_some(),
+            "a poisoned lock read as a healthy stream"
+        );
     }
 
     #[test]
@@ -528,7 +713,12 @@ mod tests {
     fn lists_the_real_input_devices() {
         let devices = Microphone::devices().expect("enumerate");
         for device in &devices {
-            eprintln!("{}{} [{}]", if device.is_default { "* " } else { "  " }, device.name, device.id);
+            eprintln!(
+                "{}{} [{}]",
+                if device.is_default { "* " } else { "  " },
+                device.name,
+                device.id
+            );
         }
         assert!(!devices.is_empty());
     }

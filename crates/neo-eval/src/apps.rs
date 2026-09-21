@@ -145,7 +145,11 @@ mod tests {
             .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into()))
             .collect();
         assert!(names.iter().any(|name| name == "Numbers.app"));
-        assert!(names.iter().any(|name| name == "Numbers Creator Studio.app"));
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "Numbers Creator Studio.app")
+        );
     }
 
     #[test]

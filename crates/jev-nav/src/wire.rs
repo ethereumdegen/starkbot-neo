@@ -61,13 +61,22 @@ impl Evaluation {
         if valid { Ok(answer) } else { Err(invalid()) }
     }
 
-    /// A yes/no answer as a probability, if the head was asked and is well formed.
-    pub fn yes(&self, name: &str) -> Option<f64> {
-        let answer = self.answers.get(name)?;
-        answer
-            .get("noul")
+    /// A yes/no head as a probability.
+    ///
+    /// `Err` for a missing key, a non-object answer, a non-numeric value,
+    /// `NaN`, or anything outside `0..=1` — the same standard [`Self::choice`]
+    /// holds the operation and target heads to. This returned `Option` until
+    /// R1.1, and its one caller read `None` as "no risk": a truncated response
+    /// scored `outward` at `0.0` and the send executed unconfirmed. A head
+    /// that was never asked for is the caller's business, not this method's —
+    /// `policy::resolve` asks only for the heads its request carried.
+    pub fn yes(&self, name: &str) -> Result<f64, WireError> {
+        self.answers
+            .get(name)
+            .and_then(|answer| answer.get("noul"))
             .and_then(Value::as_f64)
             .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
+            .ok_or_else(|| WireError::Invalid(name.to_owned()))
     }
 }
 

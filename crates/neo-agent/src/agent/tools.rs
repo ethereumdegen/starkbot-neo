@@ -89,6 +89,21 @@ fn cancelled() -> ToolError {
     ToolError::Cancelled(CoreError::Cancelled)
 }
 
+/// Why the navigator has no Jev client, in the words that are true.
+///
+/// Every failure of [`Runtime::jev`] used to collapse into
+/// [`ToolError::MissingJevKey`], so a Keychain that would not open, a store
+/// that could not be read and an unparseable `TYPESAFE_ENDPOINT` all told the
+/// user to add a TypeSafe key in Connections — a key they already had. Only a
+/// genuinely absent key is that message; everything else is reported as the
+/// runtime failure it was.
+fn jev_unavailable(error: RuntimeError) -> ToolError {
+    match error {
+        RuntimeError::MissingKey(_) => ToolError::MissingJevKey,
+        other => ToolError::from(other),
+    }
+}
+
 /// The single confirm threshold a [`RunConfig`] carries.
 ///
 /// Settings hold one threshold per safety head — `outward`, `destructive`,
@@ -132,6 +147,12 @@ pub struct BrowserOptions {
     pub safety_heads: bool,
     /// The probability at which a safety head stops the run.
     pub confirm_at: f64,
+    /// The screen hold this run is part of, when it is part of one.
+    ///
+    /// Only a headed run takes the screen at all, and only work nested
+    /// inside somebody else's hold needs this: see
+    /// [`crate::screen::ScreenScope`]. `None` contends for the screen.
+    pub screen: Option<crate::screen::ScreenScope>,
 }
 
 impl BrowserOptions {
@@ -162,6 +183,7 @@ impl BrowserOptions {
             attach: Vec::new(),
             safety_heads: true,
             confirm_at,
+            screen: None,
         }
     }
 }
@@ -174,6 +196,11 @@ pub struct AppOptions {
     pub goal: String,
     pub safety_heads: bool,
     pub confirm_at: f64,
+    /// The screen hold this run is part of, when it is part of one. An app
+    /// run always takes the screen, so a turn running inside somebody else's
+    /// hold — an eval case inside its suite — has to say so or be refused.
+    /// See [`crate::screen::ScreenScope`].
+    pub screen: Option<crate::screen::ScreenScope>,
 }
 
 impl AppOptions {
@@ -201,6 +228,7 @@ impl AppOptions {
             goal: goal.into(),
             safety_heads: true,
             confirm_at,
+            screen: None,
         }
     }
 }
@@ -244,7 +272,11 @@ pub async fn run_browser(
     // into nothing the user can see, and making it queue behind an app run
     // would be a lie about what it needs.
     let _screen = if options.headed {
-        Some(runtime.acquire_screen(run, format!("navigate {}", options.url))?)
+        Some(runtime.acquire_screen_within(
+            options.screen,
+            run,
+            format!("navigate {}", options.url),
+        )?)
     } else {
         None
     };
@@ -269,7 +301,7 @@ async fn browse(
         return Err(error);
     }
     let settings = runtime.settings()?;
-    let jev = runtime.jev().map_err(|_| ToolError::MissingJevKey)?;
+    let jev = runtime.jev().map_err(jev_unavailable)?;
     let text = runtime.text_helper(&settings);
     let mut progress = Progress::new(runtime, run);
     if text.is_none() {
@@ -332,13 +364,13 @@ async fn browse(
         options.url
     ));
 
-    let observer =
-        jev_nav::web::CdpObserver::new(page).with_attachments(options.attach.clone());
+    let observer = jev_nav::web::CdpObserver::new(page).with_attachments(options.attach.clone());
     let mut navigator = Navigator::new(observer, jev, text);
     let config = RunConfig {
         goal: options.goal.clone(),
         safety_heads: options.safety_heads,
         confirm_at: options.confirm_at,
+        on_task_floor: settings.safety.on_task_floor,
     };
     progress.launch(format!("\ngoal: {}\n", options.goal));
 
@@ -348,7 +380,9 @@ async fn browse(
     let outcome = {
         let mut on_step = |step: &jev_nav::StepEvent| {
             latencies.push(step.jev_ms);
-            neo_otel::record(jev_step(step));
+            if neo_otel::enabled() {
+                neo_otel::record(jev_step(step));
+            }
             progress.decision(NavSurface::Browser, step);
         };
         // `jev-nav` has no stop of its own, so the token races the whole run
@@ -366,21 +400,32 @@ async fn browse(
 
     // Where the run ended, and what the page says. Both are read before the
     // browser goes away, because the next decision is made from them.
-    let ended_at = navigator
-        .observer
-        .page()
-        .evaluate("[location.href, document.title]")
-        .await
-        .ok()
-        .map(|value| value.to_string());
-    let text = navigator
-        .observer
-        .page()
-        .evaluate("document.body ? document.body.innerText : ''")
-        .await
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .map(|text| clamp(&text));
+    //
+    // A stopped run reads neither. `neo-cdp`'s `call` carries a 30 s deadline
+    // of its own, so two evaluates against a page wedged enough to be worth
+    // stopping cost a minute before `close` was even reached — and nobody
+    // sees what they produce, because a stopped run returns
+    // [`ToolError::Cancelled`] rather than an observation.
+    let (ended_at, text) = if cancel.is_cancelled() {
+        (None, None)
+    } else {
+        let ended_at = navigator
+            .observer
+            .page()
+            .evaluate("[location.href, document.title]")
+            .await
+            .ok()
+            .map(|value| value.to_string());
+        let text = navigator
+            .observer
+            .page()
+            .evaluate("document.body ? document.body.innerText : ''")
+            .await
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .map(|text| clamp(&text));
+        (ended_at, text)
+    };
     let steps = navigator.history().len();
     let protocol_calls = browser.calls().saturating_sub(calls_before);
     browser.close().await;
@@ -443,8 +488,12 @@ pub async fn run_app(
 ) -> Result<AppRun, ToolError> {
     // Held for the whole run: driving an app is keystrokes into the frontmost
     // window, and a second run typing into a different window mid-goal does
-    // not produce two results, it produces one wrong one.
-    let _screen = runtime.acquire_screen(run, format!("drive {}", options.app))?;
+    // not produce two results, it produces one wrong one. This is the only
+    // mutual exclusion on the keyboard — the `flock` behind it is released by
+    // the kernel when a run dies, which the TTL-based `leases` row that used
+    // to sit beside it was not.
+    let _screen =
+        runtime.acquire_screen_within(options.screen, run, format!("drive {}", options.app))?;
     neo_otel::in_span(
         surface_run("app", &options.app, &options.goal),
         drive_app(runtime, options, run, cancel),
@@ -470,35 +519,8 @@ async fn drive_app(
         finish_run(0, Err(&error));
         return Err(error);
     }
-    // Exclusive use of the keyboard and of this app, for as long as the run
-    // lasts. Every action here is a global CGEvent or an `AXPress` on whatever
-    // is frontmost, so a second Starkbot driving another app at the same
-    // moment would type into it. The guard releases on every exit path.
-    let _keyboard = match runtime.hold(
-        neo_store::Resource::Keyboard,
-        &format!("driving {}", options.app),
-    ) {
-        Ok(guard) => guard,
-        Err(error) => {
-            let error = ToolError::from(error);
-            finish_run(0, Err(&error));
-            return Err(error);
-        }
-    };
-    let _app = match runtime.hold(
-        neo_store::Resource::App(options.app.clone()),
-        &options.goal,
-    ) {
-        Ok(guard) => guard,
-        Err(error) => {
-            let error = ToolError::from(error);
-            finish_run(0, Err(&error));
-            return Err(error);
-        }
-    };
-
     let settings = runtime.settings()?;
-    let jev = runtime.jev().map_err(|_| ToolError::MissingJevKey)?;
+    let jev = runtime.jev().map_err(jev_unavailable)?;
     let text = runtime.text_helper(&settings);
     let mut progress = Progress::new(runtime, run);
     if text.is_none() {
@@ -551,6 +573,7 @@ async fn drive_app(
         goal: options.goal.clone(),
         safety_heads: options.safety_heads,
         confirm_at: options.confirm_at,
+        on_task_floor: settings.safety.on_task_floor,
     };
     progress.launch(format!("\ngoal: {}\n", options.goal));
 
@@ -559,7 +582,9 @@ async fn drive_app(
     let outcome = {
         let mut on_step = |step: &jev_nav::StepEvent| {
             latencies.push(step.jev_ms);
-            neo_otel::record(jev_step(step));
+            if neo_otel::enabled() {
+                neo_otel::record(jev_step(step));
+            }
             progress.decision(NavSurface::App, step);
         };
         tokio::select! {
@@ -814,12 +839,7 @@ fn millis(value: u128) -> u64 {
 /// the three things that decide what to do next. `Blocked` keeps the
 /// navigator's own reason verbatim rather than softening it — a model told
 /// "done" about a failed run will build on sand.
-fn observe(
-    outcome: &Outcome,
-    steps: usize,
-    ended_at: Option<&str>,
-    text: Option<&str>,
-) -> String {
+fn observe(outcome: &Outcome, steps: usize, ended_at: Option<&str>, text: Option<&str>) -> String {
     let where_it_ended = ended_at
         .map(|value| format!(" · ended at {value}"))
         .unwrap_or_default();
@@ -867,7 +887,9 @@ mod tests {
 
         let options = BrowserOptions::unattended(&settings, "https://example.com", "read it");
         assert!((options.confirm_at - 0.25).abs() < 1e-6);
-        assert!((AppOptions::unattended(&settings, "TextEdit", "type").confirm_at - 0.25).abs() < 1e-6);
+        assert!(
+            (AppOptions::unattended(&settings, "TextEdit", "type").confirm_at - 0.25).abs() < 1e-6
+        );
     }
 
     /// An unattended run is headless, throwaway and guarded. A GUI that wants

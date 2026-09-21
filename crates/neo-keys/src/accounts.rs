@@ -73,7 +73,11 @@ mod tests {
         assert_eq!(env_var(ACCOUNT_OPENAI), Some("OPENAI_API_KEY"));
         assert_eq!(env_var(ACCOUNT_ANTHROPIC), Some("ANTHROPIC_API_KEY"));
         assert_eq!(env_var(ACCOUNT_TYPESAFE), Some("TYPESAFE_API_KEY"));
-        assert!(CORE_ACCOUNTS.iter().all(|account| env_var(account).is_some()));
+        assert!(
+            CORE_ACCOUNTS
+                .iter()
+                .all(|account| env_var(account).is_some())
+        );
     }
 
     #[test]

@@ -253,10 +253,8 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         SpeechAuth::Authorized => {
             Check::new("dictation", Health::Ok, "on-device · no key, no network")
         }
-        SpeechAuth::Denied => {
-            Check::new("dictation", Health::Fail, "speech recognition is denied")
-                .with_fix(neo_voice::SPEECH_SETTINGS_URL)
-        }
+        SpeechAuth::Denied => Check::new("dictation", Health::Fail, "speech recognition is denied")
+            .with_fix(neo_voice::SPEECH_SETTINGS_URL),
         SpeechAuth::NotDetermined => Check::new(
             "dictation",
             Health::Unknown,
@@ -296,15 +294,18 @@ fn subscription_check(account: &neo_core::ProviderAccount) -> Check {
     let name = format!("subscription ({})", account.provider.as_str());
     let plan = account.plan_type.as_deref().unwrap_or("plan unknown");
     match account.status {
-        ProviderAccountStatus::Connected => Check::new(&name, Health::Ok, format!("connected · {plan}")),
+        ProviderAccountStatus::Connected => {
+            Check::new(&name, Health::Ok, format!("connected · {plan}"))
+        }
         ProviderAccountStatus::RateLimited => {
             Check::new(&name, Health::Warn, format!("rate limited · {plan}"))
         }
-        ProviderAccountStatus::SignedOut => Check::new(&name, Health::Warn, "signed out")
-            .with_fix(format!(
+        ProviderAccountStatus::SignedOut => {
+            Check::new(&name, Health::Warn, "signed out").with_fix(format!(
                 "`neo account --provider {} login`",
                 account.provider.as_str()
-            )),
+            ))
+        }
         ProviderAccountStatus::Unavailable => {
             Check::new(&name, Health::Warn, "the helper is unavailable")
         }

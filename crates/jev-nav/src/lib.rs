@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 pub use observer::{ObserveError, Observer};
 
 use policy::{Decision, action_space, build_request, resolve};
-use rules::{MAX_ACTIONS, MAX_CONSECUTIVE_STALE, MAX_DECISIONS};
+use rules::{MAX_ACTIONS, MAX_CONSECUTIVE_STALE, MAX_DECISIONS, ON_TASK, SAFETY};
 use text::{TextError, TextHelper, field_context};
 use wire::{TypeSafe, WireError};
 
@@ -60,9 +60,17 @@ const STALE_LIMIT: &str = "the surface changed under every decision; nothing cou
 
 pub struct RunConfig {
     pub goal: String,
+    /// Ask the risk heads (`rules::SAFETY`) on every step.
     pub safety_heads: bool,
     /// Return instead of executing when a safety head crosses this (the caller shows a confirm card).
     pub confirm_at: f64,
+    /// Stop the run when Jev's confidence that the page still serves the goal
+    /// falls below this.
+    ///
+    /// A floor, not a ceiling: `on_task` answers "still on task?", so low is
+    /// the dangerous direction — the opposite of the three risk heads. `0.0`
+    /// disables the check, and the head is then not asked for at all.
+    pub on_task_floor: f32,
 }
 
 pub struct Navigator<O: Observer> {
@@ -120,6 +128,7 @@ impl<O: Observer> Navigator<O> {
                 &config.goal,
                 &self.history,
                 config.safety_heads,
+                config.on_task_floor,
             );
             let evaluation = self
                 .jev
@@ -166,16 +175,42 @@ impl<O: Observer> Navigator<O> {
                 });
             }
 
-            let risky = ["outward", "destructive", "spends"].iter().any(|head| {
-                decision.safety.get(*head).copied().unwrap_or(0.0) >= config.confirm_at
+            // An absent head means "not asked": `policy::resolve` fails the
+            // step when a head the request carried came back missing or
+            // malformed, so there is no reading of a truncated answer that
+            // scores a send at `0.0` and then executes it (R1.1).
+            let risky = SAFETY.iter().any(|(head, _)| {
+                decision
+                    .safety
+                    .get(*head)
+                    .is_some_and(|probability| *probability >= config.confirm_at)
             });
+            // The drift head is a floor: low confidence that the page still
+            // serves the goal is the dangerous direction (R1.2).
+            let drifted = config.on_task_floor > 0.0
+                && decision
+                    .safety
+                    .get(ON_TASK.0)
+                    .is_some_and(|probability| *probability < f64::from(config.on_task_floor));
             let Some(action) = decision.action.clone() else {
                 return Ok(Outcome::Blocked("decision had no executable action".into()));
             };
-            if risky && action.get("kind").and_then(Value::as_str) != Some("wait") {
+            // A WAIT mutates nothing, so neither gate applies to one: stopping
+            // a run for pausing while a sheet loads is a pure false positive,
+            // and a page that is still loading is exactly the page whose
+            // on-task score is about to recover.
+            let waiting = action.get("kind").and_then(Value::as_str) == Some("wait");
+            if risky && !waiting {
                 on_step(&event);
                 return Ok(Outcome::Blocked(format!(
                     "needs confirmation before `{}`",
+                    event.label.clone().unwrap_or_default()
+                )));
+            }
+            if drifted && !waiting {
+                on_step(&event);
+                return Ok(Outcome::Blocked(format!(
+                    "the page drifted off the goal; stopped before `{}`",
                     event.label.clone().unwrap_or_default()
                 )));
             }

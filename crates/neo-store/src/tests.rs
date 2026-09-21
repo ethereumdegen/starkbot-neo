@@ -162,37 +162,166 @@ fn settings_patch_is_atomic_validated_and_resettable() {
     assert_eq!(reset_section.identity, Settings::default().identity);
 }
 
+/// Two processes patching one section is the case the WAL, the four readers
+/// and the whole `presence` module exist for — and it is exactly the case the
+/// previous version of this test could not reach. It spawned two threads
+/// against one `Store`, whose single writer actor serialises them by
+/// construction, so it asserted nothing about concurrency while implying it
+/// did. Two `Store` handles on one file are two writers, as two processes
+/// are: a `DEFERRED` transaction that reads and then writes gets
+/// `SQLITE_BUSY_SNAPSHOT` when it tries to upgrade after the other one
+/// committed, and `busy_timeout` does not retry that. What the user saw was
+/// "database is locked" when patching settings from the desktop app with the
+/// TUI open.
 #[test]
-fn concurrent_patches_to_one_section_do_not_lose_fields() {
+fn concurrent_patches_from_two_store_handles_do_not_lose_fields() {
+    let temp = TempDir::new().unwrap_or_else(|error| panic!("{error}"));
+    let path = temp.path().join("neo.db");
+    let backups = temp.path().join("backups");
+    let first = Store::open(&path, &backups).unwrap_or_else(|error| panic!("{error}"));
+    let second = Store::open(&path, &backups).unwrap_or_else(|error| panic!("{error}"));
+
+    // One overlapping pair is the whole bug; twenty makes the overlap
+    // certain rather than lucky.
+    for round in 0..20 {
+        let enabled = round % 2 == 0;
+        let barrier = Arc::new(Barrier::new(2));
+        let first_repository = first.settings();
+        let first_barrier = Arc::clone(&barrier);
+        let left = std::thread::spawn(move || {
+            first_barrier.wait();
+            first_repository.patch("listen", json!({ "enabled": enabled }))
+        });
+        let second_repository = second.settings();
+        let second_barrier = Arc::clone(&barrier);
+        let right = std::thread::spawn(move || {
+            second_barrier.wait();
+            second_repository.patch("listen", json!({ "push_to_talk": true }))
+        });
+        left.join()
+            .unwrap_or_else(|_| panic!("the first settings patch panicked"))
+            .unwrap_or_else(|error| panic!("round {round}: {error}"));
+        right
+            .join()
+            .unwrap_or_else(|_| panic!("the second settings patch panicked"))
+            .unwrap_or_else(|error| panic!("round {round}: {error}"));
+
+        let settings = first
+            .settings()
+            .load()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            settings.listen.enabled, enabled,
+            "round {round} lost `enabled`"
+        );
+        assert!(
+            settings.listen.push_to_talk,
+            "round {round} lost `push_to_talk`"
+        );
+    }
+}
+
+/// Put a blob into `settings` exactly as written, bypassing `patch`, so a
+/// test can stand in for a downgrade, a rollback or a field rename.
+fn write_raw_section(store: &Store, section: &str, encoded: &str) {
+    let section = section.to_owned();
+    let encoded = encoded.to_owned();
+    store
+        .writer()
+        .execute(move |connection| {
+            connection.execute(
+                "INSERT INTO settings(section, value, updated_at) VALUES (?1, ?2, 0) \
+                 ON CONFLICT(section) DO UPDATE SET value = excluded.value",
+                rusqlite::params![section, encoded],
+            )?;
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// Put a blob in past `CHECK (json_valid(value))`, the way a hand-restored
+/// `.dump` or an outside tool would.
+fn write_unchecked_section(path: &std::path::Path, section: &str, encoded: &str) {
+    let connection = Connection::open(path).unwrap_or_else(|error| panic!("{error}"));
+    connection
+        .pragma_update(None, "ignore_check_constraints", true)
+        .unwrap_or_else(|error| panic!("{error}"));
+    connection
+        .execute(
+            "INSERT INTO settings(section, value, updated_at) VALUES (?1, ?2, 0) \
+             ON CONFLICT(section) DO UPDATE SET value = excluded.value",
+            rusqlite::params![section, encoded],
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// The four ways a stored settings blob stops matching the build that reads
+/// it. Each of them used to make `load()` return `StoreError::Json` or
+/// `InvalidSettings`, which `Runtime::settings()` propagates into
+/// `bootstrap()` — so the user got an app that would not start, and no way
+/// to edit the setting that stopped it. Nothing here may lose a field that
+/// is still valid.
+#[test]
+fn settings_survive_a_blob_this_build_cannot_read() {
     let (_temp, store) = test_store();
-    let barrier = Arc::new(Barrier::new(3));
-    let first_repository = store.settings();
-    let first_barrier = Arc::clone(&barrier);
-    let first = std::thread::spawn(move || {
-        first_barrier.wait();
-        first_repository.patch("listen", json!({"enabled": false}))
-    });
-    let second_repository = store.settings();
-    let second_barrier = Arc::clone(&barrier);
-    let second = std::thread::spawn(move || {
-        second_barrier.wait();
-        second_repository.patch("listen", json!({"push_to_talk": true}))
-    });
-    barrier.wait();
-    first
-        .join()
-        .unwrap_or_else(|_| panic!("first settings patch panicked"))
-        .unwrap_or_else(|error| panic!("{error}"));
-    second
-        .join()
-        .unwrap_or_else(|_| panic!("second settings patch panicked"))
-        .unwrap_or_else(|error| panic!("{error}"));
-    let settings = store
-        .settings()
-        .load()
-        .unwrap_or_else(|error| panic!("{error}"));
-    assert!(!settings.listen.enabled);
+    let repository = store.settings();
+
+    // A key from a newer build, or one this build renamed away.
+    write_raw_section(
+        &store,
+        "listen",
+        r#"{"enabled":false,"push_to_talk":true,"barge_in_mode":"aggressive"}"#,
+    );
+    let settings = repository.load().unwrap_or_else(|error| panic!("{error}"));
+    assert!(!settings.listen.enabled, "the unknown key took a good one");
     assert!(settings.listen.push_to_talk);
+
+    // A key that did not exist yet when the blob was written.
+    write_raw_section(&store, "listen", r#"{"enabled":false}"#);
+    let settings = repository.load().unwrap_or_else(|error| panic!("{error}"));
+    assert!(!settings.listen.enabled);
+    assert_eq!(
+        settings.listen.push_to_talk,
+        Settings::default().listen.push_to_talk
+    );
+
+    // Valid JSON, wrong shape — which `CHECK (json_valid(value))` permits.
+    write_raw_section(&store, "listen", "[1,2,3]");
+    let settings = repository.load().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(settings.listen, Settings::default().listen);
+
+    // Not JSON at all. The check keeps this out of the table, so it takes a
+    // connection with the check off — which is what a hand-restored `.dump`,
+    // or a row written by an outside tool, amounts to.
+    write_unchecked_section(store.path(), "listen", "{\"enabled\": fal");
+    let settings = repository.load().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(settings.listen, Settings::default().listen);
+
+    // Valid when it was written, below a floor that landed later. Only the
+    // section the error names is reset.
+    write_raw_section(&store, "identity", r#"{"name":"Nova"}"#);
+    write_raw_section(&store, "safety", r#"{"on_task_floor":0.1}"#);
+    let settings = repository.load().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(settings.safety, Settings::default().safety);
+    assert_eq!(settings.identity.name, "Nova");
+}
+
+/// Tolerance belongs to the stored blob, not to the caller. A user typing a
+/// field name that does not exist has made a mistake and must be told;
+/// silently dropping it would leave them staring at a setting that never
+/// changes.
+#[test]
+fn a_patch_naming_an_unknown_field_is_still_refused() {
+    let (_temp, store) = test_store();
+    let repository = store.settings();
+    assert!(matches!(
+        repository.patch("listen", json!({"barge_in_mode": "aggressive"})),
+        Err(StoreError::Json(_))
+    ));
+    assert!(matches!(
+        repository.patch("nonsense", json!({})),
+        Err(StoreError::UnknownSettingsSection(_))
+    ));
 }
 
 #[test]
@@ -328,7 +457,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
             &provider,
             GLOBAL_SCOPE,
             vec![
-                model("gpt-5.6-sol", vec![ModelUseCase::Inference, ModelUseCase::TextHelper]),
+                model(
+                    "gpt-5.6-sol",
+                    vec![ModelUseCase::Inference, ModelUseCase::TextHelper],
+                ),
                 model("gpt-transcribe", vec![ModelUseCase::SpeechToText]),
             ],
             1_000,
@@ -342,7 +474,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
             &provider,
             GLOBAL_SCOPE,
             vec![
-                model("gpt-5.6-sol", vec![ModelUseCase::Inference, ModelUseCase::TextHelper]),
+                model(
+                    "gpt-5.6-sol",
+                    vec![ModelUseCase::Inference, ModelUseCase::TextHelper],
+                ),
                 model("gpt-5.7-luna", vec![ModelUseCase::TextHelper]),
             ],
             2_000,
@@ -359,7 +494,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
     assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.7-luna"]);
 
     let sol = &cached[0];
-    assert_eq!(sol.first_seen, 1_000, "a surviving id keeps its first sighting");
+    assert_eq!(
+        sol.first_seen, 1_000,
+        "a surviving id keeps its first sighting"
+    );
     assert_eq!(sol.last_seen, 2_000);
     assert_eq!(
         sol.info.use_cases,
@@ -493,9 +631,15 @@ fn a_streaming_answer_grows_one_row() {
         .unwrap_or_else(|error| panic!("{error}"));
 
     let growing = |at| {
-        NewMessage::new(thread.id, MessageRole::Assistant, MessageSource::System, "", at)
-            .with_kind(MessageKind::Answer)
-            .with_meta(json!({"run": "run-1"}))
+        NewMessage::new(
+            thread.id,
+            MessageRole::Assistant,
+            MessageSource::System,
+            "",
+            at,
+        )
+        .with_kind(MessageKind::Answer)
+        .with_meta(json!({"run": "run-1"}))
     };
     let first = conversations
         .upsert_streaming_message(&growing(1_100), "Posted ")
@@ -600,9 +744,10 @@ fn the_thread_read_walks_its_index_instead_of_sorting() {
                 "EXPLAIN QUERY PLAN {}",
                 crate::conversations::THREAD_QUERY
             ))?;
-            let rows = statement.query_map(rusqlite::params![ConversationId::new().to_string(), 10_i64], |row| {
-                row.get::<_, String>(3)
-            })?;
+            let rows = statement.query_map(
+                rusqlite::params![ConversationId::new().to_string(), 10_i64],
+                |row| row.get::<_, String>(3),
+            )?;
             let mut lines = Vec::new();
             for row in rows {
                 lines.push(row?);
@@ -711,7 +856,9 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
 
     let store =
         Store::open(&path, temp.path().join("backups")).unwrap_or_else(|error| panic!("{error}"));
-    let id: ConversationId = conversation.parse().unwrap_or_else(|error| panic!("{error}"));
+    let id: ConversationId = conversation
+        .parse()
+        .unwrap_or_else(|error| panic!("{error}"));
     let threads = store
         .conversations()
         .list(10)
@@ -720,7 +867,10 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
     assert_eq!(threads[0].id, id);
     assert_eq!(threads[0].title.as_deref(), Some("yesterday"));
     assert_eq!(threads[0].created_at, 1_000, "started_at became created_at");
-    assert_eq!(threads[0].updated_at, 9_000, "updated_at seeded from ended_at");
+    assert_eq!(
+        threads[0].updated_at, 9_000,
+        "updated_at seeded from ended_at"
+    );
 
     let messages = store
         .conversations()
@@ -750,14 +900,23 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
             )?)
         })
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(hits, 1, "search still finds a message written before the upgrade");
+    assert_eq!(
+        hits, 1,
+        "search still finds a message written before the upgrade"
+    );
 
     // And the upgraded database takes new work.
     store
         .conversations()
         .append_message(
-            NewMessage::new(id, MessageRole::Assistant, MessageSource::System, "More.", 9_500)
-                .with_kind(MessageKind::Answer),
+            NewMessage::new(
+                id,
+                MessageRole::Assistant,
+                MessageSource::System,
+                "More.",
+                9_500,
+            )
+            .with_kind(MessageKind::Answer),
         )
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(

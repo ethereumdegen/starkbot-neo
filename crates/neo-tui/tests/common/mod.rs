@@ -69,7 +69,10 @@ pub fn decision() -> NavDecision {
         text_ms: 0,
         act_ms: 22,
         elapsed_ms: 1_284,
-        safety: vec![("outward".to_owned(), 0.08), ("destructive".to_owned(), 0.01)],
+        safety: vec![
+            ("outward".to_owned(), 0.08),
+            ("destructive".to_owned(), 0.01),
+        ],
     }
 }
 
@@ -128,7 +131,11 @@ pub fn dump(buffer: &Buffer) -> String {
     let mut out = String::new();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
-            out.push_str(buffer.cell((x, y)).map_or(" ", ratatui::buffer::Cell::symbol));
+            out.push_str(
+                buffer
+                    .cell((x, y))
+                    .map_or(" ", ratatui::buffer::Cell::symbol),
+            );
         }
         while out.ends_with(' ') {
             out.pop();

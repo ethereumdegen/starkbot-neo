@@ -101,7 +101,11 @@ fn post(event: &CGEvent, target: Target) {
     }
 }
 
-fn key_event(code: u16, down: bool, flags: CGEventFlags) -> Option<objc2_core_foundation::CFRetained<CGEvent>> {
+fn key_event(
+    code: u16,
+    down: bool,
+    flags: CGEventFlags,
+) -> Option<objc2_core_foundation::CFRetained<CGEvent>> {
     let event = CGEvent::new_keyboard_event(None, code, down)?;
     if !flags.is_empty() {
         CGEvent::set_flags(Some(&event), flags);
@@ -121,7 +125,10 @@ pub(crate) struct HeldModifiers {
 impl HeldModifiers {
     /// Press each modifier down and keep them down until the guard is dropped.
     pub(crate) fn press(modifiers: &[Modifier], target: Target) -> Self {
-        let mut held = Self { codes: Vec::with_capacity(modifiers.len()), target };
+        let mut held = Self {
+            codes: Vec::with_capacity(modifiers.len()),
+            target,
+        };
         let mut flags = CGEventFlags::empty();
         for m in modifiers {
             flags |= modifier_flag(*m);
@@ -136,7 +143,9 @@ impl HeldModifiers {
 
     /// The flag mask the held modifiers add to the next event.
     pub(crate) fn flags(&self, modifiers: &[Modifier]) -> CGEventFlags {
-        modifiers.iter().fold(CGEventFlags::empty(), |acc, m| acc | modifier_flag(*m))
+        modifiers
+            .iter()
+            .fold(CGEventFlags::empty(), |acc, m| acc | modifier_flag(*m))
     }
 }
 
@@ -163,22 +172,20 @@ pub(crate) fn release_all_modifiers() {
 }
 
 /// Post one key, with modifiers held only for its duration.
-pub(crate) fn press_key(
-    key: Key,
-    modifiers: &[Modifier],
-    target: Target,
-) -> Result<(), AxError> {
+pub(crate) fn press_key(key: Key, modifiers: &[Modifier], target: Target) -> Result<(), AxError> {
     if secure_input_enabled() {
         return Err(AxError::SecureInput);
     }
     let held = HeldModifiers::press(modifiers, target);
     let flags = held.flags(modifiers);
     let code = keycode(key);
-    let down = key_event(code, true, flags)
-        .ok_or(AxError::Unsupported("the system refused to create a key event"))?;
+    let down = key_event(code, true, flags).ok_or(AxError::Unsupported(
+        "the system refused to create a key event",
+    ))?;
     post(&down, target);
-    let up = key_event(code, false, flags)
-        .ok_or(AxError::Unsupported("the system refused to create a key event"))?;
+    let up = key_event(code, false, flags).ok_or(AxError::Unsupported(
+        "the system refused to create a key event",
+    ))?;
     post(&up, target);
     drop(held);
     Ok(())
@@ -226,7 +233,9 @@ pub(crate) fn type_text(text: &str, target: Target, kill: &Arc<AtomicBool>) -> R
         }
         for down in [true, false] {
             let Some(event) = CGEvent::new_keyboard_event(None, 0, down) else {
-                return Err(AxError::Unsupported("the system refused to create a key event"));
+                return Err(AxError::Unsupported(
+                    "the system refused to create a key event",
+                ));
             };
             let len = u64::try_from(chunk.len()).unwrap_or(0);
             // SAFETY: `chunk` is a live `Vec<u16>` for the whole call and
@@ -251,7 +260,9 @@ pub(crate) fn scroll_wheel(lines: i32, target: Target) -> Result<(), AxError> {
         0,
         0,
     )
-    .ok_or(AxError::Unsupported("the system refused to create a scroll event"))?;
+    .ok_or(AxError::Unsupported(
+        "the system refused to create a scroll event",
+    ))?;
     post(&event, target);
     Ok(())
 }
@@ -276,7 +287,11 @@ mod tests {
         // 19 ASCII chars then an emoji: the pair would straddle unit 20.
         let text = format!("{}🙂🙂", "a".repeat(19));
         let chunks = utf16_chunks(&text);
-        assert_eq!(chunks[0].len(), 21, "the chunk stretches to keep the pair whole");
+        assert_eq!(
+            chunks[0].len(),
+            21,
+            "the chunk stretches to keep the pair whole"
+        );
         for chunk in &chunks {
             assert!(
                 String::from_utf16(chunk).is_ok(),
@@ -324,9 +339,15 @@ mod tests {
 
     #[test]
     fn modifier_flags_combine_without_overlap() {
-        let all = [Modifier::Shift, Modifier::Control, Modifier::Option, Modifier::Command];
-        let combined =
-            all.iter().fold(CGEventFlags::empty(), |acc, m| acc | modifier_flag(*m));
+        let all = [
+            Modifier::Shift,
+            Modifier::Control,
+            Modifier::Option,
+            Modifier::Command,
+        ];
+        let combined = all
+            .iter()
+            .fold(CGEventFlags::empty(), |acc, m| acc | modifier_flag(*m));
         assert_eq!(combined.bits().count_ones(), 4);
     }
 

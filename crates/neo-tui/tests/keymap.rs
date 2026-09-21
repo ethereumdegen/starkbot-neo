@@ -107,14 +107,23 @@ fn no_key_resolves_a_confirm_that_is_not_on_screen() {
         rendered: false,
     });
     state.mode = Mode::Card;
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('y')), &state), Action::None);
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('n')), &state), Action::None);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('n')), &state),
+        Action::None
+    );
 
     // Rendered but inside the arming debounce: still nothing.
     if let Some(card) = state.card.as_mut() {
         card.rendered = true;
     }
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('y')), &state), Action::None);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
 
     // Rendered and armed: now, and only now, `y` resolves — and `Enter` never
     // does, so a stray composer return cannot approve anything.
@@ -185,7 +194,10 @@ fn setting_a_key_is_masked_and_produces_one_set_key_command() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
     // The masked buffer is never exposed, even to a caller holding the state.
-    assert_eq!(state.prompt.as_ref().map(neo_tui::Prompt::visible), Some(""));
+    assert_eq!(
+        state.prompt.as_ref().map(neo_tui::Prompt::visible),
+        Some("")
+    );
 
     let command = feed(&mut state, press(KeyCode::Enter));
     assert_eq!(
@@ -282,7 +294,10 @@ fn nav_parses_the_url_the_goal_and_every_flag() {
     // A goal-less nav is refused with the usage, not sent as an empty goal.
     assert_eq!(run_line(&mut state, "nav https://x.com"), None);
     assert!(
-        state.status.as_deref().is_some_and(|line| line.contains("--headed")),
+        state
+            .status
+            .as_deref()
+            .is_some_and(|line| line.contains("--headed")),
         "{:?}",
         state.status
     );
@@ -309,12 +324,7 @@ fn ax_reaches_every_request_shape() {
     for (line, expected) in [
         ("ax trusted", AxRequest::Trusted),
         ("ax apps", AxRequest::Apps),
-        (
-            "ax table Mail",
-            AxRequest::Table {
-                app: "Mail".into(),
-            },
-        ),
+        ("ax table Mail", AxRequest::Table { app: "Mail".into() }),
         (
             "ax press Mail 12",
             AxRequest::Press {
@@ -373,7 +383,10 @@ fn ax_reaches_every_request_shape() {
 fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
     let mut state = common::state();
     assert_eq!(
-        run_line(&mut state, "eval --filter numbers --tag browser --tag known-gap --once"),
+        run_line(
+            &mut state,
+            "eval --filter numbers --tag browser --tag known-gap --once"
+        ),
         Some(Command::Eval {
             selection: Selection {
                 filter: Some("numbers".into()),
@@ -403,7 +416,10 @@ fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
 #[test]
 fn x_stops_the_selected_run_and_is_honest_about_what_it_cannot_reclaim() {
     let mut state = common::state();
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('x')), &state), Action::StopRun);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('x')), &state),
+        Action::StopRun
+    );
     // Nothing running: `x` says so and sends nothing.
     assert_eq!(feed(&mut state, press(KeyCode::Char('x'))), None);
     assert_eq!(state.status.as_deref(), Some("nothing is running"));
@@ -470,7 +486,10 @@ fn conversations_are_reachable_from_the_keyboard_and_the_command_line() {
         feed(&mut state, press(KeyCode::Char('t'))),
         Some(Command::ListConversations)
     );
-    assert_eq!(run_line(&mut state, "sessions"), Some(Command::ListConversations));
+    assert_eq!(
+        run_line(&mut state, "sessions"),
+        Some(Command::ListConversations)
+    );
     assert_eq!(
         run_line(&mut state, "rename launch week"),
         Some(Command::RenameConversation {
@@ -545,7 +564,10 @@ fn every_settings_section_has_editable_rows() {
     state.view = View::Settings;
     for section in Section::ALL {
         assert!(
-            state.rows().iter().any(|row| row.section == section && !row.heading),
+            state
+                .rows()
+                .iter()
+                .any(|row| row.section == section && !row.heading),
             "{section:?} has no rows"
         );
     }
@@ -565,7 +587,10 @@ fn every_settings_section_has_editable_rows() {
     assert_eq!(feed(&mut state, press(KeyCode::Enter)), None);
     // The prompt opens pre-filled with the stored value, so an edit that
     // replaces it clears first — Ctrl-U, the same key the composer uses.
-    assert_eq!(state.prompt.as_ref().map(neo_tui::Prompt::visible), Some("0.4"));
+    assert_eq!(
+        state.prompt.as_ref().map(neo_tui::Prompt::visible),
+        Some("0.4")
+    );
     feed(&mut state, control(KeyCode::Char('u')));
     for character in "0.25".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
@@ -701,7 +726,10 @@ fn a_message_typed_into_a_running_turn_steers_it() {
         })
     );
     // On screen immediately, marked as having reached a turn in flight.
-    let row = state.thread.last().unwrap_or_else(|| panic!("no steered row"));
+    let row = state
+        .thread
+        .last()
+        .unwrap_or_else(|| panic!("no steered row"));
     assert_eq!(row.text, "use the other account");
     assert!(row.steered);
     // The composer is cleared and still editable — nothing is locked.
@@ -763,7 +791,10 @@ fn esc_stops_a_live_run_and_otherwise_asks_to_quit() {
             run: common::run_id(1)
         })
     );
-    assert!(!state.quit_prompt, "the interrupt must not raise the quit prompt");
+    assert!(
+        !state.quit_prompt,
+        "the interrupt must not raise the quit prompt"
+    );
     // Stopping, not stopped: the token still has to reach the run.
     assert_eq!(
         state.runs.first().map(|run| run.state.clone()),
@@ -774,6 +805,7 @@ fn esc_stops_a_live_run_and_otherwise_asks_to_quit() {
     state.apply(AppEvent::TurnFailed {
         run: common::run_id(1),
         error: "cancelled".into(),
+        code: "agent_cancelled".into(),
     });
     assert_eq!(
         state.runs.first().map(|run| run.state.clone()),

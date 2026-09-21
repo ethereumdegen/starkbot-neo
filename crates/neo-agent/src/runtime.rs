@@ -28,9 +28,12 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::doctor::DoctorReport;
-use crate::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthClient, OauthCredential, OauthFlow, OauthProvider, OauthStore};
-use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
+use crate::oauth::{
+    ANTHROPIC_OAUTH, OPENAI_CODEX, OauthClient, OauthCredential, OauthError, OauthFlow,
+    OauthProvider, OauthStore,
+};
 use crate::providers::{self, KeyBases};
+use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
 
 /// Version of the event/command surface both front ends compile against.
 ///
@@ -171,6 +174,30 @@ pub struct Runtime {
     /// reason as `secrets`: an agent turn asks for a token on every step.
     /// Dropped on login, logout and refresh.
     credentials: std::sync::Mutex<std::collections::HashMap<String, OauthCredential>>,
+    /// One refresh at a time, per provider.
+    ///
+    /// [`Runtime::oauth_token`] used to read the cache, drop the lock and
+    /// await the refresh with nothing between two callers. Two overlapping
+    /// turns then POSTed `grant_type=refresh_token` with the same token —
+    /// and OpenAI rotates refresh tokens, so the second POST came back
+    /// `invalid_grant`, which `OauthStore::access_token_at` reads as a dead
+    /// grant and answers by **deleting the stored credential**. The loser of
+    /// the race signed the user out mid-turn, on a credential that had just
+    /// been refreshed successfully.
+    ///
+    /// A `tokio` mutex, not a `std` one: the guard is held across the
+    /// refresh await, which the workspace's `await_holding_lock` denies for
+    /// the blocking kind. The map itself is guarded by a `std` mutex that is
+    /// never held across an await — it only hands out an `Arc`.
+    refreshes:
+        std::sync::Mutex<std::collections::HashMap<&'static str, Arc<tokio::sync::Mutex<()>>>>,
+    /// Where the subscription token endpoint is, when it is not the vendor's.
+    ///
+    /// `None` in every shipped build: the provider constant is used. A test
+    /// points it at `wiremock`, because no test may reach a vendor (08 rule
+    /// 1) and the token endpoint is a provider constant rather than one of
+    /// the injected [`KeyBases`].
+    oauth_token_url: Option<Url>,
     key_bases: KeyBases,
     events: broadcast::Sender<Envelope>,
     /// The sequence number the next published event gets.
@@ -198,9 +225,7 @@ pub struct Runtime {
     /// [`Runtime::steer`] posts into it; a run that has ended is simply
     /// absent, which is the difference between "queued" and "send it as a new
     /// turn".
-    runs: std::sync::Mutex<
-        std::collections::HashMap<RunId, Arc<crate::agent::metal::Steering>>,
-    >,
+    runs: std::sync::Mutex<std::collections::HashMap<RunId, Arc<crate::agent::metal::Steering>>>,
 }
 
 /// Where one runtime keeps its secrets.
@@ -241,12 +266,23 @@ impl Runtime {
             secrets: std::sync::Mutex::new(std::collections::HashMap::new()),
             session: std::sync::OnceLock::new(),
             credentials: std::sync::Mutex::new(std::collections::HashMap::new()),
+            refreshes: std::sync::Mutex::new(std::collections::HashMap::new()),
+            oauth_token_url: None,
             key_bases,
             events,
             seq: std::sync::atomic::AtomicU64::new(1),
             screen: crate::screen::ScreenLease::new(data_dir, neo_otel::surface()),
             runs: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
+    }
+
+    /// Post subscription token refreshes at `token_url` instead of the
+    /// vendor. The seam `KeyBases` is for the API-key paths (08 rule 1).
+    #[cfg(test)]
+    #[must_use]
+    fn with_token_endpoint(mut self, token_url: Url) -> Self {
+        self.oauth_token_url = Some(token_url);
+        self
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -268,6 +304,23 @@ impl Runtime {
         what: impl Into<String>,
     ) -> Result<crate::screen::ScreenGuard, crate::screen::ScreenBusy> {
         self.screen.acquire(run, what)
+    }
+
+    /// [`Runtime::acquire_screen`] for work running inside a hold somebody
+    /// else already took.
+    ///
+    /// `scope` comes from that hold's [`crate::screen::ScreenGuard::scope`]
+    /// and is how the eval suite's per-case turns are let in: each case has a
+    /// run id of its own, so nothing about the id says the work belongs to
+    /// the suite. `None` is an ordinary acquisition, refused while any other
+    /// run holds the screen.
+    pub fn acquire_screen_within(
+        &self,
+        scope: Option<crate::screen::ScreenScope>,
+        run: neo_core::RunId,
+        what: impl Into<String>,
+    ) -> Result<crate::screen::ScreenGuard, crate::screen::ScreenBusy> {
+        self.screen.acquire_within(scope, run, what)
     }
 
     /// Who is driving the screen, if anyone — for a front end that wants to
@@ -384,7 +437,7 @@ impl Runtime {
         code: &crate::oauth::AuthCode,
         verifier: &crate::oauth::Verifier,
     ) -> Result<ProviderAccount, RuntimeError> {
-        let client = OauthClient::hosted(provider)?;
+        let client = self.oauth_client(provider)?;
         let credential = client.exchange(code, verifier).await?;
         let account = account_of(provider, &credential, now_ms()?);
         self.oauth().save(provider, &credential)?;
@@ -433,6 +486,14 @@ impl Runtime {
 
     /// What the stored credential says about one subscription path, refreshed
     /// if it is about to expire.
+    ///
+    /// Only the vendor saying the grant is dead reports `SignedOut`. Every
+    /// other failure — an unreachable network, a 5xx, a Keychain that would
+    /// not open — reports `Unavailable`, which says "could not check" rather
+    /// than "your subscription is gone". This is the rule `key_check::check`
+    /// already applies to API keys, where every reachability failure folds
+    /// into `KeyState::Unchecked`; mapping `Err(_)` to `SignedOut` told an
+    /// offline user nothing about their key and that their plan had lapsed.
     pub async fn oauth_account(
         &self,
         provider: &'static OauthProvider,
@@ -442,12 +503,19 @@ impl Runtime {
             Some(credential) => {
                 // Refreshing here is what makes `status` honest: a credential
                 // the vendor has revoked is reported signed out.
-                let client = OauthClient::hosted(provider)?;
-                match store.access_token(&client, provider).await {
-                    Ok(_) => account_of(provider, &credential, now_ms()?),
-                    Err(_) => ProviderAccount {
+                let client = self.oauth_client(provider)?;
+                let status = match store.access_token(&client, provider).await {
+                    Ok(_) => None,
+                    Err(OauthError::SignedOut { .. }) => {
+                        Some(neo_core::ProviderAccountStatus::SignedOut)
+                    }
+                    Err(_) => Some(neo_core::ProviderAccountStatus::Unavailable),
+                };
+                match status {
+                    None => account_of(provider, &credential, now_ms()?),
+                    Some(status) => ProviderAccount {
                         provider: ProviderId::new(provider.id),
-                        status: neo_core::ProviderAccountStatus::SignedOut,
+                        status,
                         email: credential.email.clone(),
                         plan_type: credential.plan.clone(),
                         workspace: None,
@@ -456,6 +524,8 @@ impl Runtime {
                     },
                 }
             }
+            // Nothing is stored, so there is nothing to check and nothing to
+            // be unsure about.
             None => ProviderAccount {
                 provider: ProviderId::new(provider.id),
                 status: neo_core::ProviderAccountStatus::SignedOut,
@@ -505,30 +575,80 @@ impl Runtime {
     /// Every Keychain read prompts the user on an unsigned build, and an agent
     /// turn needs a token on every step, so the credential is cached here and
     /// only re-read when it is written (login, logout) or has expired.
+    ///
+    /// The refresh itself is single-flighted per provider — see
+    /// [`Runtime::refreshes`] for the credential this used to delete.
     pub(crate) async fn oauth_token(
         &self,
         provider: &'static OauthProvider,
     ) -> Result<Secret, RuntimeError> {
-        let now = now_ms()?;
         // A cached credential that is still inside its window needs no
         // Keychain access at all.
-        if let Ok(cache) = self.credentials.lock()
-            && let Some(credential) = cache.get(provider.id)
-            && !credential.needs_refresh(now)
-        {
-            return Ok(Secret::new(&credential.access_token)?);
+        if let Some(token) = self.cached_token(provider)? {
+            return Ok(token);
+        }
+        let gate = self.refresh_gate(provider);
+        let _refreshing = gate.lock().await;
+        // Checked again behind the gate: the winner of the race has already
+        // saved and cached a fresh credential, and refreshing a second time
+        // would POST the refresh token the winner just rotated away — which
+        // the vendor answers `invalid_grant`, and which
+        // `OauthStore::access_token_at` acts on by clearing the credential.
+        if let Some(token) = self.cached_token(provider)? {
+            return Ok(token);
         }
         let store = self.oauth();
-        let client = OauthClient::hosted(provider)?;
+        let client = self.oauth_client(provider)?;
         // `access_token_at` refreshes and re-saves when needed; the reload
         // below then caches whatever is now stored.
-        let token = store.access_token_at(&client, provider, now).await?;
+        let token = store.access_token_at(&client, provider, now_ms()?).await?;
         if let Some(credential) = store.load(provider)?
             && let Ok(mut cache) = self.credentials.lock()
         {
             cache.insert(provider.id.to_owned(), credential);
         }
         Ok(token)
+    }
+
+    /// The cached access token while it is still inside its refresh window.
+    ///
+    /// Its own function so the `std` guard cannot be alive across the refresh
+    /// await below, which `await_holding_lock` denies and which would hold
+    /// every other caller out of the cache for the length of a round trip.
+    fn cached_token(
+        &self,
+        provider: &'static OauthProvider,
+    ) -> Result<Option<Secret>, RuntimeError> {
+        let now = now_ms()?;
+        if let Ok(cache) = self.credentials.lock()
+            && let Some(credential) = cache.get(provider.id)
+            && !credential.needs_refresh(now)
+        {
+            return Ok(Some(Secret::new(&credential.access_token)?));
+        }
+        Ok(None)
+    }
+
+    /// This provider's refresh gate, created on first use.
+    fn refresh_gate(&self, provider: &'static OauthProvider) -> Arc<tokio::sync::Mutex<()>> {
+        let Ok(mut gates) = self.refreshes.lock() else {
+            // The map holds nothing but `Arc`s, so nothing in here can panic
+            // and poison it. If it somehow is, a gate of its own is better
+            // than refusing the turn: the worst case is the unserialised
+            // refresh this exists to prevent, which is where the code was
+            // before.
+            return Arc::new(tokio::sync::Mutex::new(()));
+        };
+        Arc::clone(gates.entry(provider.id).or_default())
+    }
+
+    /// The token-endpoint client for one provider: the vendor's, or whatever
+    /// [`Runtime::oauth_token_url`] points at.
+    fn oauth_client(&self, provider: &'static OauthProvider) -> Result<OauthClient, RuntimeError> {
+        match &self.oauth_token_url {
+            Some(url) => Ok(OauthClient::new(provider, url.clone())?),
+            None => Ok(OauthClient::hosted(provider)?),
+        }
     }
 
     /// A source a long-running caller asks for `provider`'s token on every
@@ -602,7 +722,9 @@ impl Runtime {
             let inference = AnthropicOauthInference::hosted()?;
             return match schema {
                 Some(schema) => {
-                    let (value, turn) = inference.complete_json(&token, model, prompt, schema).await?;
+                    let (value, turn) = inference
+                        .complete_json(&token, model, prompt, schema)
+                        .await?;
                     Ok((Some(value), turn))
                 }
                 None => Ok((None, inference.complete_text(&token, model, prompt).await?)),
@@ -614,7 +736,9 @@ impl Runtime {
         }
         match schema {
             Some(schema) => {
-                let (value, turn) = inference.complete_json(&token, model, prompt, schema).await?;
+                let (value, turn) = inference
+                    .complete_json(&token, model, prompt, schema)
+                    .await?;
                 Ok((Some(value), turn))
             }
             None => Ok((None, inference.complete_text(&token, model, prompt).await?)),
@@ -648,7 +772,10 @@ impl Runtime {
         match selected {
             id_ if id_ == ANTHROPIC_OAUTH.id => {
                 let id = self.resolved_model(&ANTHROPIC_OAUTH, model, saved)?;
-                Ok(self.oauth_turn(&ANTHROPIC_OAUTH, &id, prompt, None).await?.1)
+                Ok(self
+                    .oauth_turn(&ANTHROPIC_OAUTH, &id, prompt, None)
+                    .await?
+                    .1)
             }
             id_ if id_ == OPENAI_CODEX.id => {
                 let id = self.resolved_model(&OPENAI_CODEX, model, saved)?;
@@ -814,7 +941,10 @@ impl Runtime {
     }
 
     pub fn key_status(&self) -> Result<Vec<KeyStatus>, RuntimeError> {
-        ACCOUNTS.iter().map(|account| self.read_key(account)).collect()
+        ACCOUNTS
+            .iter()
+            .map(|account| self.read_key(account))
+            .collect()
     }
 
     pub fn set_key(&self, account: &str, raw: &str) -> Result<KeyStatus, RuntimeError> {
@@ -847,11 +977,12 @@ impl Runtime {
     /// Announce this process on the machine-local roster (cross-process
     /// coordination).
     ///
-    /// Several Starkbot processes share one data directory, and they share the
-    /// keyboard and the frontmost application, of which there is one. A
-    /// process that has announced itself can be seen by the others, can say
-    /// what it is doing, and can take a [`neo_store::Resource`] lease before
-    /// driving an application.
+    /// Several Starkbot processes share one data directory. A process that
+    /// has announced itself can be seen by the others and can say what it is
+    /// doing, and it is the holder a [`neo_store::Resource::Chrome`] lease is
+    /// recorded against. It is *not* what excludes two agents from the
+    /// keyboard — that is the `flock` in [`crate::screen`], which the kernel
+    /// releases when a run dies and which needs no renewal.
     pub fn announce(&self, kind: neo_store::SessionKind) -> Result<String, RuntimeError> {
         let id = self
             .session
@@ -874,9 +1005,9 @@ impl Runtime {
     /// This process's session id, announcing it as a plain command if no front
     /// end has claimed a kind yet.
     ///
-    /// Auto-announcing matters: a one-off `neo app …` must appear on the
-    /// roster and take the keyboard lease, or it would drive an application
-    /// underneath a TUI that is mid-run.
+    /// Auto-announcing matters: a one-off `neo nav --profile …` must appear
+    /// on the roster before it claims the shared Chrome profile, or a TUI
+    /// that is mid-run cannot be told who took it.
     pub fn session_id(&self) -> String {
         if let Some(id) = self.session.get() {
             return id.clone();
@@ -910,7 +1041,16 @@ impl Runtime {
         })
     }
 
-    /// Say what this process is doing, and renew its leases.
+    /// Say what this process is doing, and renew its Chrome lease.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `StoreError::SessionEvicted` when the roster no longer has
+    /// a row for `id` — `sessions()` prunes a stale heartbeat, and the
+    /// `leases.holder` cascade takes the lease with it. The caller learns
+    /// rather than heartbeating into a row that is not there: re-announcing
+    /// is the repair, and it needs the [`neo_store::SessionKind`] only the
+    /// surface knows.
     pub fn heartbeat(&self, id: &str, activity: Option<&str>) -> Result<(), RuntimeError> {
         Ok(self
             .store
@@ -920,7 +1060,10 @@ impl Runtime {
 
     /// Every live Starkbot process, this one included.
     pub fn sessions(&self) -> Result<Vec<neo_store::Session>, RuntimeError> {
-        Ok(self.store.presence().sessions(now_ms()?, SESSION_STALE_MS)?)
+        Ok(self
+            .store
+            .presence()
+            .sessions(now_ms()?, SESSION_STALE_MS)?)
     }
 
     /// Leave the roster and drop every lease.
@@ -931,8 +1074,9 @@ impl Runtime {
     /// Take an exclusive claim on something there is only one of.
     ///
     /// Answers `Err(RuntimeError::Busy)` naming the holder rather than
-    /// proceeding: two agents driving one keyboard produce one document with
-    /// both their keystrokes in it.
+    /// proceeding: two Chromes on one profile directory either refuse to
+    /// start or steal each other's session. The keyboard is not leased here
+    /// — see [`crate::screen`] for why one mechanism guards it, not two.
     pub fn lease(
         &self,
         resource: &neo_store::Resource,
@@ -957,9 +1101,7 @@ impl Runtime {
                     .find(|session| session.id == lease.holder);
                 let who = session
                     .as_ref()
-                    .map(|session| {
-                        format!("{} (pid {})", session.kind.label(), session.pid)
-                    })
+                    .map(|session| format!("{} (pid {})", session.kind.label(), session.pid))
                     .unwrap_or_else(|| "another Starkbot".to_owned());
                 let doing = session
                     .and_then(|session| session.activity)
@@ -1082,9 +1224,10 @@ impl Runtime {
     ) -> Result<neo_core::Message, RuntimeError> {
         let (role, kind) = match message.role {
             crate::agent::Role::User => (neo_core::MessageRole::User, neo_core::MessageKind::Text),
-            crate::agent::Role::Assistant => {
-                (neo_core::MessageRole::Assistant, neo_core::MessageKind::Answer)
-            }
+            crate::agent::Role::Assistant => (
+                neo_core::MessageRole::Assistant,
+                neo_core::MessageKind::Answer,
+            ),
             // What an action produced, fed back to the model next step.
             crate::agent::Role::Tool => {
                 (neo_core::MessageRole::Tool, neo_core::MessageKind::Result)
@@ -1456,21 +1599,34 @@ impl Runtime {
     /// navigator run — which is what makes a waterfall readable: the notice
     /// about a missing key sits inside the step that needed it.
     ///
+    /// One event does not go to the trace. [`AppEvent::TurnDelta`] is
+    /// published once per streamed slice, so a 2,000-token answer appended
+    /// 2,000 span events to one span, each carrying the whole serialized
+    /// event — the answer over again, a few words at a time. And the
+    /// serialization itself is behind [`neo_otel::enabled`]: it allocated a
+    /// `Value`, a name and a `Vec` per event before anything checked whether
+    /// a trace existed, against a doc comment claiming an unobserved Neo
+    /// pays one atomic load.
+    ///
     /// Public because progress belongs to whoever is doing the work: the
     /// agent loop, the navigator and the eval runner all publish here rather
     /// than each inventing a callback for one observer.
     pub fn publish(&self, event: AppEvent) {
-        if let Ok(value) = serde_json::to_value(&event) {
+        if neo_otel::enabled()
+            && !matches!(event, AppEvent::TurnDelta { .. })
+            && let Ok(value) = serde_json::to_value(&event)
+        {
             let kind = value
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            neo_otel::event(&format!("app_event.{kind}"), vec![("starkbot.event", value)]);
+            neo_otel::event(
+                &format!("app_event.{kind}"),
+                vec![("starkbot.event", value)],
+            );
         }
         let envelope = Envelope {
-            seq: self
-                .seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             at: time::OffsetDateTime::now_utc(),
             event,
         };
@@ -1495,7 +1651,6 @@ impl Runtime {
         });
     }
 }
-
 
 /// A login in progress: the URL to show, and the PKCE material the exchange
 /// needs. Held by a front end between "show the page" and "the user came
@@ -1622,10 +1777,21 @@ fn account_of(
 /// Hand a URL to the user's browser. One fixed system binary, one argument —
 /// not a shell, and not a command a model chose (P3).
 fn open_url(url: &str) -> Result<(), RuntimeError> {
-    std::process::Command::new("/usr/bin/open")
+    let status = std::process::Command::new("/usr/bin/open")
         .arg(url)
         .status()
         .map_err(RuntimeError::Io)?;
+    // `open` spawns fine and then exits non-zero when nothing handles the
+    // scheme. Checking only the spawn meant a sign-in whose browser never
+    // appeared sat on the callback listener for the full login timeout and
+    // then reported a timeout, with nothing saying the page was never shown.
+    // The URL is not quoted: it carries this login's `state` and PKCE
+    // challenge, and no `RuntimeError` may hold login material.
+    if !status.success() {
+        return Err(RuntimeError::Io(std::io::Error::other(format!(
+            "/usr/bin/open could not open the sign-in page ({status})"
+        ))));
+    }
     Ok(())
 }
 
@@ -1704,10 +1870,15 @@ pub(crate) fn now_ms() -> Result<i64, RuntimeError> {
 
 #[cfg(test)]
 mod tests {
+    // A failed `expect` in a test is the test failing, which is the point.
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     use tempfile::TempDir;
     use tokio::sync::broadcast::error::TryRecvError;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
     fn runtime() -> (TempDir, Runtime) {
         let directory = match TempDir::new() {
@@ -1719,6 +1890,171 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
         (directory, runtime)
+    }
+
+    /// A runtime whose token endpoint is `server`, so no test reaches a
+    /// vendor (08 rule 1).
+    fn runtime_against(server: &MockServer) -> (TempDir, Arc<Runtime>) {
+        let directory = TempDir::new().expect("a temporary data directory");
+        let endpoint = Url::parse(&server.uri()).expect("wiremock hands out a valid URL");
+        let runtime = Runtime::open(directory.path())
+            .expect("the store opens")
+            .with_token_endpoint(endpoint);
+        (directory, Arc::new(runtime))
+    }
+
+    /// A stored Claude credential that is inside its refresh window, so the
+    /// next caller has to refresh it.
+    fn store_expiring_credential(runtime: &Runtime) {
+        runtime
+            .oauth()
+            .save(
+                &ANTHROPIC_OAUTH,
+                &OauthCredential {
+                    access_token: "at_old".to_owned(),
+                    refresh_token: "rt_old".to_owned(),
+                    expires_at_ms: now_ms().expect("a clock"),
+                    account_id: Some("acct_1".to_owned()),
+                    email: Some("someone@example.com".to_owned()),
+                    plan: Some("max".to_owned()),
+                },
+            )
+            .expect("the credential stores");
+    }
+
+    /// The one place a test may read a token back out.
+    fn exposed(secret: &Secret) -> String {
+        #[allow(clippy::disallowed_methods)]
+        secret.expose().to_owned()
+    }
+
+    /// A token endpoint that rotates the refresh token on its first call and
+    /// refuses every call after it — which is what a vendor does once the
+    /// token it was sent has been replaced.
+    #[derive(Default)]
+    struct RotateOnce(std::sync::Mutex<usize>);
+
+    impl Respond for RotateOnce {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            let mut calls = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *calls += 1;
+            if *calls == 1 {
+                return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "at_new",
+                    "refresh_token": "rt_new",
+                    "expires_in": 3600,
+                }));
+            }
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+            }))
+        }
+    }
+
+    /// Two overlapping turns both wanted a token, and both refreshed.
+    ///
+    /// Against a vendor that rotates refresh tokens — OpenAI does — the
+    /// loser's POST carried a token the winner had already replaced, the
+    /// vendor answered `invalid_grant`, `is_dead_grant` matched, and
+    /// `OauthStore::access_token_at` deleted the credential. A refresh that
+    /// had just succeeded signed the user out mid-turn.
+    #[tokio::test]
+    async fn two_overlapping_turns_refresh_once_and_keep_the_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(RotateOnce::default())
+            .mount(&server)
+            .await;
+        let (_directory, runtime) = runtime_against(&server);
+        store_expiring_credential(&runtime);
+
+        let (first, second) = tokio::join!(
+            runtime.oauth_token(&ANTHROPIC_OAUTH),
+            runtime.oauth_token(&ANTHROPIC_OAUTH),
+        );
+
+        assert_eq!(exposed(&first.expect("the winner refreshes")), "at_new");
+        assert_eq!(
+            exposed(&second.expect("the loser is served the winner's token")),
+            "at_new"
+        );
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("recording is on")
+                .len(),
+            1,
+            "one refresh for the provider, not one per caller"
+        );
+        assert!(
+            runtime
+                .oauth()
+                .load(&ANTHROPIC_OAUTH)
+                .expect("the store reads")
+                .is_some(),
+            "the credential must survive the race that used to delete it"
+        );
+    }
+
+    /// An offline user is correctly told nothing about their API key
+    /// (`key_check::check` folds every reachability failure into
+    /// `Unchecked`) and used to be told their subscription was gone, because
+    /// `oauth_account` mapped every `Err(_)` to `SignedOut`.
+    #[tokio::test]
+    async fn a_transport_failure_leaves_the_subscription_unchecked() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
+            .mount(&server)
+            .await;
+        let (_directory, runtime) = runtime_against(&server);
+        store_expiring_credential(&runtime);
+
+        let account = runtime
+            .oauth_account(&ANTHROPIC_OAUTH)
+            .await
+            .expect("a vendor that cannot be reached is not an error");
+
+        assert_eq!(
+            account.status,
+            neo_core::ProviderAccountStatus::Unavailable,
+            "a 503 says nothing about whether the plan is still there"
+        );
+        assert_eq!(account.email.as_deref(), Some("someone@example.com"));
+        assert!(
+            runtime
+                .oauth()
+                .load(&ANTHROPIC_OAUTH)
+                .expect("the store reads")
+                .is_some(),
+            "and it must not touch the credential"
+        );
+    }
+
+    /// The one failure that really is a sign out still reads as one.
+    #[tokio::test]
+    async fn a_dead_grant_is_reported_as_signed_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(serde_json::json!({"error": "invalid_grant"})),
+            )
+            .mount(&server)
+            .await;
+        let (_directory, runtime) = runtime_against(&server);
+        store_expiring_credential(&runtime);
+
+        let account = runtime
+            .oauth_account(&ANTHROPIC_OAUTH)
+            .await
+            .expect("a refused grant is an account state, not an error");
+
+        assert_eq!(account.status, neo_core::ProviderAccountStatus::SignedOut);
     }
 
     #[test]

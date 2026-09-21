@@ -128,7 +128,9 @@ impl AnthropicOauthInference {
     ) -> Result<(Value, Turn), ProviderError> {
         let (turn, answer) = self.send(token, model, prompt, Some(schema)).await?;
         let answer = answer.ok_or_else(|| {
-            ProviderError::InvalidResponse(format!("the model answered without calling `{JSON_TOOL}`"))
+            ProviderError::InvalidResponse(format!(
+                "the model answered without calling `{JSON_TOOL}`"
+            ))
         })?;
         Ok((answer, turn))
     }
@@ -218,15 +220,24 @@ struct MessageResponse {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: String },
-    ToolUse { name: String, input: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        name: String,
+        input: Value,
+    },
     /// Thinking, redacted thinking, and whatever a beta adds next: a turn
     /// reads text and the one tool call, and ignores the rest.
     #[serde(other)]
     Other,
 }
 
-fn parse(text: &str, model: &str, duration_ms: u64) -> Result<(Turn, Option<Value>), ProviderError> {
+fn parse(
+    text: &str,
+    model: &str,
+    duration_ms: u64,
+) -> Result<(Turn, Option<Value>), ProviderError> {
     let parsed: MessageResponse = serde_json::from_str(text).map_err(|error| {
         ProviderError::InvalidResponse(format!("the Messages response did not parse: {error}"))
     })?;
@@ -362,7 +373,11 @@ mod tests {
             .expect("a turn");
 
         let requests = server.received_requests().await.expect("recorded requests");
-        let body: Value = requests.first().expect("one request").body_json().expect("json body");
+        let body: Value = requests
+            .first()
+            .expect("one request")
+            .body_json()
+            .expect("json body");
         assert_eq!(body["system"][0]["text"], json!(CLAUDE_CODE_IDENTITY));
     }
 
@@ -404,9 +419,16 @@ mod tests {
         assert_eq!(turn.usage["output_tokens"], json!(9));
 
         let requests = server.received_requests().await.expect("recorded requests");
-        let body: Value = requests.first().expect("one request").body_json().expect("json body");
+        let body: Value = requests
+            .first()
+            .expect("one request")
+            .body_json()
+            .expect("json body");
         assert_eq!(body["tools"][0]["input_schema"], schema);
-        assert_eq!(body["tool_choice"], json!({ "type": "tool", "name": JSON_TOOL }));
+        assert_eq!(
+            body["tool_choice"],
+            json!({ "type": "tool", "name": JSON_TOOL })
+        );
     }
 
     #[tokio::test]
@@ -419,7 +441,12 @@ mod tests {
 
         let error = inference(&server)
             .await
-            .complete_json(&secret(), "claude-sonnet-5", "judge", &json!({ "type": "object" }))
+            .complete_json(
+                &secret(),
+                "claude-sonnet-5",
+                "judge",
+                &json!({ "type": "object" }),
+            )
             .await
             .expect_err("no tool call");
         assert!(matches!(error, ProviderError::InvalidResponse(_)));
@@ -499,7 +526,10 @@ mod tests {
             .complete_text(&secret(), "claude-nope", "hi")
             .await
             .expect_err("an unknown model");
-        assert_eq!(error, ProviderError::ModelUnavailable("claude-nope".to_string()));
+        assert_eq!(
+            error,
+            ProviderError::ModelUnavailable("claude-nope".to_string())
+        );
     }
 
     #[test]

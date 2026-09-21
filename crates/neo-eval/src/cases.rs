@@ -173,11 +173,7 @@ fn type_into_textedit() -> Case {
         vec![
             Assertion::ExpectNoError,
             Assertion::ExpectTools(vec!["app".to_owned()]),
-            Assertion::ExpectToolArg(
-                "app".to_owned(),
-                "app".to_owned(),
-                json!("TextEdit"),
-            ),
+            Assertion::ExpectToolArg("app".to_owned(), "app".to_owned(), json!("TextEdit")),
             // The document itself contains the text.
             Assertion::Custom(Box::new(|output| {
                 let probe = output
@@ -185,7 +181,10 @@ fn type_into_textedit() -> Case {
                     .first()
                     .map(|call| call.arguments.clone())
                     .ok_or("no probe ran")?;
-                let text = probe.get("text").and_then(|value| value.as_str()).unwrap_or("");
+                let text = probe
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
                 if text.contains("Q4 launch brief") {
                     Ok(())
                 } else {
@@ -312,11 +311,7 @@ fn read_a_calc_cell() -> Case {
             Assertion::ExpectToolArg("probe".to_owned(), "present".to_owned(), json!(true)),
             // The fixture put this there, so the agent has something real to
             // read and the assertion cannot pass by accident.
-            Assertion::ExpectToolArg(
-                "probe".to_owned(),
-                "value".to_owned(),
-                json!("Starkbot 42"),
-            ),
+            Assertion::ExpectToolArg("probe".to_owned(), "value".to_owned(), json!("Starkbot 42")),
             Assertion::ExpectTextContains("Starkbot 42".to_owned()),
         ],
         &["spreadsheet", "a23"],
@@ -347,7 +342,10 @@ fn spreadsheet_surface_offers_menus() -> Case {
                     .first()
                     .map(|call| call.arguments.clone())
                     .ok_or("no probe ran")?;
-                let menus = probe.get("menus").and_then(|value| value.as_u64()).unwrap_or(0);
+                let menus = probe
+                    .get("menus")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
                 if menus >= 5 {
                     Ok(())
                 } else {
@@ -395,11 +393,16 @@ fn read_a_numbers_cell() -> Case {
                     .first()
                     .map(|call| call.arguments.clone())
                     .ok_or("no probe ran")?;
-                let grid = probe.get("grid").and_then(|value| value.as_str()).unwrap_or("");
+                let grid = probe
+                    .get("grid")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
                 if grid.contains("Starkbot 42") {
                     Ok(())
                 } else {
-                    Err(format!("the grid does not hold the fixture's value: {grid:.160}"))
+                    Err(format!(
+                        "the grid does not hold the fixture's value: {grid:.160}"
+                    ))
                 }
             })),
         ],
@@ -430,7 +433,10 @@ fn numbers_surface_offers_menus() -> Case {
                     .first()
                     .map(|call| call.arguments.clone())
                     .ok_or("no probe ran")?;
-                let menus = probe.get("menus").and_then(|value| value.as_u64()).unwrap_or(0);
+                let menus = probe
+                    .get("menus")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
                 if menus >= 5 {
                     Ok(())
                 } else {
@@ -464,7 +470,10 @@ fn open_diffusion_studio() -> Case {
                     .first()
                     .map(|call| call.arguments.clone())
                     .ok_or("no probe ran")?;
-                let rows = probe.get("rows").and_then(|value| value.as_u64()).unwrap_or(0);
+                let rows = probe
+                    .get("rows")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
                 if rows >= 5 {
                     Ok(())
                 } else {

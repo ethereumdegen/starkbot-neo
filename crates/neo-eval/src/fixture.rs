@@ -217,8 +217,8 @@ fn open_text_document() -> Result<std::path::PathBuf, ProbeError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
-    let path = std::env::temp_dir()
-        .join(format!("starkbot-eval-{}-{stamp}.rtf", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("starkbot-eval-{}-{stamp}.rtf", std::process::id()));
     let document = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Helvetica;}}\\fs28 Draft\n}";
     std::fs::write(&path, document).map_err(|error| ProbeError::Ax(error.to_string()))?;
     open_path(&path)?;
@@ -340,7 +340,12 @@ async fn new_document(ax: &AxHandle, app: AppSel) -> Result<Vec<String>, ProbeEr
             // empty reason once an earlier case had closed the window.
             let _ = ax.table(&app).await;
             let owned: Vec<String> = path.iter().map(|part| (*part).to_owned()).collect();
-            match ax.act(&AxAction::SelectMenu { path: owned.clone() }).await {
+            match ax
+                .act(&AxAction::SelectMenu {
+                    path: owned.clone(),
+                })
+                .await
+            {
                 Ok(_) => return Ok(owned),
                 Err(error) => last = error.to_string(),
             }

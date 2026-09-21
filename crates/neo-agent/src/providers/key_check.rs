@@ -186,7 +186,11 @@ impl KeyBases {
         let validator: Arc<dyn KeyValidator> = match account {
             ACCOUNT_OPENAI => {
                 let validator = OpenAiKeyValidator::new(self.openai.clone())?;
-                Arc::new(require(validator, required_model, OpenAiKeyValidator::requiring))
+                Arc::new(require(
+                    validator,
+                    required_model,
+                    OpenAiKeyValidator::requiring,
+                ))
             }
             ACCOUNT_ANTHROPIC => {
                 let validator = AnthropicKeyValidator::new(self.anthropic.clone())?;
@@ -275,8 +279,13 @@ mod tests {
 
     #[test]
     fn a_server_fault_leaves_the_key_unjudged() {
-        let state = model_list_state(ACCOUNT_ANTHROPIC, StatusCode::INTERNAL_SERVER_ERROR, "", None)
-            .expect("no body");
+        let state = model_list_state(
+            ACCOUNT_ANTHROPIC,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "",
+            None,
+        )
+        .expect("no body");
         assert_eq!(state, KeyState::Unchecked);
     }
 
@@ -290,7 +299,11 @@ mod tests {
     #[test]
     fn every_core_account_has_a_validator_and_nothing_else_does() {
         let bases = KeyBases::hosted();
-        for account in [ACCOUNT_OPENAI, ACCOUNT_ANTHROPIC, neo_keys::ACCOUNT_TYPESAFE] {
+        for account in [
+            ACCOUNT_OPENAI,
+            ACCOUNT_ANTHROPIC,
+            neo_keys::ACCOUNT_TYPESAFE,
+        ] {
             assert!(
                 bases
                     .validator(account, None)

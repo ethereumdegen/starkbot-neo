@@ -7,8 +7,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use jev_nav::policy::Action;
-use jev_nav::wire::TypeSafe;
-use jev_nav::{Navigator, ObserveError, Observer, Outcome, RunConfig, StepEvent};
+use jev_nav::wire::{TypeSafe, WireError};
+use jev_nav::{NavError, Navigator, ObserveError, Observer, Outcome, RunConfig, StepEvent};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -126,6 +126,16 @@ fn answer(operation: &str) -> Value {
     json!({ "model": "jev-test", "answers": answers, "usage": { "input_tokens": 11 } })
 }
 
+/// The same answer with yes/no heads attached. A head the caller does not
+/// name is absent from the response, which is what a truncated or partially
+/// parsed provider answer looks like.
+fn with_heads(mut answer: Value, heads: &[(&str, f64)]) -> Value {
+    for (name, probability) in heads {
+        answer["answers"][*name] = json!({ "noul": probability });
+    }
+    answer
+}
+
 async fn jev(server: &MockServer, answers: Vec<Value>) -> TypeSafe {
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
@@ -144,7 +154,35 @@ fn config() -> RunConfig {
         goal: "continue past the first screen".into(),
         safety_heads: false,
         confirm_at: 0.4,
+        on_task_floor: 0.0,
     }
+}
+
+/// Drive one run to whatever it returns — including a wire error, which is
+/// what a safety head that came back unreadable now produces.
+async fn run_with(
+    config: &RunConfig,
+    observer: FakeObserver,
+    answers: Vec<Value>,
+) -> (
+    Result<Outcome, NavError>,
+    Navigator<FakeObserver>,
+    Vec<StepEvent>,
+    Vec<Value>, // the Jev request bodies, in order
+) {
+    let server = MockServer::start().await;
+    let jev = jev(&server, answers).await;
+    let mut navigator = Navigator::new(observer, jev, None);
+    let mut steps = Vec::new();
+    let outcome = navigator.run(config, |step| steps.push(step.clone())).await;
+    let requests = server
+        .received_requests()
+        .await
+        .expect("recording is on")
+        .iter()
+        .map(|request| request.body_json().unwrap_or(Value::Null))
+        .collect();
+    (outcome, navigator, steps, requests)
 }
 
 async fn drive(
@@ -156,20 +194,13 @@ async fn drive(
     Vec<StepEvent>,
     usize, // Jev requests
 ) {
-    let server = MockServer::start().await;
-    let jev = jev(&server, answers).await;
-    let mut navigator = Navigator::new(observer, jev, None);
-    let mut steps = Vec::new();
-    let outcome = navigator
-        .run(&config(), |step| steps.push(step.clone()))
-        .await
-        .expect("the scripted run completes");
-    let requests = server
-        .received_requests()
-        .await
-        .expect("recording is on")
-        .len();
-    (outcome, navigator, steps, requests)
+    let (outcome, navigator, steps, requests) = run_with(&config(), observer, answers).await;
+    (
+        outcome.expect("the scripted run completes"),
+        navigator,
+        steps,
+        requests.len(),
+    )
 }
 
 #[tokio::test]
@@ -279,10 +310,9 @@ async fn three_actions_that_change_nothing_end_the_run_as_blocked() {
 /// back stale, nothing executed, and one run burned 120 Jev requests.
 #[tokio::test]
 async fn a_surface_that_is_never_fresh_stops_the_run() {
-    let observer =
-        FakeObserver::new(vec![page("a window that will not hold still")]).freshness(
-            std::iter::repeat_n(false, jev_nav::rules::MAX_CONSECUTIVE_STALE * 2),
-        );
+    let observer = FakeObserver::new(vec![page("a window that will not hold still")]).freshness(
+        std::iter::repeat_n(false, jev_nav::rules::MAX_CONSECUTIVE_STALE * 2),
+    );
     let answers = std::iter::repeat_with(|| answer("CLICK"))
         .take(jev_nav::rules::MAX_CONSECUTIVE_STALE + 2)
         .collect();
@@ -303,4 +333,112 @@ async fn a_surface_that_is_never_fresh_stops_the_run() {
         "nothing may execute on a stale surface"
     );
     assert!(navigator.history().is_empty());
+}
+
+/// A risky operation stops for confirmation instead of executing.
+#[tokio::test]
+async fn a_safety_head_over_the_threshold_blocks_the_action() {
+    let observer = FakeObserver::new(vec![page("a composed message")]);
+    let answers = vec![with_heads(
+        answer("CLICK"),
+        &[("outward", 0.9), ("destructive", 0.02), ("spends", 0.01)],
+    )];
+
+    let (outcome, navigator, steps, _requests) = run_with(
+        &RunConfig {
+            safety_heads: true,
+            ..config()
+        },
+        observer,
+        answers,
+    )
+    .await;
+
+    assert_eq!(
+        outcome.expect("the scripted run completes"),
+        Outcome::Blocked("needs confirmation before `Continue`".into())
+    );
+    assert!(navigator.observer.acted.is_empty());
+    assert_eq!(steps.len(), 1);
+}
+
+/// The same answer with `outward` omitted entirely — a truncated or partially
+/// parsed provider response — must not send the message.
+///
+/// This is R1.1: the head used to be absent from `Decision::safety`, the loop
+/// read absent as `0.0`, and the send executed unconfirmed and unevented.
+#[tokio::test]
+async fn a_missing_safety_head_fails_the_step_instead_of_executing_it() {
+    let observer = FakeObserver::new(vec![page("a composed message")]);
+    let answers = vec![with_heads(
+        answer("CLICK"),
+        &[("destructive", 0.02), ("spends", 0.01)],
+    )];
+
+    let (outcome, navigator, steps, _requests) = run_with(
+        &RunConfig {
+            safety_heads: true,
+            ..config()
+        },
+        observer,
+        answers,
+    )
+    .await;
+
+    assert!(
+        matches!(&outcome, Err(NavError::Wire(WireError::Invalid(head))) if head == "outward"),
+        "an unreadable head fails the step, got {outcome:?}"
+    );
+    assert!(
+        navigator.observer.acted.is_empty(),
+        "a head that came back unreadable must not execute the action"
+    );
+    assert!(navigator.history().is_empty());
+    assert!(steps.is_empty());
+}
+
+/// `on_task` is a floor: low confidence that the page still serves the goal
+/// stops the run (R1.2).
+#[tokio::test]
+async fn a_run_that_drifts_off_the_goal_stops_before_acting() {
+    let observer = FakeObserver::new(vec![page("an unrelated page")]);
+    let answers = vec![with_heads(answer("CLICK"), &[("on_task", 0.1)])];
+
+    let (outcome, navigator, _steps, _requests) = run_with(
+        &RunConfig {
+            on_task_floor: 0.3,
+            ..config()
+        },
+        observer,
+        answers,
+    )
+    .await;
+
+    assert_eq!(
+        outcome.expect("the scripted run completes"),
+        Outcome::Blocked("the page drifted off the goal; stopped before `Continue`".into())
+    );
+    assert!(navigator.observer.acted.is_empty());
+}
+
+/// The same drift with the floor at zero: the check is off, and the head is
+/// not even asked for.
+#[tokio::test]
+async fn a_zero_on_task_floor_lets_the_same_run_proceed() {
+    let observer = FakeObserver::new(vec![page("an unrelated page"), page("the next page")]);
+    let answers = vec![
+        with_heads(answer("CLICK"), &[("on_task", 0.1)]),
+        answer("DONE"),
+    ];
+
+    let (outcome, navigator, _steps, requests) = run_with(&config(), observer, answers).await;
+
+    assert_eq!(outcome.expect("the scripted run completes"), Outcome::Done);
+    assert_eq!(navigator.observer.acted.len(), 1);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["questions"]["on_task"].is_null()),
+        "a floor of zero must not pay for the head, got {requests:?}"
+    );
 }

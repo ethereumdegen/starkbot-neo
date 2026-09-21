@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use neo_agent::agent::{
     AppOptions, BrowserOptions, ChatMessage, ChatRequest, run_app, run_browser,
 };
@@ -27,9 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::keys::{Action, KeyMap};
 use crate::runs::RunKind;
-use crate::state::{
-    Command, Login, LoginPhase, NavSpec, SessionRow, State, key_label, plan_title,
-};
+use crate::state::{Command, Login, LoginPhase, NavSpec, SessionRow, State, key_label, plan_title};
 use crate::ui;
 
 /// How often this process refreshes its roster row and its leases. A third of
@@ -40,6 +40,10 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(60);
 /// A second kill switch inside this window quits (14 §3).
 const DOUBLE_KILL: Duration = Duration::from_secs(2);
+/// How long quitting waits for the cancelled runs to let go of what they
+/// hold. Long enough for a CDP `Browser.close` round trip, short enough
+/// that a wedged run cannot hold the terminal hostage.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 /// How long the core serves the loopback callback: a browser round-trip with a
 /// password manager and a second factor in the middle.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -157,9 +161,14 @@ impl Drop for Job {
     /// Cancelling is what reclaims the browser and stops the typing: the
     /// token reaches the navigator and the AX actor, whereas `abort` alone
     /// drops the future and leaves Chrome running.
+    ///
+    /// So this cancels, and only cancels. It used to abort in the next
+    /// breath, which set the flag before the cancelled task could be polled
+    /// even once — producing precisely the orphan the paragraph above says
+    /// the cancel is for, on the one path that reaches here: quitting.
+    /// [`Jobs::settle`] is what gives those tasks their moment to run.
     fn drop(&mut self) {
         self.cancel.cancel();
-        self.task.abort();
     }
 }
 
@@ -227,6 +236,38 @@ impl Jobs {
     fn cancel_all(&self) {
         for job in self.active.values() {
             job.cancel.cancel();
+        }
+    }
+
+    /// Cancel everything and wait, briefly, for it to let go.
+    ///
+    /// A cancelled task still has to be *polled* to close its browser and
+    /// release the keyboard; returning from the loop drops the runtime with
+    /// those futures still parked at their cancellation points, so the quit
+    /// path asks for the shutdown and then stays long enough to observe it.
+    /// Bounded, because "reclaim the browser" must not become "the terminal
+    /// never comes back": whatever has not finished by the deadline is left
+    /// to the runtime, which is no worse than the abort this replaced.
+    fn settle(&mut self, budget: Duration) {
+        self.cancel_all();
+        if self.active.is_empty() {
+            return;
+        }
+        let active = &mut self.active;
+        let closing = async {
+            for job in active.values_mut() {
+                // The task's own error is not interesting here: a run that
+                // panicked has already dropped whatever it was holding.
+                let _ = (&mut job.task).await;
+            }
+        };
+        let closed =
+            tokio::runtime::Handle::current().block_on(tokio::time::timeout(budget, closing));
+        if closed.is_err() {
+            tracing::warn!(
+                ?budget,
+                "a run did not stop in time; leaving it to the runtime"
+            );
         }
     }
 }
@@ -368,8 +409,6 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         }
         Err(error) => state.note(format!("the conversation could not be opened: {error}")),
     }
-    let keymap = KeyMap;
-    let mut last_kill: Option<Instant> = None;
     let mut context = Loop {
         jobs: Jobs::new(),
         login: None,
@@ -377,13 +416,41 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         voice: None,
         started: Instant::now(),
     };
+
+    let outcome = frames(
+        runtime,
+        terminal,
+        &mut state,
+        &mut context,
+        &mut receiver,
+        &mut session,
+    );
+    // Quitting is the path that used to orphan a browser: the loop returned,
+    // the jobs were dropped, and their cancellation never got polled. Every
+    // exit comes through here, including an error one, because a run holding
+    // Chrome does not care why the front end is leaving.
+    context.jobs.settle(SHUTDOWN_BUDGET);
+    outcome
+}
+
+/// Draw, read a key, apply what the core published; repeat until quit.
+fn frames(
+    runtime: &Arc<Runtime>,
+    terminal: &mut DefaultTerminal,
+    state: &mut State,
+    context: &mut Loop,
+    receiver: &mut tokio::sync::broadcast::Receiver<Envelope>,
+    session: &mut Presence,
+) -> Result<(), TuiError> {
+    let keymap = KeyMap;
+    let mut last_kill: Option<Instant> = None;
     // The sequence number the next envelope should carry. `None` until the
     // first one arrives, since a subscription starts wherever the process is.
     let mut expected: Option<u64> = None;
 
     loop {
         if state.dirty {
-            terminal.draw(|frame| ui::draw(frame, &state))?;
+            terminal.draw(|frame| ui::draw(frame, state))?;
             state.dirty = false;
         }
 
@@ -391,7 +458,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
             match event::read()? {
                 Event::Key(key) => {
                     state.status = None;
-                    let action = keymap.resolve(key, &state);
+                    let action = keymap.resolve(key, state);
                     if action == Action::KillSwitch {
                         if last_kill.is_some_and(|at| at.elapsed() < DOUBLE_KILL) {
                             return Ok(());
@@ -399,7 +466,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
                         last_kill = Some(Instant::now());
                     }
                     if let Some(command) = state.apply_action(action) {
-                        execute(runtime, &mut state, &mut context, command)?;
+                        execute(runtime, terminal, state, context, command)?;
                     }
                 }
                 Event::Resize(..) => state.dirty = true,
@@ -408,10 +475,10 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         }
 
         state.tick(elapsed_ms(context.started));
-        poll_login(runtime, &mut state, &mut context.login)?;
-        poll_jobs(&mut state, &mut context.jobs);
-        poll_voice(&mut state, &context.dictation, &mut context.voice);
-        drain(runtime, &mut state, &mut receiver, &mut expected)?;
+        poll_login(runtime, state, &mut context.login)?;
+        poll_jobs(state, &mut context.jobs);
+        poll_voice(state, &context.dictation, &mut context.voice);
+        drain(runtime, state, receiver, &mut expected)?;
         // What this process is doing, in the words another Starkbot will see.
         session.beat(state.activity_line());
 
@@ -620,12 +687,17 @@ fn poll_login(
 
 /// Apply everything the core has published since the last frame.
 ///
-/// A gap in [`Envelope::seq`] means events were missed — a slow frame, or a
-/// burst wider than the channel — and a thread rendered from a partial
-/// stream is worse than one rendered again from scratch, so a gap
-/// re-bootstraps (14 §4). `seq` is what detects it, not `Lagged`: a burst
-/// that arrives while this loop is inside `terminal.draw` is missed without
-/// the channel ever reporting it.
+/// A break in [`Envelope::seq`] means this front end is not looking at the
+/// stream it thinks it is — a thread rendered from a partial one is worse
+/// than one rendered again from scratch, so a break re-bootstraps (14 §4).
+/// `seq` is what detects it, not `Lagged`: a burst that arrives while this
+/// loop is inside `terminal.draw` is missed without the channel ever
+/// reporting it.
+///
+/// A number *below* what was expected counts. It means the publisher
+/// restarted its counter or a prefix is being replayed, and the previous
+/// `seq > next` test accepted that silently — applying a second copy of
+/// every event it had already seen.
 fn drain(
     runtime: &Arc<Runtime>,
     state: &mut State,
@@ -635,11 +707,11 @@ fn drain(
     loop {
         match receiver.try_recv() {
             Ok(Envelope { seq, event, .. }) => {
-                let missed = expected.is_some_and(|next| seq > next);
+                let broken = expected.is_some_and(|next| seq != next);
                 *expected = Some(seq + 1);
-                if missed {
+                if broken {
                     rebootstrap(runtime, state)?;
-                    state.note("events were missed — re-bootstrapped");
+                    state.note("the event stream broke — re-bootstrapped");
                 }
                 state.apply(event);
             }
@@ -699,6 +771,7 @@ fn steer(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, run: Run
 #[allow(clippy::too_many_lines)]
 fn execute(
     runtime: &Arc<Runtime>,
+    terminal: &mut DefaultTerminal,
     state: &mut State,
     context: &mut Loop,
     command: Command,
@@ -762,9 +835,7 @@ fn execute(
                     let title = runtime
                         .conversations(SESSION_LIMIT)
                         .ok()
-                        .and_then(|rows| {
-                            rows.into_iter().find(|row| row.id == conversation)
-                        })
+                        .and_then(|rows| rows.into_iter().find(|row| row.id == conversation))
                         .and_then(|row| row.title);
                     state.load_thread(conversation, title, &messages);
                     state.note("switched conversation");
@@ -804,9 +875,10 @@ fn execute(
         // round-trip, a code paste), so the front end steps aside and comes
         // back: the alternate screen is left and re-entered around the call.
         Command::ConnectSubscription { provider } => {
-            let outcome = with_terminal_released(|| {
+            let outcome = with_terminal_released(terminal, || {
                 tokio::runtime::Handle::current().block_on(connect(runtime, provider))
             });
+            state.dirty = true;
             note_account(state, provider, outcome);
             state.rebootstrap(runtime.bootstrap()?);
         }
@@ -866,6 +938,14 @@ fn execute(
             }
         }
         Command::CheckKey { account } => check_key(runtime, state, &account),
+        // `Ctrl-L` is for a screen something else wrote over, so the
+        // display and ratatui's back buffer disagree. Clearing resets both
+        // — the diff the next frame computes is against a blank buffer, so
+        // the whole UI is emitted again.
+        Command::Redraw => {
+            terminal.clear()?;
+            state.dirty = true;
+        }
         Command::ReBootstrap => rebootstrap(runtime, state)?,
     }
     Ok(())
@@ -1192,17 +1272,38 @@ fn note_account(
 
 /// Leave the alternate screen, run `body`, and take the terminal back.
 ///
-/// Restoring first means the vendor's own prompts and its browser handoff are
-/// visible; re-initialising afterwards redraws from scratch.
-fn with_terminal_released<T>(body: impl FnOnce() -> T) -> T {
+/// Restoring first means the vendor's own prompts and its browser handoff
+/// are visible. Coming back is the half that has to be done deliberately.
+/// This used to call `ratatui::try_init()` and throw away the
+/// `DefaultTerminal` it returned, which broke the screen twice over:
+/// re-entering the alternate buffer blanks the display while the terminal
+/// the loop still draws through holds the pre-handover frame in its back
+/// buffer, so the next `draw` writes only a diff against a frame nobody can
+/// see and most of the UI never repaints — and `try_init` installs a panic
+/// hook chained onto the previous one, so every login left another copy
+/// behind.
+///
+/// So the screen is re-entered with the two crossterm calls `try_init`
+/// would have made, the terminal this front end already owns is kept, and
+/// `Terminal::clear` resets its back buffer so the next
+/// frame is drawn whole. The panic hook installed once by [`TerminalGuard`]
+/// stays the only one.
+fn with_terminal_released<T>(terminal: &mut DefaultTerminal, body: impl FnOnce() -> T) -> T {
     if let Err(error) = ratatui::try_restore() {
         tracing::warn!(%error, "could not hand the terminal over");
     }
     let outcome = body();
-    if let Err(error) = ratatui::try_init() {
+    if let Err(error) = reclaim_terminal(terminal) {
         tracing::warn!(%error, "could not take the terminal back");
     }
     outcome
+}
+
+/// Re-enter the alternate screen and make the next frame a full repaint.
+fn reclaim_terminal(terminal: &mut DefaultTerminal) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()
 }
 
 /// Ask the vendor what a stored key is worth. `Runtime::check_key` is async
@@ -1275,10 +1376,7 @@ mod tests {
                             return;
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {
-                            assert!(
-                                Instant::now() < deadline,
-                                "the turn never settled in 90 s"
-                            );
+                            assert!(Instant::now() < deadline, "the turn never settled in 90 s");
                             std::thread::sleep(Duration::from_millis(100));
                         }
                         Err(mpsc::error::TryRecvError::Disconnected) => {

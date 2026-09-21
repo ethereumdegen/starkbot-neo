@@ -202,7 +202,11 @@ impl fmt::Display for ActionSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             ActionKind::Browse | ActionKind::App => {
-                let verb = if self.kind == ActionKind::Browse { "browse" } else { "app" };
+                let verb = if self.kind == ActionKind::Browse {
+                    "browse"
+                } else {
+                    "app"
+                };
                 let target = self.target.as_deref().unwrap_or("?");
                 let goal = self.goal.as_deref().unwrap_or("?");
                 write!(formatter, "{verb} {target} — {goal}")
@@ -478,9 +482,17 @@ pub enum AppEvent {
     /// sentence built from our own error types, which cannot format a
     /// `neo_keys::Secret`: no credential can reach it, and nothing here is
     /// echoed from a request.
+    ///
+    /// `code` is the same failure classified for a machine — `agent_cancelled`,
+    /// `agent_graph` and the rest of `neo-agent`'s `error_code`. It exists
+    /// because the webview had to tell a stopped turn from a broken one and
+    /// the only thing crossing the bridge was the sentence, so it ran
+    /// `/cancel/i` over English prose: a reworded message, or a vendor error
+    /// containing the word, flipped the card.
     TurnFailed {
         run: RunId,
         error: String,
+        code: String,
     },
     /// One navigator step, from an agent turn or a hand-driven `neo nav`.
     ///

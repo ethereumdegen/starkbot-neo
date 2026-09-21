@@ -92,7 +92,10 @@ fn header_line(state: &State) -> Paragraph<'_> {
             "● LISTENING ",
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(meter(state.level), Style::new().fg(Color::Red)));
+        spans.push(Span::styled(
+            meter(state.level),
+            Style::new().fg(Color::Red),
+        ));
         spans.push(Span::styled("  v stops", Style::new().fg(GREY)));
     } else {
         spans.push(Span::styled(
@@ -169,7 +172,10 @@ fn tab_bar(state: &State) -> Paragraph<'_> {
         if index > 0 {
             spans.push(Span::styled("   ", Style::new().fg(GREY)));
         }
-        spans.push(Span::styled(format!("{} ", index + 1), Style::new().fg(GREY)));
+        spans.push(Span::styled(
+            format!("{} ", index + 1),
+            Style::new().fg(GREY),
+        ));
         spans.push(Span::styled(pane_title(state, *pane), style));
     }
     Paragraph::new(Line::from(spans))
@@ -951,7 +957,9 @@ fn render_login(frame: &mut Frame, area: Rect, state: &State) {
     let rect = centered(area, 76, height);
     frame.render_widget(Clear, rect);
     frame.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }),
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
         rect,
     );
 }

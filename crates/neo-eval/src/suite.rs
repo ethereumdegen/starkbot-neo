@@ -109,13 +109,7 @@ impl Selection {
     pub fn apply(&self, cases: Vec<Case>) -> Vec<Case> {
         cases
             .into_iter()
-            .filter(|case| {
-                self.matches(
-                    &case.test.id,
-                    case.test.name.as_deref(),
-                    &case.test.tags,
-                )
-            })
+            .filter(|case| self.matches(&case.test.id, case.test.name.as_deref(), &case.test.tags))
             .map(|mut case| {
                 if self.once {
                     case.test.consensus_runs = None;
@@ -203,9 +197,13 @@ pub async fn run_suite(
 
     // Held across every case, not per case: a suite that released the screen
     // between cases would let another window in halfway through and report the
-    // interference as a model failure. Nested acquisitions inside a case (an
-    // app turn wants the screen too) are allowed — see `neo_agent::screen`.
-    let _screen = runtime.acquire_screen(run, format!("eval: {}", cases::SUITE_NAME))?;
+    // interference as a model failure.
+    //
+    // Each case's turn takes the keyboard again inside this hold. It does so
+    // under its *own* run id, so the nesting is declared with `screen.scope()`
+    // rather than guessed at — see the `NeoAgent::screen` doc for why the
+    // cases cannot simply share the suite's run id.
+    let screen = runtime.acquire_screen(run, format!("eval: {}", cases::SUITE_NAME))?;
 
     // One conversation for the whole suite: `chat` records each turn against
     // it, and the `turns` table has a foreign key on `conversations(id)`, so an
@@ -218,6 +216,7 @@ pub async fn run_suite(
         Arc::clone(runtime),
         conversation.id,
         cancel.clone(),
+        Some(screen.scope()),
     ));
     let judge: Arc<dyn Judge> = Arc::new(NeoJudge::new(Arc::clone(runtime)));
     let trace_dir = runtime.data_dir().join("eval-traces");
@@ -451,7 +450,10 @@ mod tests {
     #[allow(dead_code)]
     fn the_suite_future_is_send() {
         fn require_send<T: Send>(_: T) {}
-        let _ = |runtime: &Arc<Runtime>, selection: Selection, run: RunId, cancel: &CancellationToken| {
+        let _ = |runtime: &Arc<Runtime>,
+                 selection: Selection,
+                 run: RunId,
+                 cancel: &CancellationToken| {
             require_send(run_suite(runtime, selection, run, cancel));
         };
     }
@@ -521,8 +523,7 @@ mod tests {
         let both = selection(Some("read-a"), &["spreadsheet"], false).apply(cases::all());
         assert!(!both.is_empty(), "the composition must not empty the set");
         assert!(both.iter().all(|case| {
-            case.test.id.contains("read-a")
-                && case.test.tags.iter().any(|tag| tag == "spreadsheet")
+            case.test.id.contains("read-a") && case.test.tags.iter().any(|tag| tag == "spreadsheet")
         }));
         assert!(
             ids(&both).contains(&"read-a-calc-cell"),
@@ -593,7 +594,12 @@ mod tests {
             None,
             run,
             &CancellationToken::new(),
-            &|event| events.lock().unwrap_or_else(|error| error.into_inner()).push(event),
+            &|event| {
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event)
+            },
         )
         .await
         .expect("a report");
@@ -609,7 +615,9 @@ mod tests {
                 .any(|test| test.test_id == "fails" && !test.passed)
         );
 
-        let seen = events.into_inner().unwrap_or_else(|error| error.into_inner());
+        let seen = events
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner());
         let states: Vec<(String, EvalCaseState)> = seen
             .into_iter()
             .filter_map(|event| match event {
@@ -626,16 +634,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(matches!(
-            states.as_slice(),
-            [
-                (first, EvalCaseState::Started),
-                (_, EvalCaseState::Passed { .. }),
-                (_, EvalCaseState::Started),
-                (_, EvalCaseState::Failed { .. }),
-                (last, EvalCaseState::Skipped { .. }),
-            ] if first.as_str() == "passes" && last.as_str() == "absent"
-        ), "unexpected progress: {states:?}");
+        assert!(
+            matches!(
+                states.as_slice(),
+                [
+                    (first, EvalCaseState::Started),
+                    (_, EvalCaseState::Passed { .. }),
+                    (_, EvalCaseState::Started),
+                    (_, EvalCaseState::Failed { .. }),
+                    (last, EvalCaseState::Skipped { .. }),
+                ] if first.as_str() == "passes" && last.as_str() == "absent"
+            ),
+            "unexpected progress: {states:?}"
+        );
     }
 
     /// Cancelling stops at the next case boundary and says so, rather than
@@ -658,7 +669,10 @@ mod tests {
             Err(EvalError::Cancelled { completed, total }) => {
                 assert_eq!((completed, total), (0, 1));
             }
-            other => panic!("expected a cancellation, got {:?}", other.map(|_| "a report")),
+            other => panic!(
+                "expected a cancellation, got {:?}",
+                other.map(|_| "a report")
+            ),
         }
     }
 

@@ -93,7 +93,10 @@ impl AxElem {
     pub(crate) fn settable(&self, name: &CFString) -> bool {
         let mut settable: u8 = 0;
         // SAFETY: `settable` is a live local `Boolean` slot for the call.
-        let err = unsafe { self.0.is_attribute_settable(name, NonNull::from(&mut settable)) };
+        let err = unsafe {
+            self.0
+                .is_attribute_settable(name, NonNull::from(&mut settable))
+        };
         err == AXError::Success && settable != 0
     }
 
@@ -110,7 +113,10 @@ impl AxElem {
     /// Slots the app rejected come back as `None` rather than failing the
     /// whole fetch, which is what makes the batched walk usable on apps with
     /// patchy trees.
-    pub(crate) fn multi(&self, names: &CFArray<CFString>) -> Option<Vec<Option<CFRetained<CFType>>>> {
+    pub(crate) fn multi(
+        &self,
+        names: &CFArray<CFString>,
+    ) -> Option<Vec<Option<CFRetained<CFType>>>> {
         let mut out: *const CFArray = std::ptr::null();
         // SAFETY: `names` is a CFArray of CFStrings, the generic type the
         // binding's contract requires, and `out` is a live local slot. The
@@ -168,7 +174,9 @@ impl AxElem {
         };
         // SAFETY: Copy rule; the array holds CFStrings.
         let array: CFRetained<CFArray<CFString>> = unsafe { CFRetained::from_raw(ptr.cast()) };
-        (0..array.len()).filter_map(|i| array.get(i).map(|s| s.to_string())).collect()
+        (0..array.len())
+            .filter_map(|i| array.get(i).map(|s| s.to_string()))
+            .collect()
     }
 
     /// Perform one action by name.
@@ -186,7 +194,8 @@ impl AxElem {
         // SAFETY: `out` is a live local slot, as the binding requires; the
         // coordinates are plain floats.
         let err = unsafe {
-            self.0.copy_element_at_position(x as f32, y as f32, NonNull::from(&mut out))
+            self.0
+                .copy_element_at_position(x as f32, y as f32, NonNull::from(&mut out))
         };
         if err != AXError::Success {
             return None;
@@ -211,9 +220,14 @@ impl AxElem {
 fn ax_result(call: &'static str, err: AXError) -> Result<(), Error> {
     match err {
         AXError::Success => Ok(()),
-        AXError::CannotComplete => Err(Error::Unresponsive { app: call.to_owned() }),
+        AXError::CannotComplete => Err(Error::Unresponsive {
+            app: call.to_owned(),
+        }),
         AXError::InvalidUIElement => Err(Error::StaleRef),
-        other => Err(Error::Ax { call, code: other.0 }),
+        other => Err(Error::Ax {
+            call,
+            code: other.0,
+        }),
     }
 }
 
@@ -222,8 +236,10 @@ fn ax_result(call: &'static str, err: AXError) -> Result<(), Error> {
 /// Misbehaving apps and the CF↔ObjC bridge can raise, and an unwind across
 /// FFI would abort the process.
 pub(crate) fn guarded<R>(app: &str, call: &'static str, f: impl FnOnce() -> R) -> Result<R, Error> {
-    catch(std::panic::AssertUnwindSafe(f))
-        .map_err(|_| Error::Exception { app: app.to_owned(), call })
+    catch(std::panic::AssertUnwindSafe(f)).map_err(|_| Error::Exception {
+        app: app.to_owned(),
+        call,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +255,10 @@ pub(crate) fn as_string(value: &CFType) -> Option<String> {
         return Some(if b.as_bool() { "1" } else { "0" }.to_owned());
     }
     if let Some(n) = value.downcast_ref::<CFNumber>() {
-        return n.as_i64().map(|v| v.to_string()).or_else(|| n.as_f64().map(|v| v.to_string()));
+        return n
+            .as_i64()
+            .map(|v| v.to_string())
+            .or_else(|| n.as_f64().map(|v| v.to_string()));
     }
     if let Some(u) = value.downcast_ref::<CFURL>() {
         return Some(u.string().to_string());
@@ -252,7 +271,10 @@ pub(crate) fn as_bool(value: &CFType) -> Option<bool> {
     if let Some(b) = value.downcast_ref::<CFBoolean>() {
         return Some(b.as_bool());
     }
-    value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i64).map(|v| v != 0)
+    value
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_i64)
+        .map(|v| v != 0)
 }
 
 /// Read a CF value as a floating-point number.
@@ -267,16 +289,17 @@ fn as_point(value: &CFType) -> Option<(f64, f64)> {
     // SAFETY: the out pointer points at a live `CGPoint` and the requested
     // type tag matches it, which is what `AXValueGetValue` needs. It returns
     // false and writes nothing when the tag does not match the stored value.
-    let ok = unsafe {
-        ax.value(AXValueType::CGPoint, NonNull::from(&mut point).cast())
-    };
+    let ok = unsafe { ax.value(AXValueType::CGPoint, NonNull::from(&mut point).cast()) };
     ok.then_some((point.x, point.y))
 }
 
 /// Read an `AXValue` holding a `CGSize`.
 fn as_size(value: &CFType) -> Option<(f64, f64)> {
     let ax = value.downcast_ref::<AXValue>()?;
-    let mut size = CGSize { width: 0.0, height: 0.0 };
+    let mut size = CGSize {
+        width: 0.0,
+        height: 0.0,
+    };
     // SAFETY: as above, with a live `CGSize` and the matching type tag.
     let ok = unsafe { ax.value(AXValueType::CGSize, NonNull::from(&mut size).cast()) };
     ok.then_some((size.width, size.height))
@@ -372,13 +395,8 @@ impl Attrs {
             &*size,
             &*url,
         ]);
-        let menu_list = CFArray::from_objects(&[
-            &*title,
-            &*enabled,
-            &*children,
-            &*cmd_char,
-            &*cmd_modifiers,
-        ]);
+        let menu_list =
+            CFArray::from_objects(&[&*title, &*enabled, &*children, &*cmd_char, &*cmd_modifiers]);
 
         Self {
             role,
@@ -438,7 +456,11 @@ pub(crate) struct Walk {
 
 /// Read one node's attributes in a single IPC round trip.
 fn read_node(elem: &AxElem, attrs: &Attrs, id: u32, app: &str) -> RawNode {
-    let mut node = RawNode { id, enabled: true, ..RawNode::default() };
+    let mut node = RawNode {
+        id,
+        enabled: true,
+        ..RawNode::default()
+    };
     let Ok(Some(values)) = guarded(app, "copy_multiple_attribute_values", || {
         elem.multi(&attrs.node_list)
     }) else {
@@ -446,7 +468,9 @@ fn read_node(elem: &AxElem, attrs: &Attrs, id: u32, app: &str) -> RawNode {
     };
     let get = |i: usize| values.get(i).and_then(Option::as_ref);
 
-    node.role = get(slot::ROLE).and_then(|v| as_string(v)).unwrap_or_default();
+    node.role = get(slot::ROLE)
+        .and_then(|v| as_string(v))
+        .unwrap_or_default();
     node.subrole = get(slot::SUBROLE).and_then(|v| as_string(v));
     node.title = get(slot::TITLE).and_then(|v| as_string(v));
     node.description = get(slot::DESCRIPTION).and_then(|v| as_string(v));
@@ -456,34 +480,53 @@ fn read_node(elem: &AxElem, attrs: &Attrs, id: u32, app: &str) -> RawNode {
     node.url = get(slot::URL).and_then(|v| as_string(v));
     node.enabled = get(slot::ENABLED).and_then(|v| as_bool(v)).unwrap_or(true);
     node.focused = get(slot::FOCUSED).and_then(|v| as_bool(v)).unwrap_or(false);
-    node.selected = get(slot::SELECTED).and_then(|v| as_bool(v)).unwrap_or(false);
+    node.selected = get(slot::SELECTED)
+        .and_then(|v| as_bool(v))
+        .unwrap_or(false);
     node.expanded = get(slot::EXPANDED).and_then(|v| as_bool(v));
 
     // A secure field's value is dropped here, before it is stored anywhere.
     if !node.is_secure() {
-        node.value = get(slot::VALUE).and_then(|v| as_string(v)).map(|v| collapse_whitespace(&v));
+        node.value = get(slot::VALUE)
+            .and_then(|v| as_string(v))
+            .map(|v| collapse_whitespace(&v));
     }
 
-    let position = get(slot::POSITION).and_then(|v| as_point(v)).unwrap_or((0.0, 0.0));
-    let size = get(slot::SIZE).and_then(|v| as_size(v)).unwrap_or((0.0, 0.0));
-    node.frame = Rect { x: position.0, y: position.1, w: size.0, h: size.1 };
+    let position = get(slot::POSITION)
+        .and_then(|v| as_point(v))
+        .unwrap_or((0.0, 0.0));
+    let size = get(slot::SIZE)
+        .and_then(|v| as_size(v))
+        .unwrap_or((0.0, 0.0));
+    node.frame = Rect {
+        x: position.0,
+        y: position.1,
+        w: size.0,
+        h: size.1,
+    };
 
     node.actions = guarded(app, "copy_action_names", || elem.actions()).unwrap_or_default();
-    node.settable_value = guarded(app, "is_attribute_settable", || elem.settable(&attrs.value))
-        .unwrap_or(false);
+    node.settable_value =
+        guarded(app, "is_attribute_settable", || elem.settable(&attrs.value)).unwrap_or(false);
     node.options = enumerable_options(elem, attrs, &node, app);
     node
 }
 
 /// Options a control exposes *without opening anything*.
 fn enumerable_options(elem: &AxElem, attrs: &Attrs, node: &RawNode, app: &str) -> Vec<String> {
-    const OPTION_PARENTS: [&str; 4] =
-        ["AXRadioGroup", "AXTabGroup", "AXSegmentedControl", "AXComboBox"];
+    const OPTION_PARENTS: [&str; 4] = [
+        "AXRadioGroup",
+        "AXTabGroup",
+        "AXSegmentedControl",
+        "AXComboBox",
+    ];
     if !OPTION_PARENTS.contains(&node.role.as_str()) {
         return Vec::new();
     }
     let Ok(children) = guarded(app, "options", || {
-        elem.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default()
+        elem.attr(&attrs.children)
+            .map(|v| as_elements(&v))
+            .unwrap_or_default()
     }) else {
         return Vec::new();
     };
@@ -506,7 +549,11 @@ pub(crate) fn walk(root: &AxElem, attrs: &Attrs, app: &str, deadline: Instant) -
     let mut store: Vec<AxElem> = Vec::new();
     let mut url = None;
     let root_node = walk_into(root, attrs, app, deadline, 0, &mut store, &mut url);
-    Walk { root: root_node, store, url }
+    Walk {
+        root: root_node,
+        store,
+        url,
+    }
 }
 
 fn walk_into(
@@ -536,7 +583,11 @@ fn walk_into(
     // outlines): a 5,000-row table must not be walked in full.
     let visible = matches!(node.role.as_str(), "AXTable" | "AXOutline" | "AXList");
     let children = guarded(app, "children", || {
-        let attr = if visible { &attrs.visible_children } else { &attrs.children };
+        let attr = if visible {
+            &attrs.visible_children
+        } else {
+            &attrs.children
+        };
         elem.attr(attr)
             .or_else(|| elem.attr(&attrs.children))
             .map(|v| as_elements(&v))
@@ -548,7 +599,15 @@ fn walk_into(
         if store.len() >= WALK_NODE_CAP || Instant::now() >= deadline {
             break;
         }
-        node.children.push(walk_into(child, attrs, app, deadline, depth + 1, store, url));
+        node.children.push(walk_into(
+            child,
+            attrs,
+            app,
+            deadline,
+            depth + 1,
+            store,
+            url,
+        ));
     }
     node
 }
@@ -564,12 +623,16 @@ pub(crate) fn walk_menu_bar(
     // `AXMenuBar` answers with the bar element itself; its children are the
     // `AXMenuBarItem`s.
     let Ok(Some(bar)) = guarded(app, "menu_bar", || {
-        app_elem.attr(&attrs.menu_bar).and_then(|v| first_element(&v))
+        app_elem
+            .attr(&attrs.menu_bar)
+            .and_then(|v| first_element(&v))
     }) else {
         return Vec::new();
     };
     let Ok(items) = guarded(app, "menu_bar_items", || {
-        bar.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default()
+        bar.attr(&attrs.children)
+            .map(|v| as_elements(&v))
+            .unwrap_or_default()
     }) else {
         return Vec::new();
     };
@@ -578,7 +641,16 @@ pub(crate) fn walk_menu_bar(
         if leaves.len() >= MENU_LEAF_CAP || Instant::now() >= deadline {
             break;
         }
-        menu_into(&item, attrs, app, &mut Vec::new(), &mut leaves, store, 0, deadline);
+        menu_into(
+            &item,
+            attrs,
+            app,
+            &mut Vec::new(),
+            &mut leaves,
+            store,
+            0,
+            deadline,
+        );
     }
     leaves
 }
@@ -612,8 +684,16 @@ fn menu_into(
     if title.is_empty() {
         return; // separator
     }
-    let enabled = values.get(1).and_then(Option::as_ref).and_then(|v| as_bool(v)).unwrap_or(true);
-    let children = values.get(2).and_then(Option::as_ref).map(|v| as_elements(v)).unwrap_or_default();
+    let enabled = values
+        .get(1)
+        .and_then(Option::as_ref)
+        .and_then(|v| as_bool(v))
+        .unwrap_or(true);
+    let children = values
+        .get(2)
+        .and_then(Option::as_ref)
+        .map(|v| as_elements(v))
+        .unwrap_or_default();
 
     path.push(title);
 
@@ -622,14 +702,19 @@ fn menu_into(
         .into_iter()
         .flat_map(|menu| {
             guarded(app, "submenu", || {
-                menu.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default()
+                menu.attr(&attrs.children)
+                    .map(|v| as_elements(&v))
+                    .unwrap_or_default()
             })
             .unwrap_or_default()
         })
         .collect();
 
     if submenu.is_empty() {
-        let cmd_char = values.get(3).and_then(Option::as_ref).and_then(|v| as_string(v));
+        let cmd_char = values
+            .get(3)
+            .and_then(Option::as_ref)
+            .and_then(|v| as_string(v));
         let modifiers = values
             .get(4)
             .and_then(Option::as_ref)
@@ -674,12 +759,17 @@ pub(crate) fn first_element(value: &CFType) -> Option<AxElem> {
 
 /// Read only the attributes a guard compares: role, label, enabled, frame.
 pub(crate) fn read_shallow(elem: &AxElem, attrs: &Attrs, app: &str) -> RawNode {
-    let mut node = RawNode { enabled: true, ..RawNode::default() };
+    let mut node = RawNode {
+        enabled: true,
+        ..RawNode::default()
+    };
     let Ok(Some(values)) = guarded(app, "guard_refetch", || elem.multi(&attrs.node_list)) else {
         return node;
     };
     let get = |i: usize| values.get(i).and_then(Option::as_ref);
-    node.role = get(slot::ROLE).and_then(|v| as_string(v)).unwrap_or_default();
+    node.role = get(slot::ROLE)
+        .and_then(|v| as_string(v))
+        .unwrap_or_default();
     node.subrole = get(slot::SUBROLE).and_then(|v| as_string(v));
     node.title = get(slot::TITLE).and_then(|v| as_string(v));
     node.description = get(slot::DESCRIPTION).and_then(|v| as_string(v));
@@ -688,11 +778,22 @@ pub(crate) fn read_shallow(elem: &AxElem, attrs: &Attrs, app: &str) -> RawNode {
     node.identifier = get(slot::IDENTIFIER).and_then(|v| as_string(v));
     node.enabled = get(slot::ENABLED).and_then(|v| as_bool(v)).unwrap_or(true);
     if !node.is_secure() {
-        node.value = get(slot::VALUE).and_then(|v| as_string(v)).map(|v| collapse_whitespace(&v));
+        node.value = get(slot::VALUE)
+            .and_then(|v| as_string(v))
+            .map(|v| collapse_whitespace(&v));
     }
-    let position = get(slot::POSITION).and_then(|v| as_point(v)).unwrap_or((0.0, 0.0));
-    let size = get(slot::SIZE).and_then(|v| as_size(v)).unwrap_or((0.0, 0.0));
-    node.frame = Rect { x: position.0, y: position.1, w: size.0, h: size.1 };
+    let position = get(slot::POSITION)
+        .and_then(|v| as_point(v))
+        .unwrap_or((0.0, 0.0));
+    let size = get(slot::SIZE)
+        .and_then(|v| as_size(v))
+        .unwrap_or((0.0, 0.0));
+    node.frame = Rect {
+        x: position.0,
+        y: position.1,
+        w: size.0,
+        h: size.1,
+    };
     node
 }
 
@@ -702,13 +803,19 @@ pub(crate) fn read_shallow(elem: &AxElem, attrs: &Attrs, app: &str) -> RawNode {
 /// and the observation cannot disagree about what "modal" means.
 pub(crate) fn has_modal_child(window: &AxElem, attrs: &Attrs, app: &str) -> bool {
     let Ok(children) = guarded(app, "modal_children", || {
-        window.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default()
+        window
+            .attr(&attrs.children)
+            .map(|v| as_elements(&v))
+            .unwrap_or_default()
     }) else {
         return false;
     };
     children.iter().take(64).any(|child| {
         let node = guarded(app, "modal_role", || RawNode {
-            role: child.attr(&attrs.role).and_then(|v| as_string(&v)).unwrap_or_default(),
+            role: child
+                .attr(&attrs.role)
+                .and_then(|v| as_string(&v))
+                .unwrap_or_default(),
             subrole: child.attr(&attrs.subrole).and_then(|v| as_string(&v)),
             ..RawNode::default()
         });
@@ -760,8 +867,10 @@ pub(crate) fn press_child_titled(parent: &AxElem, attrs: &Attrs, title: &str) ->
     };
     let press = CFString::from_static_str("AXPress");
     for child in children.iter().take(128) {
-        let child_title =
-            child.attr(&attrs.title).and_then(|v| as_string(&v)).map(|t| collapse_whitespace(&t));
+        let child_title = child
+            .attr(&attrs.title)
+            .and_then(|v| as_string(&v))
+            .map(|t| collapse_whitespace(&t));
         if child_title.as_deref() == Some(title) {
             return child.perform(&press).is_ok();
         }
@@ -789,8 +898,10 @@ pub(crate) fn press_menu_path(
         .and_then(|v| first_element(&v))
         .ok_or(Error::Unsupported("this app exposes no menu bar"))?;
     let press = CFString::from_static_str("AXPress");
-    let mut level: Vec<AxElem> =
-        bar.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default();
+    let mut level: Vec<AxElem> = bar
+        .attr(&attrs.children)
+        .map(|v| as_elements(&v))
+        .unwrap_or_default();
 
     for (depth, wanted) in path.iter().enumerate() {
         let found = level.iter().find(|item| {
@@ -803,7 +914,10 @@ pub(crate) fn press_menu_path(
         let Some(item) = found else {
             return Err(Error::Unsupported("that menu path does not exist"));
         };
-        let enabled = item.attr(&attrs.enabled).and_then(|v| as_bool(&v)).unwrap_or(true);
+        let enabled = item
+            .attr(&attrs.enabled)
+            .and_then(|v| as_bool(&v))
+            .unwrap_or(true);
         if !enabled {
             return Err(Error::Unsupported("that menu item is disabled"));
         }
@@ -818,11 +932,15 @@ pub(crate) fn press_menu_path(
             .unwrap_or_default()
             .into_iter()
             .flat_map(|menu| {
-                menu.attr(&attrs.children).map(|v| as_elements(&v)).unwrap_or_default()
+                menu.attr(&attrs.children)
+                    .map(|v| as_elements(&v))
+                    .unwrap_or_default()
             })
             .collect();
         if submenu.is_empty() {
-            return Err(Error::Unsupported("that menu has no submenu to descend into"));
+            return Err(Error::Unsupported(
+                "that menu has no submenu to descend into",
+            ));
         }
         level = submenu;
     }

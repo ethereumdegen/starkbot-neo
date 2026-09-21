@@ -17,9 +17,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use neo_agent::Runtime;
-use neo_agent::agent::{
-    AppOptions, BrowserOptions, ToolError, run_app as drive_app, run_browser,
-};
+use neo_agent::agent::{AppOptions, BrowserOptions, ToolError, run_app as drive_app, run_browser};
 use neo_agent::ax::{AxRequest, AxResponse};
 use neo_core::{AppEvent, Envelope, RunId};
 use tokio::sync::broadcast::error::RecvError;

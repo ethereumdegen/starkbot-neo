@@ -283,7 +283,10 @@ pub async fn cancel_login(state: State<'_, Desktop>, provider: String) -> Result
 
 /// Forget one subscription credential.
 #[tauri::command]
-pub async fn disconnect(state: State<'_, Desktop>, provider: String) -> Result<ConnectionRow, UiError> {
+pub async fn disconnect(
+    state: State<'_, Desktop>,
+    provider: String,
+) -> Result<ConnectionRow, UiError> {
     let provider = provider_by_id(&provider)?;
     state.cancel_login(provider);
     let runtime = state.runtime();
@@ -356,10 +359,11 @@ pub async fn set_inference_runtime(
     model: Option<String>,
 ) -> Result<InferenceView, UiError> {
     if !SELECTABLE_RUNTIMES.contains(&provider.as_str()) {
-        return Err(
-            UiError::new("unknown_runtime", format!("`{provider}` is not an inference runtime"))
-                .with_fix(Fix::ChooseRuntime),
-        );
+        return Err(UiError::new(
+            "unknown_runtime",
+            format!("`{provider}` is not an inference runtime"),
+        )
+        .with_fix(Fix::ChooseRuntime));
     }
     let runtime = state.runtime();
     let accounts = stored_rows(Arc::clone(&runtime)).await?;
@@ -368,7 +372,10 @@ pub async fn set_inference_runtime(
         blocking(move || {
             let settings = runtime.settings()?;
             let id = model.unwrap_or_else(|| settings.models.inference.id.clone());
-            runtime.patch_settings("models", json!({ "inference": { "provider": provider, "id": id } }))?;
+            runtime.patch_settings(
+                "models",
+                json!({ "inference": { "provider": provider, "id": id } }),
+            )?;
             runtime.bootstrap()
         })
         .await?
@@ -412,7 +419,10 @@ pub async fn list_models(
 
 /// Re-read one API-key runtime's catalogue from the vendor.
 #[tauri::command]
-pub async fn refresh_models(state: State<'_, Desktop>, account: String) -> Result<Vec<ModelRow>, UiError> {
+pub async fn refresh_models(
+    state: State<'_, Desktop>,
+    account: String,
+) -> Result<Vec<ModelRow>, UiError> {
     let account = known_account(&account)?;
     let runtime = state.runtime();
     let models = runtime.refresh_models(account).await?;
@@ -655,21 +665,34 @@ pub async fn run_app_goal(
 ///
 /// Not a run: observing a table or pressing one row is a round trip, not
 /// minutes of work, and there is nothing a Stop button would usefully
-/// interrupt.
+/// interrupt. It is *named* like one, though — `ax()` publishes its activate
+/// line as an [`AppEvent::NavStep`] carrying this id — so it owes the stream
+/// a terminal event all the same. Without one every Inspect press left a
+/// permanently-running run in every front end watching: a climbing badge, a
+/// timer kept alive for the life of the window, and a run list that only
+/// grew.
 #[tauri::command]
 pub async fn run_ax(
     state: State<'_, Desktop>,
     request: AxRequestView,
 ) -> Result<AxResponseView, UiError> {
     let runtime = state.runtime();
-    let response = neo_agent::ax::ax(
+    let run = RunId::new();
+    let label = ax_label(&request);
+    let answered = neo_agent::ax::ax(
         &runtime,
         request.into(),
-        RunId::new(),
+        run,
         &tokio_util::sync::CancellationToken::new(),
     )
-    .await?;
-    Ok(response.into())
+    .await
+    .map_err(UiError::from);
+    let outcome = match &answered {
+        Ok(_) => Ok((label, 0)),
+        Err(error) => Err(error.clone()),
+    };
+    settle(&runtime, run, outcome);
+    Ok(answered?.into())
 }
 
 /// Every eval case and whether this machine can run it. Costs nothing: no
@@ -733,6 +756,14 @@ pub async fn run_eval(
 /// to guess that a run ended from the absence of further steps — a nav run
 /// that failed before its first step would spin forever.
 fn ended(runtime: &Runtime, runs: &Runs, run: RunId, outcome: Result<(String, usize), UiError>) {
+    settle(runtime, run, outcome);
+    runs.finish(run);
+}
+
+/// The terminal event on its own, for the one caller that has no registry
+/// entry to drop: `run_ax` is a round trip rather than a run, but `ax()`
+/// publishes under its id, so the stream still has to be told it ended.
+fn settle(runtime: &Runtime, run: RunId, outcome: Result<(String, usize), UiError>) {
     match outcome {
         Ok((text, steps)) => runtime.publish(AppEvent::TurnFinished {
             run,
@@ -741,12 +772,36 @@ fn ended(runtime: &Runtime, runs: &Runs, run: RunId, outcome: Result<(String, us
             exhausted: false,
             usage: None,
         }),
+        // The code travels beside the sentence because the sentence is
+        // written for a person: a front end styling a stopped run as
+        // stopped rather than broken used to have to run a regex over the
+        // prose, and `UiError::CANCELLED` exists precisely so it does not.
         Err(error) => runtime.publish(AppEvent::TurnFailed {
             run,
             error: error.message,
+            code: error.code,
         }),
     }
-    runs.finish(run);
+}
+
+/// What an accessibility request was, in one line, for the event that ends
+/// it.
+///
+/// The text a `set` or a `type` was carrying is deliberately not in it: this
+/// goes onto a broadcast every front end and the telemetry exporter sees,
+/// and the thing a user types into an application is as often a password as
+/// it is a search term.
+fn ax_label(request: &AxRequestView) -> String {
+    match request {
+        AxRequestView::Trusted => "ax trusted".to_owned(),
+        AxRequestView::Apps => "ax apps".to_owned(),
+        AxRequestView::Table { app } => format!("ax table {app}"),
+        AxRequestView::Press { app, index } => format!("ax press {app} #{index}"),
+        AxRequestView::Set { app, index, .. } => format!("ax set {app} #{index}"),
+        AxRequestView::Menu { app, path } => format!("ax menu {app} {path}"),
+        AxRequestView::Type { app, .. } => format!("ax type {app}"),
+        AxRequestView::Key { app, key } => format!("ax key {app} {key}"),
+    }
 }
 
 /// The refusal an exclusive run kind gives when one is already going.
@@ -767,7 +822,12 @@ fn known_account(account: &str) -> Result<&'static str, UiError> {
         .iter()
         .copied()
         .find(|known| *known == account)
-        .ok_or_else(|| UiError::new("unknown_account", format!("`{account}` is not a Starkbot key")))
+        .ok_or_else(|| {
+            UiError::new(
+                "unknown_account",
+                format!("`{account}` is not a Starkbot key"),
+            )
+        })
 }
 
 fn no_login(provider: &'static OauthProvider) -> UiError {

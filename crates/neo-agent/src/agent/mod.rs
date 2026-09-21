@@ -132,6 +132,15 @@ pub struct ChatRequest {
     pub history: Vec<ChatMessage>,
     pub max_steps: usize,
     pub cancel: CancellationToken,
+    /// The screen hold this turn runs inside, when it runs inside one.
+    ///
+    /// Carried for the same reason `cancel` is: the turn cannot otherwise
+    /// know it is part of something larger. The eval suite holds the screen
+    /// across its cases (`neo-eval::suite`) and each case is a turn with a
+    /// run id of its own, so without the scope every app tool call inside a
+    /// suite would be refused the keyboard by the suite's own lease. `None`
+    /// — every ordinary turn — competes for the screen on its own.
+    pub screen: Option<crate::screen::ScreenScope>,
 }
 
 impl ChatRequest {
@@ -145,6 +154,7 @@ impl ChatRequest {
             history,
             max_steps: DEFAULT_MAX_STEPS,
             cancel: CancellationToken::new(),
+            screen: None,
         }
     }
 

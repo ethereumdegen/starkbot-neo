@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-mod fetch_codex;
 mod eval;
+mod fetch_codex;
 mod nav;
 
 use std::io::{IsTerminal, Read};
@@ -157,10 +157,7 @@ enum AxCommand {
         app: String,
     },
     /// Press one row of the current table.
-    Press {
-        app: String,
-        index: u16,
-    },
+    Press { app: String, index: u16 },
     /// Put text into one row of the current table.
     Set {
         app: String,
@@ -354,15 +351,20 @@ async fn run(
             report,
             baseline,
             list,
-        } => eval::run(data_dir, eval::EvalOptions {
-            filter,
-            tags: tag,
-            once,
-            report,
-            baseline,
-            list,
-        })
-        .await,
+        } => {
+            eval::run(
+                data_dir,
+                eval::EvalOptions {
+                    filter,
+                    tags: tag,
+                    once,
+                    report,
+                    baseline,
+                    list,
+                },
+            )
+            .await
+        }
         CommandKind::Models { command } => run_models(data_dir, command).await,
     }
 }
@@ -377,18 +379,16 @@ async fn run_settings(data_dir: Option<PathBuf>, command: SettingsCommand) -> Re
             print_json(&settings)
         }
         SettingsCommand::Patch { section, patch } => {
-            let patch: serde_json::Value = serde_json::from_str(&patch)
-                .context("the patch must be a JSON value")?;
-            let settings =
-                tokio::task::block_in_place(|| runtime.patch_settings(&section, patch))?;
+            let patch: serde_json::Value =
+                serde_json::from_str(&patch).context("the patch must be a JSON value")?;
+            let settings = tokio::task::block_in_place(|| runtime.patch_settings(&section, patch))?;
             print_json(&settings)
         }
         SettingsCommand::UseRuntime { provider, id } => {
             let patch = serde_json::json!({
                 "inference": { "provider": provider, "id": id }
             });
-            let settings =
-                tokio::task::block_in_place(|| runtime.patch_settings("models", patch))?;
+            let settings = tokio::task::block_in_place(|| runtime.patch_settings("models", patch))?;
             print_json(&settings.models)
         }
     }

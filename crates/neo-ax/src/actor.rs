@@ -35,11 +35,11 @@ use crate::input::{self, Target};
 use crate::mapping::PRESS_ACTIONS;
 use crate::perm;
 use crate::raw::RawNode;
-use crate::sys::{self, AxElem, Attrs};
+use crate::sys::{self, Attrs, AxElem};
 use crate::table::{self, BuiltTable, TableInput};
 use crate::types::{
-    ActOutcome, AppInfo, AppSel, AxAction, Element, ElementTable, Fingerprint, Guard, Method,
-    Rect, Ref,
+    ActOutcome, AppInfo, AppSel, AxAction, Element, ElementTable, Fingerprint, Guard, Method, Rect,
+    Ref,
 };
 
 /// One run loop slice. A command never waits longer than this.
@@ -69,10 +69,23 @@ type Reply<T> = oneshot::Sender<Result<T, AxError>>;
 
 enum AxCmd {
     Apps(Reply<Vec<AppInfo>>),
-    Activate { app: AppSel, reply: Reply<AppInfo> },
-    Table { app: AppSel, goal: Option<String>, reply: Reply<ElementTable> },
-    Guard { guard: Box<Guard>, reply: Reply<Freshness> },
-    Act { action: Box<AxAction>, reply: Reply<ActOutcome> },
+    Activate {
+        app: AppSel,
+        reply: Reply<AppInfo>,
+    },
+    Table {
+        app: AppSel,
+        goal: Option<String>,
+        reply: Reply<ElementTable>,
+    },
+    Guard {
+        guard: Box<Guard>,
+        reply: Reply<Freshness>,
+    },
+    Act {
+        action: Box<AxAction>,
+        reply: Reply<ActOutcome>,
+    },
     Shutdown,
 }
 
@@ -437,15 +450,17 @@ impl Actor {
     // -- commands ----------------------------------------------------------
 
     fn cmd_apps(&self) -> Vec<AppInfo> {
-        apps::running().into_iter().filter(|a| !self.policy.is_denied(a)).collect()
+        apps::running()
+            .into_iter()
+            .filter(|a| !self.policy.is_denied(a))
+            .collect()
     }
 
     fn resolve_app(&self, sel: &AppSel) -> Result<AppInfo, AxError> {
         let all = apps::running();
-        let found = sel
-            .pick(&all)
-            .cloned()
-            .ok_or_else(|| AxError::NoApp { selector: sel.to_string() })?;
+        let found = sel.pick(&all).cloned().ok_or_else(|| AxError::NoApp {
+            selector: sel.to_string(),
+        })?;
         if self.policy.is_denied(&found) {
             return Err(AxError::Denied {
                 app: found.bundle_id.clone().unwrap_or(found.name.clone()),
@@ -463,7 +478,9 @@ impl Actor {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        Err(AxError::NoApp { selector: sel.to_string() })
+        Err(AxError::NoApp {
+            selector: sel.to_string(),
+        })
     }
 
     fn cmd_activate(&mut self, sel: &AppSel) -> Result<AppInfo, AxError> {
@@ -524,7 +541,8 @@ impl Actor {
         };
         // An app that restarted has a new pid: nothing observed before it
         // came back may be acted on.
-        self.generations.retain(|g| g.pid != app.pid || apps::by_pid(g.pid).is_some());
+        self.generations
+            .retain(|g| g.pid != app.pid || apps::by_pid(g.pid).is_some());
         // Activation is asynchronous, and an app that is still coming up
         // refuses it outright: a Numbers launched a moment earlier answered NO
         // to `activateWithOptions` and then came forward by itself, which used
@@ -550,7 +568,9 @@ impl Actor {
                 selector: sel.to_string(),
             });
         }
-        apps::by_pid(app.pid).ok_or(AxError::NoApp { selector: sel.to_string() })
+        apps::by_pid(app.pid).ok_or(AxError::NoApp {
+            selector: sel.to_string(),
+        })
     }
 
     /// Ask an app to publish the tree it keeps for assistive clients.
@@ -605,7 +625,9 @@ impl Actor {
         }
         let app = self.resolve_app(sel)?;
         if AxPolicy::is_chrome_family(&app) {
-            return Err(AxError::UseCdp { app: app.name.clone() });
+            return Err(AxError::UseCdp {
+                app: app.name.clone(),
+            });
         }
 
         let app_elem = AxElem::app(app.pid);
@@ -625,22 +647,22 @@ impl Actor {
                     None if Instant::now() < window_deadline => {
                         std::thread::sleep(Duration::from_millis(40));
                     }
-                    None => return Err(AxError::NoWindow { app: app.name.clone() }),
+                    None => {
+                        return Err(AxError::NoWindow {
+                            app: app.name.clone(),
+                        });
+                    }
                 }
             }
         };
 
         let mut walk = sys::walk(&window_elem, &self.attrs, &app.name, deadline);
-        let menu = sys::walk_menu_bar(
-            &app_elem,
-            &self.attrs,
-            &app.name,
-            &mut walk.store,
-            deadline,
-        );
+        let menu = sys::walk_menu_bar(&app_elem, &self.attrs, &app.name, &mut walk.store, deadline);
 
         if walk.root.children.is_empty() && walk.root.label().is_empty() {
-            return Err(AxError::OpaqueApp { app: app.name.clone() });
+            return Err(AxError::OpaqueApp {
+                app: app.name.clone(),
+            });
         }
 
         let generation = self.next_generation;
@@ -663,7 +685,9 @@ impl Actor {
             .iter()
             .filter_map(|e| {
                 menu.iter()
-                    .find(|leaf| leaf.label() == e.label && e.container.as_deref() == Some("menu bar"))
+                    .find(|leaf| {
+                        leaf.label() == e.label && e.container.as_deref() == Some("menu bar")
+                    })
                     .map(|leaf| (e.index, leaf.path.clone()))
             })
             .collect();
@@ -692,7 +716,10 @@ impl Actor {
         }
 
         // 1. Generation current, app still allowed.
-        let Some(gen_index) = self.generations.iter().position(|g| g.id == guard.generation)
+        let Some(gen_index) = self
+            .generations
+            .iter()
+            .position(|g| g.id == guard.generation)
         else {
             return Freshness::Stale(StaleReason::Generation);
         };
@@ -715,9 +742,9 @@ impl Actor {
         }
         let app_elem = AxElem::app(guard.pid);
         app_elem.set_messaging_timeout(sys::APP_MESSAGING_TIMEOUT);
-        let Ok(Some(window_value)) =
-            sys::guarded(&app.name, "focused_window", || app_elem.attr(&self.attrs.focused_window))
-        else {
+        let Ok(Some(window_value)) = sys::guarded(&app.name, "focused_window", || {
+            app_elem.attr(&self.attrs.focused_window)
+        }) else {
             return Freshness::Stale(StaleReason::WindowChanged);
         };
         let Some(window_elem) = sys::first_element(&window_value) else {
@@ -738,7 +765,8 @@ impl Actor {
         };
         let (Some(slot), Some(observed)) = (
             self.slot_of(guard.generation, target.index),
-            self.observed_element(guard.generation, target.index).cloned(),
+            self.observed_element(guard.generation, target.index)
+                .cloned(),
         ) else {
             return Freshness::Stale(StaleReason::Generation);
         };
@@ -824,14 +852,13 @@ impl Actor {
         if !perm::trusted() {
             return Err(AxError::NotTrusted);
         }
-        let generation = self
-            .generations
-            .back()
-            .ok_or(AxError::StaleRef)?;
+        let generation = self.generations.back().ok_or(AxError::StaleRef)?;
         let pid = generation.pid;
         let app = apps::by_pid(pid).ok_or(AxError::StaleRef)?;
         if self.policy.is_denied(&app) {
-            return Err(AxError::Denied { app: app.bundle_id.unwrap_or(app.name) });
+            return Err(AxError::Denied {
+                app: app.bundle_id.unwrap_or(app.name),
+            });
         }
 
         match action {
@@ -899,14 +926,23 @@ impl Actor {
             return self.do_select_menu(pid, &path, app);
         }
 
-        let slot = self.slot_of(target.generation, target.index).ok_or(AxError::StaleRef)?;
-        let generation =
-            self.generations.iter().find(|g| g.id == target.generation).ok_or(AxError::StaleRef)?;
-        let elem = generation.store.get(slot as usize).ok_or(AxError::StaleRef)?;
+        let slot = self
+            .slot_of(target.generation, target.index)
+            .ok_or(AxError::StaleRef)?;
+        let generation = self
+            .generations
+            .iter()
+            .find(|g| g.id == target.generation)
+            .ok_or(AxError::StaleRef)?;
+        let elem = generation
+            .store
+            .get(slot as usize)
+            .ok_or(AxError::StaleRef)?;
 
         let advertised = sys::guarded(app, "copy_action_names", || elem.actions())?;
-        let Some(action) =
-            PRESS_ACTIONS.iter().find(|candidate| advertised.iter().any(|a| a == *candidate))
+        let Some(action) = PRESS_ACTIONS
+            .iter()
+            .find(|candidate| advertised.iter().any(|a| a == *candidate))
         else {
             // The CGEvent click fallback is deliberately not implemented yet;
             // failing loudly beats silently doing nothing.
@@ -932,10 +968,18 @@ impl Actor {
         if observed.role == "securefield" {
             return Err(AxError::SecureField);
         }
-        let slot = self.slot_of(target.generation, target.index).ok_or(AxError::StaleRef)?;
-        let generation =
-            self.generations.iter().find(|g| g.id == target.generation).ok_or(AxError::StaleRef)?;
-        let elem = generation.store.get(slot as usize).ok_or(AxError::StaleRef)?;
+        let slot = self
+            .slot_of(target.generation, target.index)
+            .ok_or(AxError::StaleRef)?;
+        let generation = self
+            .generations
+            .iter()
+            .find(|g| g.id == target.generation)
+            .ok_or(AxError::StaleRef)?;
+        let elem = generation
+            .store
+            .get(slot as usize)
+            .ok_or(AxError::StaleRef)?;
 
         let value = sys::cf(text);
         sys::guarded(app, "set_attribute_value", || {
@@ -986,7 +1030,8 @@ impl Actor {
         let deadline = Instant::now() + TYPED_VALUE_WAIT;
         loop {
             let seen = sys::guarded(app, "read_back", || {
-                elem.attr(&self.attrs.value).and_then(|v| sys::as_string(&v))
+                elem.attr(&self.attrs.value)
+                    .and_then(|v| sys::as_string(&v))
             })?;
             let settled = seen
                 .as_deref()
@@ -1010,7 +1055,10 @@ impl Actor {
         let pid = self.generations.back().ok_or(AxError::StaleRef)?.pid;
         self.require_frontmost(pid)?;
         let generation = self.generations.back().ok_or(AxError::StaleRef)?;
-        let elem = generation.store.get(slot as usize).ok_or(AxError::StaleRef)?;
+        let elem = generation
+            .store
+            .get(slot as usize)
+            .ok_or(AxError::StaleRef)?;
         // Focus first: a typed event goes wherever the focus is, so an
         // unfocusable target must fail here rather than type into whatever
         // happened to be focused instead.
@@ -1019,7 +1067,8 @@ impl Actor {
             elem.set_attr(&self.attrs.focused, yes)
         })??;
         let focused = sys::guarded(app, "read_focused", || {
-            elem.attr(&self.attrs.focused).and_then(|v| sys::as_bool(&v))
+            elem.attr(&self.attrs.focused)
+                .and_then(|v| sys::as_bool(&v))
         })?;
         if focused != Some(true) {
             return Err(AxError::Unsupported(
@@ -1073,10 +1122,18 @@ impl Actor {
         option: &str,
         app: &str,
     ) -> Result<ActOutcome, AxError> {
-        let slot = self.slot_of(target.generation, target.index).ok_or(AxError::StaleRef)?;
-        let generation =
-            self.generations.iter().find(|g| g.id == target.generation).ok_or(AxError::StaleRef)?;
-        let elem = generation.store.get(slot as usize).ok_or(AxError::StaleRef)?;
+        let slot = self
+            .slot_of(target.generation, target.index)
+            .ok_or(AxError::StaleRef)?;
+        let generation = self
+            .generations
+            .iter()
+            .find(|g| g.id == target.generation)
+            .ok_or(AxError::StaleRef)?;
+        let elem = generation
+            .store
+            .get(slot as usize)
+            .ok_or(AxError::StaleRef)?;
 
         let picked = sys::guarded(app, "select_option", || {
             sys::press_child_titled(elem, &self.attrs, option)
@@ -1133,13 +1190,18 @@ impl Actor {
     ) -> Result<ActOutcome, AxError> {
         // AX first: scrolling an element into view needs no synthetic event.
         if let Some(target) = target {
-            let slot = self.slot_of(target.generation, target.index).ok_or(AxError::StaleRef)?;
+            let slot = self
+                .slot_of(target.generation, target.index)
+                .ok_or(AxError::StaleRef)?;
             let generation = self
                 .generations
                 .iter()
                 .find(|g| g.id == target.generation)
                 .ok_or(AxError::StaleRef)?;
-            let elem = generation.store.get(slot as usize).ok_or(AxError::StaleRef)?;
+            let elem = generation
+                .store
+                .get(slot as usize)
+                .ok_or(AxError::StaleRef)?;
             let action = sys::cf("AXScrollToVisible");
             if sys::guarded(app, "scroll_to_visible", || elem.perform(&action))?.is_ok() {
                 return Ok(ActOutcome {
@@ -1185,7 +1247,10 @@ impl Actor {
 
     /// The menu path behind a `MENU` row, if this index is one.
     fn menu_path_of(&self, target: Ref) -> Option<Vec<String>> {
-        let g = self.generations.iter().find(|g| g.id == target.generation)?;
+        let g = self
+            .generations
+            .iter()
+            .find(|g| g.id == target.generation)?;
         g.menu_paths
             .iter()
             .find(|(index, _)| *index == target.index)
@@ -1222,9 +1287,9 @@ impl Actor {
         let app_elem = AxElem::app(pid);
         app_elem.set_messaging_timeout(sys::APP_MESSAGING_TIMEOUT);
         let deadline = Instant::now() + TABLE_DEADLINE;
-        let Ok(Some(window_value)) =
-            sys::guarded(app, "focused_window", || app_elem.attr(&self.attrs.focused_window))
-        else {
+        let Ok(Some(window_value)) = sys::guarded(app, "focused_window", || {
+            app_elem.attr(&self.attrs.focused_window)
+        }) else {
             return false;
         };
         let Some(window_elem) = sys::first_element(&window_value) else {
@@ -1372,11 +1437,19 @@ mod tests {
     async fn acting_with_no_observation_is_a_stale_ref() {
         let ax = AxHandle::spawn().unwrap();
         let err = ax
-            .act(&AxAction::Press { target: Ref { generation: 9, index: 0 } })
+            .act(&AxAction::Press {
+                target: Ref {
+                    generation: 9,
+                    index: 0,
+                },
+            })
             .await
             .unwrap_err();
         assert!(
-            matches!(err, AxError::StaleRef | AxError::NotTrusted | AxError::ScreenLocked),
+            matches!(
+                err,
+                AxError::StaleRef | AxError::NotTrusted | AxError::ScreenLocked
+            ),
             "expected a refusal, got {err:?}"
         );
     }
@@ -1415,7 +1488,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the Accessibility grant and launches TextEdit"]
     async fn live_textedit_table_has_a_menu_bar_and_a_text_area() {
-        assert!(AxHandle::trusted(), "grant Accessibility to the terminal running cargo test");
+        assert!(
+            AxHandle::trusted(),
+            "grant Accessibility to the terminal running cargo test"
+        );
         let ax = AxHandle::spawn().unwrap();
         let app = ax.activate(&AppSel::Name("TextEdit".into())).await.unwrap();
         assert!(app.frontmost);
@@ -1423,11 +1499,17 @@ mod tests {
         let table = ax.table(&AppSel::Pid(app.pid)).await.unwrap();
         assert!(table.elements.len() <= crate::table::MAX_ELEMENTS);
         assert!(
-            table.elements.iter().any(|e| e.container.as_deref() == Some("menu bar")),
+            table
+                .elements
+                .iter()
+                .any(|e| e.container.as_deref() == Some("menu bar")),
             "the menu bar must be readable without opening a menu"
         );
         assert!(
-            table.elements.iter().any(|e| e.role == "textarea" || e.role == "scrollarea"),
+            table
+                .elements
+                .iter()
+                .any(|e| e.role == "textarea" || e.role == "scrollarea"),
             "TextEdit's document area must be visible: {:?}",
             table.elements.iter().map(|e| &e.role).collect::<Vec<_>>()
         );
@@ -1442,7 +1524,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the Accessibility grant and launches TextEdit"]
     async fn live_guard_is_fresh_immediately_after_observing() {
-        assert!(AxHandle::trusted(), "grant Accessibility to the terminal running cargo test");
+        assert!(
+            AxHandle::trusted(),
+            "grant Accessibility to the terminal running cargo test"
+        );
         let ax = AxHandle::spawn().unwrap();
         let app = ax.activate(&AppSel::Name("TextEdit".into())).await.unwrap();
         let table = ax.table(&AppSel::Pid(app.pid)).await.unwrap();
@@ -1457,13 +1542,18 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the Accessibility grant and opens a TextEdit window"]
     async fn live_select_menu_opens_a_new_window() {
-        assert!(AxHandle::trusted(), "grant Accessibility to the terminal running cargo test");
+        assert!(
+            AxHandle::trusted(),
+            "grant Accessibility to the terminal running cargo test"
+        );
         let ax = AxHandle::spawn().unwrap();
         let app = ax.activate(&AppSel::Name("TextEdit".into())).await.unwrap();
         let before = ax.table(&AppSel::Pid(app.pid)).await.unwrap().window.title;
 
         let outcome = ax
-            .act(&AxAction::SelectMenu { path: vec!["File".to_owned(), "New".to_owned()] })
+            .act(&AxAction::SelectMenu {
+                path: vec!["File".to_owned(), "New".to_owned()],
+            })
             .await
             .unwrap();
         assert!(outcome.performed);
@@ -1471,11 +1561,16 @@ mod tests {
         std::thread::sleep(Duration::from_millis(800));
 
         let after = ax.table(&AppSel::Pid(app.pid)).await.unwrap().window.title;
-        assert_ne!(before, after, "File > New must put a different window in front");
+        assert_ne!(
+            before, after,
+            "File > New must put a different window in front"
+        );
 
         // Leave no window behind, so the other live tests see a clean app.
         let _ = ax
-            .act(&AxAction::SelectMenu { path: vec!["File".to_owned(), "Close".to_owned()] })
+            .act(&AxAction::SelectMenu {
+                path: vec!["File".to_owned(), "Close".to_owned()],
+            })
             .await;
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -1486,7 +1581,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the Accessibility grant and launches TextEdit"]
     async fn live_bad_menu_path_is_refused() {
-        assert!(AxHandle::trusted(), "grant Accessibility to the terminal running cargo test");
+        assert!(
+            AxHandle::trusted(),
+            "grant Accessibility to the terminal running cargo test"
+        );
         let ax = AxHandle::spawn().unwrap();
         let app = ax.activate(&AppSel::Name("TextEdit".into())).await.unwrap();
         let _ = ax.table(&AppSel::Pid(app.pid)).await.unwrap();
@@ -1506,7 +1604,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the Accessibility grant, launches TextEdit and types into it"]
     async fn live_type_text_reaches_the_document() {
-        assert!(AxHandle::trusted(), "grant Accessibility to the terminal running cargo test");
+        assert!(
+            AxHandle::trusted(),
+            "grant Accessibility to the terminal running cargo test"
+        );
         let ax = AxHandle::spawn().unwrap();
         let app = ax.activate(&AppSel::Name("TextEdit".into())).await.unwrap();
         let table = ax.table(&AppSel::Pid(app.pid)).await.unwrap();
@@ -1521,16 +1622,24 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         );
-        ax.act(&AxAction::SetValue { target: area.reference(), text: marker.clone() })
-            .await
-            .unwrap();
+        ax.act(&AxAction::SetValue {
+            target: area.reference(),
+            text: marker.clone(),
+        })
+        .await
+        .unwrap();
 
         let again = ax.table(&AppSel::Pid(app.pid)).await.unwrap();
-        assert_eq!(again.window.title, table.window.title, "the window must not have changed");
+        assert_eq!(
+            again.window.title, table.window.title,
+            "the window must not have changed"
+        );
         assert!(
-            again.elements.iter().any(|e| e.value.as_deref() == Some(marker.as_str())),
+            again
+                .elements
+                .iter()
+                .any(|e| e.value.as_deref() == Some(marker.as_str())),
             "the document should hold what we wrote"
         );
     }
 }
-

@@ -1,21 +1,13 @@
-//! Who else is running, and who is allowed to touch the keyboard.
+//! Who else is running, and who is holding the managed browser.
 //!
 //! Several Starkbot processes share one data directory on a laptop — a TUI, the
 //! desktop app, a `neo eval` run, a one-off `neo app …`. They also share
-//! things there is exactly **one** of: the keyboard and the frontmost
-//! application (every `neo-ax` action is a global CGEvent or an `AXPress` on
-//! whatever is in front), and the managed Chrome profile (a second launch on
-//! the same profile directory either fails or steals the session).
-//!
-//! Two agents driving TextEdit at the same time do not produce two documents;
-//! they produce one document with both their keystrokes interleaved. So this
-//! module provides two things:
+//! things there is exactly **one** of. So this module provides two things:
 //!
 //! * a **roster** — every live process, what it is doing, when it was last
 //!   seen — so a front end can say "the desktop app is running an eval"; and
 //! * **leases** — an exclusive, expiring claim on a named resource, so the
-//!   second process to want the keyboard is told who has it instead of
-//!   fighting for it.
+//!   second process to want it is told who has it instead of fighting for it.
 //!
 //! The store is the coordination point because it is already the shared,
 //! WAL-backed, multi-process-safe thing all of them open. A lease is one
@@ -23,13 +15,24 @@
 //! across processes; a broker daemon would add a moving part and a new failure
 //! mode for the same guarantee.
 //!
+//! **The keyboard is not leased here.** It was, at the same time as
+//! `ScreenLease` (`neo-agent/src/screen.rs`) covered it with an `flock` —
+//! two mechanisms, near-identical prose justifications, different failure
+//! models. Two such mechanisms disagree sooner or later, and the one that
+//! grants while the other refuses is the one that lets two agents type at
+//! once. The `flock` won: the kernel releases it however the holder dies, so
+//! it needs neither a TTL nor a renewal contract, which is exactly what the
+//! defects below were made of. What is left here is the managed Chrome
+//! profile, which no `flock` covers.
+//!
 //! Nothing here holds a credential. `activity` and `reason` are plain words
 //! written by the process itself.
 
 use neo_core::TimestampMs;
 use rusqlite::{OptionalExtension, params};
 
-use crate::{ReadPool, Result, Writer};
+use crate::connection::write_transaction;
+use crate::{ReadPool, Result, StoreError, Writer};
 
 /// What kind of process a session belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,26 +119,23 @@ pub struct Lease {
 
 /// The named things a lease can cover.
 ///
-/// Coarse on purpose. A finer claim — "the File menu of TextEdit" — would let
-/// two processes each believe they had exclusive use of the same window.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One variant, deliberately: see the module documentation for why the
+/// keyboard and the frontmost application are an `flock` in `neo-agent`
+/// instead. Coarse on purpose — a finer claim, "the File menu of TextEdit",
+/// would let two processes each believe they had exclusive use of the same
+/// window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resource {
-    /// Synthetic keyboard and mouse events, and the frontmost application.
-    /// Every `neo-ax` action needs this.
-    Keyboard,
-    /// The managed Chrome profile.
+    /// The managed Chrome profile. A second launch on the same profile
+    /// directory either fails or steals the session.
     Chrome,
-    /// One application, by the selector the caller used.
-    App(String),
 }
 
 impl Resource {
     #[must_use]
     pub fn key(&self) -> String {
         match self {
-            Self::Keyboard => "keyboard".to_owned(),
             Self::Chrome => "chrome".to_owned(),
-            Self::App(app) => format!("app:{}", app.to_lowercase()),
         }
     }
 
@@ -143,9 +143,7 @@ impl Resource {
     #[must_use]
     pub fn label(&self) -> String {
         match self {
-            Self::Keyboard => "the keyboard".to_owned(),
             Self::Chrome => "the managed browser".to_owned(),
-            Self::App(app) => app.clone(),
         }
     }
 }
@@ -203,7 +201,14 @@ impl PresenceRepository {
     ///
     /// The same call renews every lease this session holds: a process that is
     /// alive enough to report its activity is alive enough to keep the
-    /// keyboard, and one that has stopped reporting must not keep it.
+    /// browser, and one that has stopped reporting must not keep it.
+    ///
+    /// Returns [`StoreError::SessionEvicted`] when there is no row to
+    /// refresh. That is not pedantry: the row count used to be discarded, so
+    /// a zero-row `UPDATE` was indistinguishable from success — a process
+    /// pruned from the roster while it was alive went on heartbeating into
+    /// nothing, and its lease (which cascaded away with the row) was gone
+    /// without it ever being told. The caller's remedy is to announce again.
     pub fn heartbeat(
         &self,
         id: &str,
@@ -214,49 +219,74 @@ impl PresenceRepository {
         let id = id.to_owned();
         let activity = activity.map(str::to_owned);
         self.writer.execute(move |connection| {
-            connection.execute(
+            let transaction = write_transaction(connection)?;
+            let refreshed = transaction.execute(
                 "UPDATE sessions SET last_seen = ?2, activity = COALESCE(?3, activity) \
                  WHERE id = ?1",
                 params![id, at, activity],
             )?;
-            connection.execute(
+            if refreshed == 0 {
+                return Err(StoreError::SessionEvicted(id));
+            }
+            transaction.execute(
                 "UPDATE leases SET expires_at = ?2 WHERE holder = ?1",
                 params![id, at.saturating_add(lease_ttl_ms)],
             )?;
+            transaction.commit()?;
             Ok(())
         })
     }
 
-    /// Every session seen within `stale_after_ms`, newest first.
+    /// Prune the roster, then return every session seen within
+    /// `stale_after_ms`, newest first.
+    ///
+    /// **This writes.** It is named for what a caller wants and it also
+    /// deletes, which is worth saying out loud because of what the delete
+    /// used to do: `leases.holder` is declared `REFERENCES sessions ON DELETE
+    /// CASCADE` (`migrations/0005_presence_and_leases.sql:34`), so every
+    /// caller of this read-shaped API — the TUI picker, `neo sessions`,
+    /// `doctor::sessions_check` — revoked a live process's lease whenever its
+    /// heartbeat was merely slow. The prune therefore skips any session that
+    /// still holds an unexpired lease; a process that crashed holding one
+    /// drops off once the lease expires, which is what the expiry is for.
+    ///
+    /// The delete and the read are one transaction on the writer, so the
+    /// roster returned is the roster that survived the prune rather than a
+    /// separate snapshot taken afterwards.
     ///
     /// A process that crashed stops heartbeating, so it drops off by itself;
-    /// the row is also removed, because a roster that grows for ever is a log,
-    /// not a roster.
+    /// the row is removed rather than kept, because a roster that grows for
+    /// ever is a log, not a roster.
     pub fn sessions(&self, now: TimestampMs, stale_after_ms: i64) -> Result<Vec<Session>> {
         let cutoff = now.saturating_sub(stale_after_ms);
         self.writer.execute(move |connection| {
-            connection.execute("DELETE FROM sessions WHERE last_seen < ?1", params![cutoff])?;
-            Ok(())
-        })?;
-        self.readers.read(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT id, kind, pid, host, activity, started_at, last_seen \
-                 FROM sessions WHERE last_seen >= ?1 ORDER BY last_seen DESC",
+            let transaction = write_transaction(connection)?;
+            transaction.execute(
+                "DELETE FROM sessions WHERE last_seen < ?1 AND id NOT IN \
+                 (SELECT holder FROM leases WHERE expires_at >= ?2)",
+                params![cutoff, now],
             )?;
-            let rows = statement
-                .query_map(params![cutoff], |row| {
-                    let kind: String = row.get(1)?;
-                    Ok(Session {
-                        id: row.get(0)?,
-                        kind: SessionKind::parse(&kind).unwrap_or(SessionKind::Cli),
-                        pid: row.get(2)?,
-                        host: row.get(3)?,
-                        activity: row.get(4)?,
-                        started_at: row.get(5)?,
-                        last_seen: row.get(6)?,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = {
+                let mut statement = transaction.prepare(
+                    "SELECT id, kind, pid, host, activity, started_at, last_seen \
+                     FROM sessions WHERE last_seen >= ?1 ORDER BY last_seen DESC",
+                )?;
+                statement
+                    .query_map(params![cutoff], |row| {
+                        let kind: String = row.get(1)?;
+                        Ok(Session {
+                            id: row.get(0)?,
+                            kind: SessionKind::parse(&kind).unwrap_or(SessionKind::Cli),
+                            pid: row.get(2)?,
+                            host: row.get(3)?,
+                            activity: row.get(4)?,
+                            started_at: row.get(5)?,
+                            last_seen: row.get(6)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            transaction.commit()?;
             Ok(rows)
         })
     }
@@ -411,10 +441,10 @@ mod tests {
     }
 
     /// The whole reason leases exist: the second claimant must lose, not
-    /// share. Two agents on one keyboard produce one document with both their
-    /// keystrokes in it.
+    /// share. Two agents on one Chrome profile do not get two browsers; the
+    /// second launch steals or wrecks the first one's session.
     #[test]
-    fn only_one_session_can_hold_the_keyboard() {
+    fn only_one_session_can_hold_the_browser() {
         let (_dir, store) = store();
         let presence = store.presence();
         for (id, kind) in [("a", SessionKind::Tui), ("b", SessionKind::Desktop)] {
@@ -424,21 +454,21 @@ mod tests {
         }
 
         let first = presence
-            .acquire(&Resource::Keyboard, "a", Some("typing"), 1_000, 30_000)
+            .acquire(&Resource::Chrome, "a", Some("browsing"), 1_000, 30_000)
             .expect("acquire");
         assert!(first.is_some());
         let second = presence
-            .acquire(&Resource::Keyboard, "b", Some("also typing"), 1_100, 30_000)
+            .acquire(&Resource::Chrome, "b", Some("also browsing"), 1_100, 30_000)
             .expect("acquire");
-        assert!(second.is_none(), "two holders of one keyboard");
+        assert!(second.is_none(), "two holders of one browser");
 
         // And the loser can find out who has it, to say so.
         let holder = presence
-            .holder(&Resource::Keyboard, 1_100)
+            .holder(&Resource::Chrome, 1_100)
             .expect("holder")
             .expect("someone holds it");
         assert_eq!(holder.holder, "a");
-        assert_eq!(holder.reason.as_deref(), Some("typing"));
+        assert_eq!(holder.reason.as_deref(), Some("browsing"));
     }
 
     /// Re-taking a lease you already hold extends it, so a nested call cannot
@@ -452,12 +482,12 @@ mod tests {
             .expect("announce");
         assert!(
             presence
-                .acquire(&Resource::Keyboard, "a", None, 1_000, 30_000)
+                .acquire(&Resource::Chrome, "a", None, 1_000, 30_000)
                 .expect("acquire")
                 .is_some()
         );
         let again = presence
-            .acquire(&Resource::Keyboard, "a", None, 1_010, 30_000)
+            .acquire(&Resource::Chrome, "a", None, 1_010, 30_000)
             .expect("acquire")
             .expect("the same holder may retake it");
         assert_eq!(again.expires_at, 31_010);
@@ -474,18 +504,18 @@ mod tests {
                 .expect("announce");
         }
         presence
-            .acquire(&Resource::Keyboard, "a", None, 1_000, 30_000)
+            .acquire(&Resource::Chrome, "a", None, 1_000, 30_000)
             .expect("acquire");
         // Before expiry: refused. After: granted.
         assert!(
             presence
-                .acquire(&Resource::Keyboard, "b", None, 20_000, 30_000)
+                .acquire(&Resource::Chrome, "b", None, 20_000, 30_000)
                 .expect("acquire")
                 .is_none()
         );
         assert!(
             presence
-                .acquire(&Resource::Keyboard, "b", None, 31_001, 30_000)
+                .acquire(&Resource::Chrome, "b", None, 31_001, 30_000)
                 .expect("acquire")
                 .is_some()
         );
@@ -501,30 +531,63 @@ mod tests {
             .announce("a", SessionKind::Tui, 1, "laptop", 1_000)
             .expect("announce");
         presence
-            .acquire(&Resource::Keyboard, "a", None, 1_000, 30_000)
+            .acquire(&Resource::Chrome, "a", None, 1_000, 30_000)
             .expect("acquire");
         presence.depart("a").expect("depart");
         assert!(
             presence
-                .holder(&Resource::Keyboard, 1_100)
+                .holder(&Resource::Chrome, 1_100)
                 .expect("holder")
                 .is_none()
         );
     }
 
-    /// Different apps are different resources; the same app named two ways is
-    /// one, because the case of a bundle id or a display name is not a
-    /// distinction the laptop makes.
+    /// `leases.holder` is `REFERENCES sessions ON DELETE CASCADE`, so the
+    /// prune inside `sessions()` used to take a live process's lease with its
+    /// stale roster row — and the callers of `sessions()` are the TUI picker,
+    /// `neo sessions` and `doctor::sessions_check`, none of which mean to
+    /// revoke anything. A slow heartbeat drops you off the roster; it does
+    /// not take the browser away from you.
     #[test]
-    fn app_leases_are_per_app_and_case_insensitive() {
-        assert_eq!(
-            Resource::App("TextEdit".into()).key(),
-            Resource::App("textedit".into()).key()
+    fn pruning_the_roster_does_not_revoke_a_live_lease() {
+        let (_dir, store) = store();
+        let presence = store.presence();
+        presence
+            .announce("busy", SessionKind::Cli, 1, "laptop", 1_000)
+            .expect("announce");
+        presence
+            .acquire(&Resource::Chrome, "busy", Some("browsing"), 1_000, 600_000)
+            .expect("acquire")
+            .expect("the lease is free");
+
+        // Far past the roster's staleness window, well inside the lease.
+        let now = 1_000 + 300_000;
+        assert!(
+            presence.sessions(now, 90_000).expect("roster").is_empty(),
+            "a session last seen five minutes ago is not live"
         );
-        assert_ne!(
-            Resource::App("TextEdit".into()).key(),
-            Resource::App("LibreOffice".into()).key()
-        );
-        assert_ne!(Resource::Keyboard.key(), Resource::Chrome.key());
+        let holder = presence
+            .holder(&Resource::Chrome, now)
+            .expect("holder")
+            .expect("the lease survived the prune");
+        assert_eq!(holder.holder, "busy");
+    }
+
+    /// The other half of the same defect: `heartbeat` discarded the row
+    /// count, so a process whose row had been pruned went on reporting into
+    /// nothing and never learned that its lease had cascaded away with it.
+    #[test]
+    fn a_heartbeat_with_no_session_row_reports_the_eviction() {
+        let (_dir, store) = store();
+        let presence = store.presence();
+        presence
+            .announce("a", SessionKind::Tui, 1, "laptop", 1_000)
+            .expect("announce");
+        presence.depart("a").expect("depart");
+
+        match presence.heartbeat("a", Some("still here"), 2_000, 30_000) {
+            Err(StoreError::SessionEvicted(id)) => assert_eq!(id, "a"),
+            other => panic!("expected an eviction, got {other:?}"),
+        }
     }
 }

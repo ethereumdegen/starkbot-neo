@@ -1,6 +1,6 @@
-//! macOS Keychain storage for Starkbot-owned secrets.
+//! Keychain storage for Starkbot-owned secrets.
 //!
-//! Every operation goes through the Security framework (`SecItemAdd`,
+//! On macOS every operation goes through the Security framework (`SecItemAdd`,
 //! `SecItemCopyMatching`, `SecItemUpdate`, `SecItemDelete`) by way of the
 //! `security-framework` crate's safe wrapper. The earlier implementation drove
 //! `/usr/bin/security` instead, and **silently truncated every secret at 128
@@ -11,14 +11,23 @@
 //! blob impossible. `SecItemAdd` takes arbitrary bytes and needs neither argv
 //! nor a terminal.
 //!
-//! The tests in this module read from and write to the developer's real login
-//! Keychain. They confine themselves to a unique per-run service name and
-//! delete every item they create, including when an assertion fails.
+//! Underneath sits a clear-text JSON file backend. It is pure Rust, so it is
+//! the *only* backend off macOS — which is what lets `neo-core` and
+//! `neo-store`, and therefore most of this workspace's testable logic, run on
+//! a Linux CI runner. It is also what the tests in this module exercise: a
+//! test binary is unsigned and its code-signing identity changes on every
+//! build, so touching the real login Keychain prompts for authorization once
+//! per item. The one test that does touch it is `#[ignore]`d.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 
+use rustix::fs::{FlockOperation, flock};
+#[cfg(target_os = "macos")]
 use security_framework::base::Error as SecError;
+#[cfg(target_os = "macos")]
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
@@ -30,16 +39,60 @@ use crate::{KeyState, Secret, SecretError};
 pub const DEFAULT_SERVICE: &str = "com.starkbot.neo";
 
 /// `errSecItemNotFound` — nothing is stored under that account.
+#[cfg(target_os = "macos")]
 const NOT_FOUND: i32 = -25300;
 
+/// `errSecInteractionNotAllowed` — the Keychain is locked and macOS will not
+/// unlock it without the user.
+#[cfg(target_os = "macos")]
+const INTERACTION_NOT_ALLOWED: i32 = -25308;
+
+/// `errSecAuthFailed` — the user, or the item's access list, refused.
+#[cfg(target_os = "macos")]
+const AUTH_FAILED: i32 = -25293;
+
+/// `errUserCanceled` — the authorization prompt was dismissed.
+#[cfg(target_os = "macos")]
+const USER_CANCELED: i32 = -128;
+
+/// Why a Keychain operation did not happen.
+///
+/// `Locked`, `Denied` and `Cancelled` exist because they used to collapse into
+/// `Keychain`, and a caller that cannot tell them apart can only say "keychain
+/// read failed" — which turned a locked Keychain into a `bootstrap()` the user
+/// had no way to act on. They are three different situations with three
+/// different remedies: unlock it, re-sign or reset the item's access list, or
+/// simply answer the prompt next time.
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {
     #[error("keychain account name `{0}` is not usable")]
     InvalidAccount(String),
     #[error("the keychain item for account `{account}` is not a usable secret")]
     InvalidItem { account: String },
-    /// The Keychain refused the operation. Carries the framework's own code and
-    /// message, neither of which can contain the value.
+    /// `errSecInteractionNotAllowed`. Retrying changes nothing until the
+    /// Keychain is unlocked.
+    #[error("the keychain is locked; unlock it to {operation} account `{account}`")]
+    Locked {
+        operation: &'static str,
+        account: String,
+    },
+    /// `errSecAuthFailed`. The binary's code signature does not match the
+    /// item's access list, or the user refused. Retrying changes nothing.
+    #[error("the keychain denied {operation} for account `{account}`")]
+    Denied {
+        operation: &'static str,
+        account: String,
+    },
+    /// `errUserCanceled`. Not a fault: the user dismissed the prompt, and a
+    /// retry after they decide is the whole remedy.
+    #[error("the keychain prompt to {operation} account `{account}` was cancelled")]
+    Cancelled {
+        operation: &'static str,
+        account: String,
+    },
+    /// The Keychain refused for a reason this crate does not model. Carries
+    /// the framework's own code and message, neither of which can contain the
+    /// value.
     #[error("keychain {operation} for account `{account}` failed: {detail}")]
     Keychain {
         operation: &'static str,
@@ -48,12 +101,19 @@ pub enum KeychainError {
     },
 }
 
+#[cfg(target_os = "macos")]
 impl KeychainError {
     fn from_sec(operation: &'static str, account: &str, error: &SecError) -> Self {
-        Self::Keychain {
-            operation,
-            account: account.to_owned(),
-            detail: format!("{} ({})", error.message().unwrap_or_default(), error.code()),
+        let account = account.to_owned();
+        match error.code() {
+            INTERACTION_NOT_ALLOWED => Self::Locked { operation, account },
+            AUTH_FAILED => Self::Denied { operation, account },
+            USER_CANCELED => Self::Cancelled { operation, account },
+            code => Self::Keychain {
+                operation,
+                account,
+                detail: format!("{} ({code})", error.message().unwrap_or_default()),
+            },
         }
     }
 }
@@ -77,10 +137,12 @@ pub struct Keychain {
 /// login Keychain asked the developer for their password dozens of times per
 /// run, with no way to make it stop.
 enum Backend {
-    /// The user's login Keychain, through `SecItem*`.
+    /// The user's login Keychain, through `SecItem*`. macOS only, because the
+    /// Security framework is.
+    #[cfg(target_os = "macos")]
     Login,
     /// A JSON file, owner-read/write only. Selected by `NEO_KEYCHAIN_FILE`,
-    /// and never the default.
+    /// the default in a debug build, and the only backend off macOS.
     File(PathBuf),
 }
 
@@ -94,7 +156,7 @@ pub const KEYCHAIN_FILE_ENV: &str = "NEO_KEYCHAIN_FILE";
 
 /// Select the file backend and let the caller choose the path.
 ///
-/// Set to `file`, this makes [`Keychain::wanted`] report that the login
+/// Set to `file`, this makes [`wanted_file_backend`] report that the login
 /// Keychain must not be used, without naming a location — so each `Runtime`
 /// keeps its keys beside its own store instead of every process on the
 /// machine sharing one file. That sharing was a real bug: parallel tests
@@ -105,17 +167,19 @@ pub const KEYCHAIN_BACKEND_ENV: &str = "NEO_KEYCHAIN_BACKEND";
 ///
 /// `Some(Some(path))` — a path was named. `Some(None)` — the file backend is
 /// wanted but the caller picks the path. `None` — the login Keychain.
-/// **A debug build defaults to the file backend; a release build defaults to
-/// the login Keychain.** That is the whole point: a debug binary is unsigned
-/// (or ad-hoc signed, which is the same thing here), its code-signing
-/// identity changes on every `cargo build`, and so every login-Keychain read
-/// raises a modal authorization prompt that no amount of "Always Allow" will
-/// suppress. Developing against it meant typing the login password dozens of
-/// times per run, and a modal dialog made an agent turn look like a hang.
+/// **A debug build defaults to the file backend; a release build on macOS
+/// defaults to the login Keychain; off macOS there is no login Keychain, so
+/// the answer is always the file backend.** That is the whole point of the
+/// debug default: a debug binary is unsigned (or ad-hoc signed, which is the
+/// same thing here), its code-signing identity changes on every `cargo
+/// build`, and so every login-Keychain read raises a modal authorization
+/// prompt that no amount of "Always Allow" will suppress. Developing against
+/// it meant typing the login password dozens of times per run, and a modal
+/// dialog made an agent turn look like a hang.
 ///
-/// Either default can be overridden: `NEO_KEYCHAIN_BACKEND=login` puts a
-/// debug build back on the real Keychain (to check the shipped path, after
-/// `scripts/sign-dev.sh`), and `NEO_KEYCHAIN_FILE=<path>` selects a file
+/// On macOS either default can be overridden: `NEO_KEYCHAIN_BACKEND=login`
+/// puts a debug build back on the real Keychain (to check the shipped path,
+/// after `scripts/sign-dev.sh`), and `NEO_KEYCHAIN_FILE=<path>` selects a file
 /// anywhere, in any build.
 #[must_use]
 pub fn wanted_file_backend() -> Option<Option<PathBuf>> {
@@ -123,6 +187,13 @@ pub fn wanted_file_backend() -> Option<Option<PathBuf>> {
         && !path.is_empty()
     {
         return Some(Some(PathBuf::from(path)));
+    }
+    // Off macOS `NEO_KEYCHAIN_BACKEND=login` names a backend that does not
+    // exist, and a release build's "use the login Keychain" default cannot be
+    // honoured. Reporting `None` there would leave the caller no usable
+    // answer at all.
+    if !cfg!(target_os = "macos") {
+        return Some(None);
     }
     match std::env::var(KEYCHAIN_BACKEND_ENV).as_deref() {
         Ok("file") => Some(None),
@@ -147,7 +218,12 @@ impl Keychain {
                 // Wanted, but nobody said where: fall back to a path beside
                 // the user's data, which `Runtime::open` normally supplies.
                 Some(None) => Backend::File(default_file_path()),
+                #[cfg(target_os = "macos")]
                 None => Backend::Login,
+                // Unreachable: `wanted_file_backend` never asks for a login
+                // Keychain off macOS. Spelled out rather than panicked.
+                #[cfg(not(target_os = "macos"))]
+                None => Backend::File(default_file_path()),
             },
         }
     }
@@ -165,6 +241,7 @@ impl Keychain {
     ///
     /// Only for moving secrets *out* of it: a dev shell that has selected the
     /// file backend still needs one way to read what the real app stored.
+    #[cfg(target_os = "macos")]
     pub fn login(service: impl Into<String>) -> Self {
         Self {
             service: service.into(),
@@ -179,12 +256,17 @@ impl Keychain {
     /// Whether this keychain is the real login Keychain.
     #[must_use]
     pub fn is_login_keychain(&self) -> bool {
-        matches!(self.backend, Backend::Login)
+        match &self.backend {
+            #[cfg(target_os = "macos")]
+            Backend::Login => true,
+            Backend::File(_) => false,
+        }
     }
 
     pub fn get(&self, account: &str) -> Result<Option<Secret>, KeychainError> {
         let account = check_account(account)?;
         let mut bytes = match &self.backend {
+            #[cfg(target_os = "macos")]
             Backend::Login => match get_generic_password(&self.service, account) {
                 Ok(bytes) => bytes,
                 Err(error) if error.code() == NOT_FOUND => return Ok(None),
@@ -231,9 +313,15 @@ impl Keychain {
         #[allow(clippy::disallowed_methods)]
         let exposed = secret.expose();
         match &self.backend {
+            #[cfg(target_os = "macos")]
             Backend::Login => set_generic_password(&self.service, account, exposed.as_bytes())
                 .map_err(|error| KeychainError::from_sec("write", account, &error)),
             Backend::File(path) => {
+                // The lock spans the read *and* the write: two processes
+                // storing two different accounts both used to read the old
+                // file, and the second `rename` won — so one credential the
+                // user believed they had stored was gone.
+                let _lock = FileLock::exclusive(path, &self.service)?;
                 let mut items = read_file(path, &self.service)?;
                 items.insert(account.to_owned(), exposed.to_owned());
                 write_file(path, &self.service, &items)
@@ -245,12 +333,14 @@ impl Keychain {
     pub fn delete(&self, account: &str) -> Result<(), KeychainError> {
         let account = check_account(account)?;
         match &self.backend {
+            #[cfg(target_os = "macos")]
             Backend::Login => match delete_generic_password(&self.service, account) {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == NOT_FOUND => Ok(()),
                 Err(error) => Err(KeychainError::from_sec("delete", account, &error)),
             },
             Backend::File(path) => {
+                let _lock = FileLock::exclusive(path, &self.service)?;
                 let mut items = read_file(path, &self.service)?;
                 if items.remove(account).is_some() {
                     write_file(path, &self.service, &items)?;
@@ -275,7 +365,14 @@ impl Keychain {
 /// Where the file backend goes when only `NEO_KEYCHAIN_BACKEND=file` is set
 /// and no `Runtime` chose a path.
 fn default_file_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    // An absent or relative `HOME` used to yield `PathBuf::default()`, which
+    // made this a *relative* path: a clear-text `keys.json` landed in whatever
+    // directory the binary was launched from, and two processes started
+    // elsewhere kept two different key stores without either noticing.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .unwrap_or_else(std::env::temp_dir);
     home.join("Library/Application Support/com.starkbot.neo/keys.json")
 }
 
@@ -304,7 +401,50 @@ fn read_file(
     Ok(all.get(service).cloned().unwrap_or_default())
 }
 
+/// Exclusive hold on the file backend across a read-modify-write.
+///
+/// `flock` is the same mechanism the screen lease uses, for the same reason:
+/// the kernel releases it however the holding process dies, so a crash cannot
+/// wedge every other process out of its own credentials. The lock lives on a
+/// sibling `.lock` file rather than on the store itself, because the store is
+/// replaced by `rename` — two processes would end up holding locks on two
+/// different inodes and excluding nothing.
+struct FileLock {
+    // Closing the descriptor releases the flock.
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    fn exclusive(path: &std::path::Path, service: &str) -> Result<Self, KeychainError> {
+        let fail = |detail: String| KeychainError::Keychain {
+            operation: "lock",
+            account: service.to_owned(),
+            detail,
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| fail(error.to_string()))?;
+        }
+        let mut name = path.as_os_str().to_owned();
+        name.push(".lock");
+        // The lock file carries no content, only the `flock`; truncating it
+        // would be a write the holder never asked for.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(PathBuf::from(name))
+            .map_err(|error| fail(error.to_string()))?;
+        flock(&file, FlockOperation::LockExclusive).map_err(|error| fail(error.to_string()))?;
+        Ok(Self { _file: file })
+    }
+}
+
 /// Replace one service's contents, owner-only.
+///
+/// Call under [`FileLock`]: this re-reads the file it is about to replace, so
+/// a writer slipping in between the two would be silently discarded.
 fn write_file(
     path: &std::path::Path,
     service: &str,
@@ -315,34 +455,43 @@ fn write_file(
         account: service.to_owned(),
         detail,
     };
+    // Not `unwrap_or_default`. A truncated or hand-edited `keys.json` parsed
+    // as "no services at all", and this function wrote that back — every
+    // other service's accounts replaced by the one being stored, in the
+    // backend a debug build uses by default. Today `set` and `delete` both
+    // call `read_file` first, which refuses the same input, so the wipe is
+    // out of reach through the public API; leaving the two halves
+    // disagreeing about what a bad file means is how it would come back.
     let mut all: BTreeMap<String, BTreeMap<String, String>> = match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-        Err(_) => BTreeMap::new(),
+        Ok(text) => serde_json::from_str(&text).map_err(|error| fail(error.to_string()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => return Err(fail(error.to_string())),
     };
     all.insert(service.to_owned(), items.clone());
     let encoded = serde_json::to_string_pretty(&all).map_err(|error| fail(error.to_string()))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| fail(error.to_string()))?;
     }
-    // Write-then-rename, so a reader never sees a half-written file. Two
-    // processes writing at once still resolve to one of the two whole files
-    // rather than a corrupt mixture of both.
+    // Write-then-rename, so a reader never sees a half-written file. The mode
+    // goes on the `open` rather than on a `set_permissions` afterwards:
+    // in between, a file holding every secret in clear text was readable by
+    // whoever the umask allowed.
     let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&temporary, encoded).map_err(|error| fail(error.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| fail(error.to_string()))?;
-    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|error| fail(error.to_string()))?;
+    file.write_all(encoded.as_bytes())
+        .map_err(|error| fail(error.to_string()))?;
+    // The rename is ordered against the data only if the data is on disk
+    // first; otherwise a power loss leaves an empty `keys.json` where a
+    // complete one used to be.
+    file.sync_all().map_err(|error| fail(error.to_string()))?;
+    drop(file);
     std::fs::rename(&temporary, path).map_err(|error| fail(error.to_string()))?;
-    // Clear text on disk, so at least no other user can read it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| fail(error.to_string()))?;
-    }
     Ok(())
 }
 
@@ -356,8 +505,9 @@ fn check_account(account: &str) -> Result<&str, KeychainError> {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -588,18 +738,125 @@ mod tests {
         assert!(!message.contains("sk-"));
     }
 
+    /// A `keys.json` this crate cannot parse is never silently replaced —
+    /// the store holds every account's credential, and replacing it loses
+    /// all of them. Both halves have to agree for that to hold: `read_file`
+    /// refuses the file, and `write_file` (which used to
+    /// `unwrap_or_default()` it into "no services at all" and write that
+    /// back) now refuses it too. Relax either one and a truncated or
+    /// hand-edited file costs the user every key, in the backend a debug
+    /// build uses by default.
+    #[test]
+    fn a_corrupt_store_is_refused_rather_than_replaced() {
+        let directory = match tempfile::tempdir() {
+            Ok(directory) => directory,
+            Err(error) => panic!("a temporary directory: {error}"),
+        };
+        let path = directory.path().join("keys.json");
+        let corrupt = "{\"com.starkbot.neo\":{\"openai\":\"sk-live\",";
+        if let Err(error) = std::fs::write(&path, corrupt) {
+            panic!("{error}");
+        }
+
+        let keychain = Keychain::file("com.starkbot.neo", &path);
+        let secret = match Secret::new("sk-new") {
+            Ok(secret) => secret,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(matches!(
+            keychain.set("anthropic", &secret),
+            Err(KeychainError::Keychain { .. })
+        ));
+        match std::fs::read_to_string(&path) {
+            Ok(after) => assert_eq!(after, corrupt, "the unreadable store was replaced anyway"),
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// Two writers storing two different accounts both read the old file and
+    /// the second `rename` won, so one credential the user believed they had
+    /// stored was gone. `flock` is per open file description, so two threads
+    /// each taking their own lock contend exactly as two processes do.
+    #[test]
+    fn concurrent_writes_to_different_accounts_all_survive() {
+        let directory = match tempfile::tempdir() {
+            Ok(directory) => directory,
+            Err(error) => panic!("a temporary directory: {error}"),
+        };
+        let path = directory.path().join("keys.json");
+        let rounds = 10;
+        for round in 0..rounds {
+            let barrier = Arc::new(Barrier::new(2));
+            let writers = ["openai", "anthropic"].map(|account| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                let account = format!("{account}-{round}");
+                std::thread::spawn(move || {
+                    let keychain = Keychain::file("com.starkbot.neo", path);
+                    let secret = match Secret::new(format!("sk-{account}")) {
+                        Ok(secret) => secret,
+                        Err(error) => panic!("{error}"),
+                    };
+                    barrier.wait();
+                    keychain.set(&account, &secret)
+                })
+            });
+            for writer in writers {
+                match writer.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => panic!("{error}"),
+                    Err(_) => panic!("a writer panicked"),
+                }
+            }
+        }
+
+        let keychain = Keychain::file("com.starkbot.neo", &path);
+        for round in 0..rounds {
+            for account in [format!("openai-{round}"), format!("anthropic-{round}")] {
+                match keychain.get(&account) {
+                    #[allow(clippy::disallowed_methods)]
+                    Ok(Some(secret)) => assert_eq!(secret.expose(), format!("sk-{account}")),
+                    other => panic!("`{account}` was lost: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// The three Security-framework outcomes a user can actually act on:
+    /// unlock the Keychain, re-sign or reset the item's access list, or answer
+    /// the prompt. They used to collapse into one opaque `Keychain` error, and
+    /// `bootstrap()` refused to start with a message nobody could act on.
+    #[test]
+    fn a_locked_keychain_reads_differently_from_a_denied_one() {
+        let locked = KeychainError::Locked {
+            operation: "read",
+            account: "openai".to_owned(),
+        };
+        let denied = KeychainError::Denied {
+            operation: "read",
+            account: "openai".to_owned(),
+        };
+        let cancelled = KeychainError::Cancelled {
+            operation: "read",
+            account: "openai".to_owned(),
+        };
+        assert!(locked.to_string().contains("locked"));
+        assert!(denied.to_string().contains("denied"));
+        assert!(cancelled.to_string().contains("cancelled"));
+    }
+
     /// The login Keychain itself, which the rest of this module deliberately
     /// avoids. Ignored because it prompts for authorization on an unsigned
     /// build, which is exactly the thing that made `cargo test` unusable.
     ///
     /// Run it deliberately after signing:
     /// `scripts/sign-dev.sh && cargo test -p neo-keys -- --ignored`
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "touches the real login Keychain and may prompt for authorization"]
     fn the_login_keychain_round_trips_a_long_secret() {
         let service = format!("com.starkbot.neo.test.login.{}", std::process::id());
-        let keychain = Keychain::new(&service);
-        assert!(keychain.is_login_keychain());
+        let keychain = Keychain::login(&service);
         let value = "k".repeat(700);
         let secret = match Secret::new(&value) {
             Ok(secret) => secret,

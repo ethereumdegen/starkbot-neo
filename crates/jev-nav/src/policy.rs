@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use crate::rules::{NEXT_ACTION, SAFETY, TARGET};
+use crate::rules::{NEXT_ACTION, ON_TASK, SAFETY, TARGET};
 use crate::wire::{Evaluation, WireError};
 
 /// One executable thing the observer offered (a row of `snapshot.js` `actions`).
@@ -104,18 +104,24 @@ pub fn action_space(actions: &[Action]) -> ActionSpace {
                 json!(label.split(" → ").next().unwrap_or(label)),
             );
             element.insert("operations".into(), json!([]));
-            if operation == Operation::Select {
-                element.insert(
-                    "value".into(),
-                    action.get("current_value").cloned().unwrap_or(json!("")),
-                );
-                element.insert("options".into(), json!([]));
-            }
             elements.push(element);
             elements.len() - 1
         });
         let element = &mut elements[position];
         let index = (position + 1).to_string();
+        if operation == Operation::Select && !element.contains_key("options") {
+            // The options bucket is opened here rather than when the row is
+            // created, because an element can offer SELECT alongside CLICK —
+            // a native `AXPopUpButton` does, and `ax::actions_of` emits its
+            // CLICK first — and a row created by the CLICK had no bucket, so
+            // every option collapsed onto the same bare `index` target and
+            // whichever option came last silently won (R3.2).
+            element.insert(
+                "value".into(),
+                action.get("current_value").cloned().unwrap_or(json!("")),
+            );
+            element.insert("options".into(), json!([]));
+        }
         if let Some(Value::Array(operations)) = element.get_mut("operations")
             && !operations.iter().any(|o| o == operation.name())
         {
@@ -151,6 +157,13 @@ pub struct Request {
     pub state: Value,
     pub questions: Value,
     operations: Vec<String>,
+    /// The yes/no heads this request actually asked for.
+    ///
+    /// `resolve` needs to tell "not asked" from "asked and came back
+    /// unreadable"; both used to leave the head absent from `Decision::safety`
+    /// and the loop read absent as `0.0` (R1.1). Asked-and-unreadable is now
+    /// a failed step, and absent means exactly "not asked".
+    safety: Vec<&'static str>,
 }
 
 pub fn build_request(
@@ -159,6 +172,7 @@ pub fn build_request(
     goal: &str,
     history: &[Value],
     safety_heads: bool,
+    on_task_floor: f32,
 ) -> Request {
     let mut operations = Map::new();
     for operation in space.targets.keys() {
@@ -214,13 +228,21 @@ pub fn build_request(
             }),
         );
     }
+    // Heads cost per-step classifier latency, so only the ones this run can
+    // act on are asked: the risk ceilings when `safety_heads` is on, and the
+    // drift floor when there is a floor to enforce.
+    let mut asked: Vec<(&'static str, &'static str)> = Vec::new();
     if safety_heads {
-        for (name, instructions) in SAFETY {
-            questions.insert(
-                (*name).into(),
-                json!({ "type": "noul", "instructions": { "goal": goal, "rules": instructions } }),
-            );
-        }
+        asked.extend_from_slice(SAFETY);
+    }
+    if on_task_floor > 0.0 {
+        asked.push(ON_TASK);
+    }
+    for (name, instructions) in &asked {
+        questions.insert(
+            (*name).into(),
+            json!({ "type": "noul", "instructions": { "goal": goal, "rules": instructions } }),
+        );
     }
 
     let recent: Vec<Value> = history
@@ -236,15 +258,26 @@ pub fn build_request(
             Value::Object(kept)
         })
         .collect();
+    // What the observer could not show has to reach the model: a target that
+    // was dropped to fit a budget is not a target that does not exist, and a
+    // model that cannot see its target should answer BLOCKED rather than
+    // claim DONE (R3.4). The web path counts what it dropped; the native one
+    // only knows that it dropped something, so the flag carries what the
+    // count cannot.
+    let omitted = page["omitted_actions"].as_u64().unwrap_or(0);
     let state = json!({
         "page": { "url": page["url"], "title": page["title"], "text": page["text"] },
         "elements": space.elements,
         "recent_actions": recent,
+        "omitted_actions": omitted,
+        "actions_truncated": omitted > 0 || page["omitted_actions"].as_bool().unwrap_or(false),
+        "unreadable_frames": page["signals"]["cross_origin_frames"].as_u64().unwrap_or(0),
     });
     Request {
         state,
         questions: Value::Object(questions),
         operations: operations.keys().cloned().collect(),
+        safety: asked.iter().map(|(name, _)| *name).collect(),
     }
 }
 
@@ -286,10 +319,70 @@ pub fn resolve(
         decision.target_confidence = Some(target.confidence);
         decision.target = Some(target.choice);
     }
-    for (name, _) in SAFETY {
-        if let Some(probability) = evaluation.yes(name) {
-            decision.safety.insert((*name).into(), probability);
-        }
+    // Every head that was asked for must be answered. An unreadable one fails
+    // the step rather than defaulting: the whole point of R1.1 is that a
+    // provider returning garbage stops the run instead of scoring `outward`
+    // at zero and sending the message.
+    for name in &request.safety {
+        decision
+            .safety
+            .insert((*name).into(), evaluation.yes(name)?);
     }
     Ok(decision)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value, json};
+
+    use super::{Operation, action_space};
+
+    fn action(value: Value) -> super::Action {
+        value.as_object().cloned().unwrap_or_else(Map::new)
+    }
+
+    /// A native pop-up button offers CLICK *and* SELECT on one element
+    /// (`neo_ax::mapping`), and `ax::actions_of` emits the CLICK first. Each
+    /// option must still become its own `index:option` target: they used to
+    /// collapse onto the bare element index, so whichever option the observer
+    /// listed last silently won whatever Jev chose (R3.2).
+    #[test]
+    fn a_clickable_element_that_also_selects_still_offers_one_target_per_option() {
+        let space = action_space(&[
+            action(json!({ "kind": "click", "node": 7, "label": "Format", "role": "popupbutton" })),
+            action(json!({
+                "kind": "select", "node": 7, "label": "Format → Plain Text",
+                "role": "popupbutton", "value": "Plain Text", "current_value": "Rich Text",
+            })),
+            action(json!({
+                "kind": "select", "node": 7, "label": "Format → Rich Text",
+                "role": "popupbutton", "value": "Rich Text", "current_value": "Rich Text",
+            })),
+        ]);
+
+        let selects = space
+            .targets
+            .get(&Operation::Select)
+            .map_or_else(Vec::new, |candidates| {
+                candidates.keys().cloned().collect::<Vec<_>>()
+            });
+        assert_eq!(selects, ["1:1", "1:2"]);
+        assert_eq!(
+            space.targets[&Operation::Select]["1:1"]["value"],
+            json!("Plain Text")
+        );
+        assert_eq!(space.elements.len(), 1);
+        let element = &space.elements[0];
+        assert_eq!(element["operations"], json!(["CLICK", "SELECT"]));
+        assert_eq!(element["label"], json!("Format"));
+        // The row reports what is selected now, not one of the choices.
+        assert_eq!(element["value"], json!("Rich Text"));
+        assert_eq!(
+            element["options"],
+            json!([
+                { "index": "1:1", "label": "Format → Plain Text", "value": "Plain Text" },
+                { "index": "1:2", "label": "Format → Rich Text", "value": "Rich Text" },
+            ])
+        );
+    }
 }

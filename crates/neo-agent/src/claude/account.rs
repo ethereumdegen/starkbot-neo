@@ -4,7 +4,7 @@
 //! *whether* a subscription is connected and *which plan*, never a token. Extra
 //! fields are ignored on purpose so a CLI upgrade cannot break the parse.
 
-use neo_core::{ProviderAccount, ProviderAccountStatus, ProviderId, PROVIDER_CLAUDE_SUBSCRIPTION};
+use neo_core::{PROVIDER_CLAUDE_SUBSCRIPTION, ProviderAccount, ProviderAccountStatus, ProviderId};
 use serde::Deserialize;
 
 /// What `claude auth status` reports. Observed on Claude Code 2.1.236:

@@ -90,10 +90,9 @@ impl Runtime {
         let secret = self
             .typesafe_secret()?
             .ok_or_else(|| RuntimeError::MissingKey(neo_keys::ACCOUNT_TYPESAFE.to_owned()))?;
-        let endpoint = std::env::var("TYPESAFE_ENDPOINT")
-            .unwrap_or_else(|_| TYPESAFE_ENDPOINT.to_owned());
-        let model =
-            std::env::var("TYPESAFE_MODEL").unwrap_or_else(|_| TYPESAFE_MODEL.to_owned());
+        let endpoint =
+            std::env::var("TYPESAFE_ENDPOINT").unwrap_or_else(|_| TYPESAFE_ENDPOINT.to_owned());
+        let model = std::env::var("TYPESAFE_MODEL").unwrap_or_else(|_| TYPESAFE_MODEL.to_owned());
         // The audited credential boundary clippy.toml points at: the key goes
         // into one client that sends it as a bearer header.
         #[allow(clippy::disallowed_methods)]

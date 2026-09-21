@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 pub use crate::observer::ObserveError;
 use crate::observer::Observer;
 use crate::policy::Action;
+use crate::rules::MAX_ELEMENT_ACTIONS;
 
 /// Runs in the page; the only non-Rust code in this crate.
 pub const SNAPSHOT_JS: &str = include_str!("../js/snapshot.js");
@@ -28,6 +29,77 @@ fn runtime_action(action: &Action) -> Action {
         runtime.insert("node".into(), local_node);
     }
     runtime
+}
+
+/// Scroll and wait are the surface's own controls, not elements: the JS
+/// budget counts what `snapshot.js` calls `elementActions`, and so does this.
+fn is_control(action: &Value) -> bool {
+    matches!(action["kind"].as_str(), Some("scroll" | "wait"))
+}
+
+/// Re-apply [`MAX_ELEMENT_ACTIONS`] to the merged action list, returning how
+/// many element actions were dropped.
+///
+/// `snapshot.js` caps itself, but it runs once per execution context, so a
+/// page with six iframes used to hand Jev up to seven capped lists at once
+/// (R3.4). The controls survive the cut — a page whose element list was
+/// truncated is exactly the page where scrolling and waiting still help.
+fn cap_element_actions(actions: &mut Vec<Value>) -> u64 {
+    let before = actions.len();
+    let mut kept = 0usize;
+    actions.retain(|action| {
+        if is_control(action) {
+            return true;
+        }
+        kept += 1;
+        kept <= MAX_ELEMENT_ACTIONS
+    });
+    u64::try_from(before - actions.len()).unwrap_or(u64::MAX)
+}
+
+/// What the child frames contributed to one observation, before it is folded
+/// into the top document's snapshot.
+#[derive(Default)]
+struct FrameContributions {
+    /// Frame actions, already re-namespaced and offset into page coordinates.
+    actions: Vec<Value>,
+    /// `[frame id, frame marker]` pairs, for the freshness comparison.
+    markers: Vec<Value>,
+    /// Visible frame text in frame order.
+    text: Vec<String>,
+    /// Guards under their namespaced node ids.
+    guards: Vec<(String, Value)>,
+    /// Element actions `snapshot.js` dropped, summed over every frame.
+    omitted: u64,
+    /// Frames CDP listed that no snapshot came back from — cross-origin, or
+    /// gone between the listing and the evaluation.
+    unreadable: u64,
+}
+
+/// Fold the child frames into the top document's snapshot.
+///
+/// Split out of `CdpObserver::snapshot` because the page-wide element budget
+/// only exists here — `snapshot.js` caps per execution context — and a budget
+/// that cannot be tested without a browser is a budget that stops holding
+/// (R3.4).
+fn merge_frames(root: &mut Value, frames: FrameContributions) {
+    let mut omitted = root["omitted_actions"].as_u64().unwrap_or(0) + frames.omitted;
+    if let Some(actions) = root["actions"].as_array_mut() {
+        actions.extend(frames.actions);
+        omitted += cap_element_actions(actions);
+    }
+    if let Some(guards) = root["guards"].as_object_mut() {
+        guards.extend(frames.guards);
+    }
+    let mut text = root["text"].as_str().unwrap_or_default().to_owned();
+    for child_text in frames.text {
+        text.push('\n');
+        text.push_str(&child_text);
+    }
+    root["text"] = json!(text.chars().take(6000).collect::<String>());
+    root["marker"] = json!([root["marker"].clone(), frames.markers]);
+    root["omitted_actions"] = json!(omitted);
+    root["signals"]["cross_origin_frames"] = json!(frames.unreadable);
 }
 
 pub struct CdpObserver {
@@ -132,11 +204,7 @@ impl CdpObserver {
     async fn snapshot(&mut self) -> Result<Value, ObserveError> {
         let mut root = self.evaluate(SNAPSHOT_JS).await?;
         let frames = self.page.child_frames().await?;
-        let mut additions = Vec::new();
-        let mut frame_markers = Vec::new();
-        let mut frame_text = Vec::new();
-        let mut frame_guards = Vec::new();
-        let mut omitted = root["omitted_actions"].as_u64().unwrap_or(0);
+        let mut frames_seen = FrameContributions::default();
         let mut observed_frames = 0u64;
 
         for (index, frame) in frames.iter().enumerate() {
@@ -167,16 +235,20 @@ impl CdpObserver {
                 Err(error) => return Err(error.into()),
             };
             observed_frames += 1;
-            omitted += child["omitted_actions"].as_u64().unwrap_or(0);
-            frame_markers.push(json!([&frame.id, child["marker"].clone()]));
+            frames_seen.omitted += child["omitted_actions"].as_u64().unwrap_or(0);
+            frames_seen
+                .markers
+                .push(json!([&frame.id, child["marker"].clone()]));
             if let Some(text) = child["text"].as_str() {
-                frame_text.push(text.to_owned());
+                frames_seen.text.push(text.to_owned());
             }
             let namespace = ((index as u64) + 1) << 32;
             if let Some(guards) = child["guards"].as_object() {
                 for (local, guard) in guards {
                     if let Ok(local) = local.parse::<u64>() {
-                        frame_guards.push(((namespace | local).to_string(), guard.clone()));
+                        frames_seen
+                            .guards
+                            .push(((namespace | local).to_string(), guard.clone()));
                     }
                 }
             }
@@ -220,26 +292,13 @@ impl CdpObserver {
                             action.insert(field.into(), json!(value + offset));
                         }
                     }
-                    additions.push(Value::Object(action.clone()));
+                    frames_seen.actions.push(Value::Object(action.clone()));
                 }
             }
         }
 
-        if let Some(actions) = root["actions"].as_array_mut() {
-            actions.extend(additions);
-        }
-        if let Some(guards) = root["guards"].as_object_mut() {
-            guards.extend(frame_guards);
-        }
-        let mut text = root["text"].as_str().unwrap_or_default().to_owned();
-        for child_text in frame_text {
-            text.push('\n');
-            text.push_str(&child_text);
-        }
-        root["text"] = json!(text.chars().take(6000).collect::<String>());
-        root["marker"] = json!([root["marker"].clone(), frame_markers]);
-        root["omitted_actions"] = json!(omitted);
-        root["signals"]["cross_origin_frames"] = json!(frames.len() as u64 - observed_frames);
+        frames_seen.unreadable = frames.len() as u64 - observed_frames;
+        merge_frames(&mut root, frames_seen);
         Ok(root)
     }
 
@@ -507,3 +566,70 @@ const VERIFY_TEXT_JS: &str = r#"(node,expected) => {
   const normalise=value=>String(value||'').replace(/\s+/g,' ').trim();
   return !!e?.isConnected && normalise(e.innerText).includes(normalise(expected));
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::{FrameContributions, MAX_ELEMENT_ACTIONS, merge_frames};
+
+    fn buttons(prefix: &str, count: usize) -> Vec<Value> {
+        (0..count)
+            .map(|n| json!({ "kind": "click", "node": n, "label": format!("{prefix} {n}") }))
+            .collect()
+    }
+
+    /// `snapshot.js` caps itself per execution context, so six iframes handed
+    /// Jev seven capped lists — about 1,750 actions — and every one of them
+    /// claimed to have omitted nothing. The merge is the only place the
+    /// page-wide budget can exist (R3.4).
+    #[test]
+    fn merging_frames_re_applies_the_element_budget_and_keeps_the_controls() {
+        let mut root = json!({
+            "actions": [],
+            "guards": {},
+            "text": "top document",
+            "marker": ["root"],
+            "omitted_actions": 4,
+        });
+        let mut actions = buttons("top", MAX_ELEMENT_ACTIONS);
+        actions.push(json!({ "id": "wait", "kind": "wait", "label": "Wait for the page" }));
+        actions.push(json!({ "id": "scroll_down", "kind": "scroll", "label": "Scroll down" }));
+        root["actions"] = json!(actions);
+        let frames = FrameContributions {
+            actions: buttons("frame", MAX_ELEMENT_ACTIONS * 2),
+            markers: vec![json!(["frame-1", ["m"]])],
+            text: vec!["inside the frame".into()],
+            guards: vec![("4294967297".into(), json!("guard"))],
+            omitted: 7,
+            unreadable: 2,
+        };
+
+        merge_frames(&mut root, frames);
+
+        let merged = root["actions"].as_array().map_or(&[][..], Vec::as_slice);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|action| action["kind"] == "click")
+                .count(),
+            MAX_ELEMENT_ACTIONS,
+            "the merged list must still fit the budget"
+        );
+        // The top document's actions are the ones that survive, in order.
+        assert_eq!(merged[0]["label"], json!("top 0"));
+        // A truncated page is exactly the page where scrolling and waiting
+        // still help, so the controls are never what gets cut.
+        assert!(merged.iter().any(|action| action["kind"] == "wait"));
+        assert!(merged.iter().any(|action| action["kind"] == "scroll"));
+        // What was dropped is what the model is told about: 4 by the top
+        // document, 7 across the frames, and the 500 this cut just made.
+        assert_eq!(
+            root["omitted_actions"],
+            json!(4 + 7 + MAX_ELEMENT_ACTIONS * 2)
+        );
+        assert_eq!(root["signals"]["cross_origin_frames"], json!(2));
+        assert_eq!(root["text"], json!("top document\ninside the frame"));
+        assert_eq!(root["guards"]["4294967297"], json!("guard"));
+    }
+}

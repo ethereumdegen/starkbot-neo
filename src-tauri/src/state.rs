@@ -138,11 +138,14 @@ impl Runs {
             return None;
         }
         let cancel = CancellationToken::new();
-        live.insert(run, Run {
-            kind,
-            started_at: now_ms(),
-            cancel: cancel.clone(),
-        });
+        live.insert(
+            run,
+            Run {
+                kind,
+                started_at: now_ms(),
+                cancel: cancel.clone(),
+            },
+        );
         Some(cancel)
     }
 
@@ -197,7 +200,12 @@ pub fn provider_by_id(id: &str) -> Result<&'static OauthProvider, UiError> {
     SUBSCRIPTIONS
         .into_iter()
         .find(|provider| provider.id == id)
-        .ok_or_else(|| UiError::new("unknown_provider", format!("`{id}` is not a subscription provider")))
+        .ok_or_else(|| {
+            UiError::new(
+                "unknown_provider",
+                format!("`{id}` is not a subscription provider"),
+            )
+        })
 }
 
 /// Where `neo` keeps its data. `neo-cli`'s `default_data_dir` is private, so

@@ -59,13 +59,17 @@ impl RawNode {
     /// A node with only a role, for tests and for placeholder roots.
     #[cfg(test)]
     pub(crate) fn new(id: u32, role: &str) -> Self {
-        Self { id, role: role.to_owned(), enabled: true, ..Self::default() }
+        Self {
+            id,
+            role: role.to_owned(),
+            enabled: true,
+            ..Self::default()
+        }
     }
 
     /// Whether this node is a secure text field. Its value is never exposed.
     pub(crate) fn is_secure(&self) -> bool {
-        self.role == "AXSecureTextField"
-            || self.subrole.as_deref() == Some("AXSecureTextField")
+        self.role == "AXSecureTextField" || self.subrole.as_deref() == Some("AXSecureTextField")
     }
 
     /// Label precedence: title, description, placeholder, help, then value for

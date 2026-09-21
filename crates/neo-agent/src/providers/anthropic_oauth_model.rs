@@ -250,7 +250,9 @@ async fn authorize<B>(
     let mut bearer = HeaderValue::from_str(&format!("Bearer {}", token.expose()))
         .map_err(|_| instance_error("the access token is not a usable header value"))?;
     bearer.set_sensitive(true);
-    request.headers_mut().insert(http::header::AUTHORIZATION, bearer);
+    request
+        .headers_mut()
+        .insert(http::header::AUTHORIZATION, bearer);
     Ok(())
 }
 
@@ -464,10 +466,16 @@ mod tests {
         );
 
         let Some(AssistantContent::ToolCall(call)) = response.choice.first() else {
-            panic!("the tool_use block did not come back as a call: {:?}", response.choice);
+            panic!(
+                "the tool_use block did not come back as a call: {:?}",
+                response.choice
+            );
         };
         assert_eq!(call.function.name, "open_page");
-        assert_eq!(call.function.arguments, json!({ "url": "https://example.com" }));
+        assert_eq!(
+            call.function.arguments,
+            json!({ "url": "https://example.com" })
+        );
     }
 
     /// Anthropic scopes a subscription token to Claude Code and refuses a turn

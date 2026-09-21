@@ -86,11 +86,11 @@ fn an_event_the_reducer_does_not_model_only_lands_in_the_activity_ring() {
 
     assert_eq!(state.settings, settings);
     assert_eq!(state.keys, keys);
-    let last = state.activity.back().map(|entry| (entry.kind, entry.detail.clone()));
-    assert_eq!(
-        last,
-        Some(("latency", "step 41ms · jev 168ms".to_owned()))
-    );
+    let last = state
+        .activity
+        .back()
+        .map(|entry| (entry.kind, entry.detail.clone()));
+    assert_eq!(last, Some(("latency", "step 41ms · jev 168ms".to_owned())));
 }
 
 #[test]
@@ -124,7 +124,10 @@ fn a_notice_reaches_the_status_line_as_well_as_the_ring() {
         state.status.as_deref(),
         Some("confirming everything until Jev is back")
     );
-    assert_eq!(state.activity.back().map(|entry| entry.kind), Some("notice"));
+    assert_eq!(
+        state.activity.back().map(|entry| entry.kind),
+        Some("notice")
+    );
 }
 
 /// The answer appears as the model writes it, and it appears in the order

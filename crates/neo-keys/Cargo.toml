@@ -11,12 +11,18 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-security-framework.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 zeroize.workspace = true
+
+# The login Keychain is a Security-framework API and exists on macOS only.
+# The file backend below it is pure Rust, so the crate — and therefore
+# `neo-core` and `neo-store` — still builds and tests on the Linux CI lane.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -82,7 +82,8 @@ listening there: an OpenTelemetry Collector, Jaeger, Tempo, Honeycomb,
 Raindrop, or [Starkbot Trace](https://github.com/ethereumdegen/starkbot-trace),
 which is a separate program with no build-time relationship to this
 repository — it receives from Neo the way it would from any instrumented
-program. With no endpoint set, tracing is entirely off and costs nothing.
+program. With no endpoint set there is no exporter and no background task, and
+every `neo-otel` entry point returns after a single atomic load.
 
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \

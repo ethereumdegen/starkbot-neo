@@ -180,9 +180,7 @@ pub async fn run_probe(_runtime: &Runtime, probe: &Probe) -> Result<Value, Probe
             let engaged: Vec<String> = table
                 .elements
                 .iter()
-                .filter(|row| {
-                    row.state.selected || row.state.checked == Some(neo_ax::Checked::On)
-                })
+                .filter(|row| row.state.selected || row.state.checked == Some(neo_ax::Checked::On))
                 .map(|row| row.label.clone())
                 .filter(|label| !label.trim().is_empty())
                 .collect();

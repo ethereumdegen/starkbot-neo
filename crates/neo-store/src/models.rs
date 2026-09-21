@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use neo_core::{ModelCapabilities, ModelInfo, ModelPrice, ModelRef, ModelUseCase, ProviderId};
 use rusqlite::params;
 
+use crate::connection::write_transaction;
 use crate::{ReadPool, Result, StoreError, Writer};
 
 /// The scope of a catalogue that belongs to no particular account.
@@ -80,7 +81,7 @@ impl ModelRepository {
             .map(|model| encode(&provider, &model, at))
             .collect::<Result<Vec<_>>>()?;
         self.writer.execute(move |connection| {
-            let transaction = connection.transaction()?;
+            let transaction = write_transaction(connection)?;
             // Read the sightings before the delete: an id that survives a
             // refresh keeps the time this runtime first offered it.
             let mut first_seen: HashMap<String, i64> = HashMap::new();
@@ -200,7 +201,11 @@ fn encode(provider: &str, model: &ModelInfo, _at: i64) -> Result<EncodedModel> {
         id: model.reference.id.clone(),
         use_case,
         capabilities: serde_json::to_string(&model.capabilities)?,
-        price: model.price.as_ref().map(serde_json::to_string).transpose()?,
+        price: model
+            .price
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
         price_source: None,
         hidden: model.deprecated,
     })

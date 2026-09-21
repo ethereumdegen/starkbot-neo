@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use rusqlite_migration::{M, Migrations};
 
 use crate::{Result, StoreError};
@@ -90,6 +90,24 @@ pub(crate) fn configure_connection(connection: &Connection, query_only: bool) ->
         connection.pragma_update(None, "query_only", "ON")?;
     }
     Ok(())
+}
+
+/// Begin a transaction that takes the write lock at `BEGIN`.
+///
+/// Every transaction in this crate reads and then writes. `DEFERRED` — what
+/// `Connection::transaction()` gives you — takes a read snapshot first and
+/// asks for the write lock afterwards, and SQLite answers that upgrade with
+/// `SQLITE_BUSY_SNAPSHOT` when another connection committed in between. The
+/// `busy_timeout` above does **not** retry `BUSY_SNAPSHOT`, and cannot: the
+/// snapshot is already stale, so waiting changes nothing. One process is
+/// fine, because the writer actor serialises everything through one thread —
+/// but the WAL, the four readers and the whole `presence` module exist for
+/// the case where there is more than one process, and there the desktop app
+/// patching settings while the TUI was open produced a hard "database is
+/// locked". `IMMEDIATE` takes the write lock up front, which `busy_timeout`
+/// *does* cover.
+pub(crate) fn write_transaction(connection: &mut Connection) -> Result<Transaction<'_>> {
+    Ok(connection.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
 fn backup(connection: &Connection, directory: &Path, version: i64) -> Result<PathBuf> {
