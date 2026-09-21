@@ -2,12 +2,40 @@
 targets = [
   { triple = "aarch64-apple-darwin" },
   { triple = "x86_64-apple-darwin" },
+  # Linux is a shipping platform (11.2), and its half of the graph —
+  # `secret-service`, `zbus`, the webkit2gtk bindings, ALSA — is not reached
+  # from either darwin triple. Auditing only those two left it unchecked.
+  { triple = "x86_64-unknown-linux-gnu" },
 ]
 all-features = true
 
 [advisories]
 version = 2
 yanked = "deny"
+# The `unic-*` crates were archived by their author in 2025. Nothing here
+# depends on them directly: the only path is
+# `tauri-utils -> urlpattern -> unic-ucd-ident`, so they leave when Tauri
+# stops using `urlpattern`, and there is no version of Tauri today that does.
+# They are parsing crates with no known vulnerability — the advisory is
+# "unmaintained", not "exploitable". Listed one id at a time, deliberately:
+# a blanket `unmaintained = "allow"` would also hide the next one that lands
+# on a crate we chose ourselves.
+#
+# Re-check when bumping Tauri: `cargo deny check advisories`.
+ignore = [
+  "RUSTSEC-2025-0075", # unic-char-range
+  "RUSTSEC-2025-0080", # unic-common
+  "RUSTSEC-2025-0081", # unic-char-property
+  "RUSTSEC-2025-0098", # unic-ucd-version
+  "RUSTSEC-2025-0100", # unic-ucd-ident
+  # `proc-macro-error`, reached only from the Linux graph and only at build
+  # time: `gtk-rs`'s `glib-macros` uses it, and every GTK binding Tauri's
+  # Linux runtime needs goes through `glib`. A proc macro runs in the
+  # compiler, never in the shipped binary, and the advisory is
+  # "unmaintained" rather than a vulnerability. It leaves when gtk-rs 0.18
+  # does; re-check when bumping Tauri.
+  "RUSTSEC-2024-0370", # proc-macro-error, via glib-macros
+]
 
 [licenses]
 version = 2
@@ -27,6 +55,11 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A path dependency carries no version, which `wildcards` counts as `*`. Every
+# one of the 63 it flagged is one of this workspace's own crates depending on
+# another; the check is meant for a wildcard on something from a registry, and
+# that still fails.
+allow-wildcard-paths = true
 highlight = "all"
 deny = [
   { name = "reqwest", deny-multiple-versions = true },

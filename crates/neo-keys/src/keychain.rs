@@ -11,13 +11,24 @@
 //! blob impossible. `SecItemAdd` takes arbitrary bytes and needs neither argv
 //! nor a terminal.
 //!
-//! Underneath sits a clear-text JSON file backend. It is pure Rust, so it is
-//! the *only* backend off macOS — which is what lets `neo-core` and
-//! `neo-store`, and therefore most of this workspace's testable logic, run on
-//! a Linux CI runner. It is also what the tests in this module exercise: a
-//! test binary is unsigned and its code-signing identity changes on every
-//! build, so touching the real login Keychain prompts for authorization once
-//! per item. The one test that does touch it is `#[ignore]`d.
+//! On Linux the same three operations go to whatever owns
+//! `org.freedesktop.secrets` on the session bus — gnome-keyring, KWallet,
+//! KeePassXC — through the Secret Service API; see the submodule for why each
+//! call gets a thread and how a dismissed unlock prompt stays distinct from a
+//! missing item.
+//!
+//! Underneath both sits a clear-text JSON file backend. It is pure Rust, so
+//! it is the only backend on a machine with neither — which is what lets
+//! `neo-core` and `neo-store`, and therefore most of this workspace's
+//! testable logic, run on a CI runner with no keyring at all. It is also what
+//! the tests in this module exercise: a test binary is unsigned and its
+//! code-signing identity changes on every build, so touching the real login
+//! Keychain prompts for authorization once per item, and touching the user's
+//! own keyring is not a thing a test suite may do. The two tests that do
+//! touch a real keyring are `#[ignore]`d.
+
+#[cfg(target_os = "linux")]
+mod secret_service;
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -126,11 +137,15 @@ impl KeychainError {
 pub struct Keychain {
     service: String,
     backend: Backend,
+    /// Set only when the file backend is a fallback rather than a choice, so
+    /// [`Keychain::fallback_warning`] can say so once instead of every caller
+    /// re-deriving it.
+    fell_back: bool,
 }
 
 /// Where a secret actually goes.
 ///
-/// The login Keychain is the only backend a shipped Starkbot uses. The file
+/// The OS keyring is the only backend a shipped Starkbot uses. The file
 /// backend exists for **development and tests**, because a Keychain read from
 /// an unsigned binary raises a modal authorization prompt, and a test binary's
 /// identity changes on every `cargo build` — so a test suite that touched the
@@ -141,12 +156,17 @@ enum Backend {
     /// Security framework is.
     #[cfg(target_os = "macos")]
     Login,
+    /// The session's Secret Service provider. Linux only, because that is
+    /// where `org.freedesktop.secrets` is the login keyring.
+    #[cfg(target_os = "linux")]
+    SecretService,
     /// A JSON file, owner-read/write only. Selected by `NEO_KEYCHAIN_FILE`,
-    /// the default in a debug build, and the only backend off macOS.
+    /// the default in a debug build, and the only backend on a machine whose
+    /// session offers no keyring.
     File(PathBuf),
 }
 
-/// Point `neo-keys` at a file instead of the login Keychain.
+/// Point `neo-keys` at a file instead of the OS keyring.
 ///
 /// Set this in a dev shell (or a `.env`) to stop the authorization prompts
 /// while iterating; every test in the workspace sets it to a temporary path.
@@ -156,52 +176,108 @@ pub const KEYCHAIN_FILE_ENV: &str = "NEO_KEYCHAIN_FILE";
 
 /// Select the file backend and let the caller choose the path.
 ///
-/// Set to `file`, this makes [`wanted_file_backend`] report that the login
-/// Keychain must not be used, without naming a location — so each `Runtime`
+/// Set to `file`, this makes [`wanted_file_backend`] report that the OS
+/// keyring must not be used, without naming a location — so each `Runtime`
 /// keeps its keys beside its own store instead of every process on the
 /// machine sharing one file. That sharing was a real bug: parallel tests
 /// performed concurrent read-modify-write on one path and corrupted it.
 pub const KEYCHAIN_BACKEND_ENV: &str = "NEO_KEYCHAIN_BACKEND";
 
-/// Does this process want the file backend, and where?
+/// What this process should store secrets in.
+enum Wanted {
+    /// A file at a named path.
+    FileAt(PathBuf),
+    /// A file, path up to the caller.
+    File,
+    /// A file, path up to the caller, because this session has no keyring at
+    /// all — which is nobody's choice and which the user has to be told
+    /// about, since it means their credentials are in clear text.
+    FileWithoutAKeyring,
+    /// The OS keyring: the login Keychain on macOS, the session's Secret
+    /// Service on Linux.
+    Keyring,
+}
+
+/// The one place the storage policy lives.
 ///
-/// `Some(Some(path))` — a path was named. `Some(None)` — the file backend is
-/// wanted but the caller picks the path. `None` — the login Keychain.
-/// **A debug build defaults to the file backend; a release build on macOS
-/// defaults to the login Keychain; off macOS there is no login Keychain, so
-/// the answer is always the file backend.** That is the whole point of the
-/// debug default: a debug binary is unsigned (or ad-hoc signed, which is the
-/// same thing here), its code-signing identity changes on every `cargo
-/// build`, and so every login-Keychain read raises a modal authorization
-/// prompt that no amount of "Always Allow" will suppress. Developing against
-/// it meant typing the login password dozens of times per run, and a modal
-/// dialog made an agent turn look like a hang.
+/// **A debug build defaults to the file backend; a release build defaults to
+/// the OS keyring, and falls back to the file when the machine has none.**
+/// The debug default is the whole point: on macOS a debug binary is unsigned
+/// (or ad-hoc signed, which is the same thing here), its code-signing
+/// identity changes on every `cargo build`, and so every login-Keychain read
+/// raises a modal authorization prompt that no amount of "Always Allow" will
+/// suppress — developing against it meant typing the login password dozens of
+/// times per run, and a modal dialog made an agent turn look like a hang. On
+/// Linux the prompts are not the problem; the user's own keyring is. A
+/// `cargo test --workspace` constructs dozens of `Runtime`s, and every one of
+/// them writing into the collection that holds the user's real passwords is
+/// not a thing a test suite may do. Same default, two reasons.
 ///
-/// On macOS either default can be overridden: `NEO_KEYCHAIN_BACKEND=login`
-/// puts a debug build back on the real Keychain (to check the shipped path,
-/// after `scripts/sign-dev.sh`), and `NEO_KEYCHAIN_FILE=<path>` selects a file
+/// Either default can be overridden: `NEO_KEYCHAIN_BACKEND=login` puts a
+/// debug build back on the real keyring (on macOS, after
+/// `scripts/sign-dev.sh`), and `NEO_KEYCHAIN_FILE=<path>` selects a file
 /// anywhere, in any build.
-#[must_use]
-pub fn wanted_file_backend() -> Option<Option<PathBuf>> {
+fn wanted_backend() -> Wanted {
     if let Some(path) = std::env::var_os(KEYCHAIN_FILE_ENV)
         && !path.is_empty()
     {
-        return Some(Some(PathBuf::from(path)));
-    }
-    // Off macOS `NEO_KEYCHAIN_BACKEND=login` names a backend that does not
-    // exist, and a release build's "use the login Keychain" default cannot be
-    // honoured. Reporting `None` there would leave the caller no usable
-    // answer at all.
-    if !cfg!(target_os = "macos") {
-        return Some(None);
+        return Wanted::FileAt(PathBuf::from(path));
     }
     match std::env::var(KEYCHAIN_BACKEND_ENV).as_deref() {
-        Ok("file") => Some(None),
-        Ok("login") => None,
-        // Unset: the build profile decides.
-        _ => cfg!(debug_assertions).then_some(None),
+        Ok("file") => return Wanted::File,
+        Ok("login") => {}
+        // Unset, or a value this crate does not define: the build profile
+        // decides. Answering here also keeps `cargo test` off the session
+        // bus, which [`os_keyring_available`] would otherwise ask.
+        _ if cfg!(debug_assertions) => return Wanted::File,
+        _ => {}
+    }
+    if os_keyring_available() {
+        Wanted::Keyring
+    } else {
+        Wanted::FileWithoutAKeyring
     }
 }
+
+/// Does this process want the file backend, and where?
+///
+/// `Some(Some(path))` — a path was named. `Some(None)` — the file backend is
+/// wanted but the caller picks the path. `None` — the OS keyring. See
+/// [`wanted_backend`] for the policy; a caller that only has to open a
+/// keychain wants [`Keychain::new`] instead.
+#[must_use]
+pub fn wanted_file_backend() -> Option<Option<PathBuf>> {
+    match wanted_backend() {
+        Wanted::FileAt(path) => Some(Some(path)),
+        Wanted::File | Wanted::FileWithoutAKeyring => Some(None),
+        Wanted::Keyring => None,
+    }
+}
+
+/// Can this machine keep a secret out of a clear-text file?
+///
+/// macOS always can. On Linux it depends on the session: the answer is
+/// whether anything owns — or can be started to own — `org.freedesktop.secrets`
+/// on the session bus. `neo doctor` reports it, and it needs no `cfg` to do
+/// so.
+#[must_use]
+pub fn os_keyring_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        secret_service::available()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+/// What [`Keychain::fallback_warning`] says.
+pub const NO_KEYRING_WARNING: &str = "this session offers no OS keyring (on Linux: nothing owns `org.freedesktop.secrets` on the session bus), so Starkbot's credentials are stored in a clear-text file instead";
 
 impl Default for Keychain {
     fn default() -> Self {
@@ -211,56 +287,90 @@ impl Default for Keychain {
 
 impl Keychain {
     pub fn new(service: impl Into<String>) -> Self {
+        let (backend, fell_back) = match wanted_backend() {
+            Wanted::FileAt(path) => (Backend::File(path), false),
+            // Wanted, but nobody said where: fall back to a path beside
+            // the user's data, which `Runtime::open` normally supplies.
+            Wanted::File => (Backend::File(default_file_path()), false),
+            Wanted::FileWithoutAKeyring => (Backend::File(default_file_path()), true),
+            Wanted::Keyring => (Self::keyring_backend(), false),
+        };
         Self {
             service: service.into(),
-            backend: match wanted_file_backend() {
-                Some(Some(path)) => Backend::File(path),
-                // Wanted, but nobody said where: fall back to a path beside
-                // the user's data, which `Runtime::open` normally supplies.
-                Some(None) => Backend::File(default_file_path()),
-                #[cfg(target_os = "macos")]
-                None => Backend::Login,
-                // Unreachable: `wanted_file_backend` never asks for a login
-                // Keychain off macOS. Spelled out rather than panicked.
-                #[cfg(not(target_os = "macos"))]
-                None => Backend::File(default_file_path()),
-            },
+            backend,
+            fell_back,
         }
     }
 
-    /// A keychain backed by `path` rather than the login Keychain, whatever
-    /// the environment says. For tests that must not depend on a variable.
+    /// A keychain backed by `path` rather than the OS keyring, whatever the
+    /// environment says. For tests that must not depend on a variable.
     pub fn file(service: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         Self {
             service: service.into(),
             backend: Backend::File(path.into()),
+            // Asked for by name, so there is nothing to warn about.
+            fell_back: false,
         }
     }
 
-    /// The login Keychain, whatever [`KEYCHAIN_FILE_ENV`] says.
+    /// The OS keyring, whatever [`KEYCHAIN_FILE_ENV`] says.
     ///
     /// Only for moving secrets *out* of it: a dev shell that has selected the
     /// file backend still needs one way to read what the real app stored.
-    #[cfg(target_os = "macos")]
+    /// Absent where there is no keyring to name, so a caller cannot ask for
+    /// one that cannot exist.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn login(service: impl Into<String>) -> Self {
         Self {
             service: service.into(),
-            backend: Backend::Login,
+            backend: Self::keyring_backend(),
+            fell_back: false,
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn keyring_backend() -> Backend {
+        #[cfg(target_os = "macos")]
+        {
+            Backend::Login
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Backend::SecretService
+        }
+    }
+
+    /// Unreachable: [`wanted_backend`] never asks for a keyring on a machine
+    /// [`os_keyring_available`] says has none. Spelled out rather than
+    /// panicked.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn keyring_backend() -> Backend {
+        Backend::File(default_file_path())
     }
 
     pub fn service(&self) -> &str {
         &self.service
     }
 
-    /// Whether this keychain is the real login Keychain.
+    /// Whether this keychain is the real OS keyring.
     #[must_use]
     pub fn is_login_keychain(&self) -> bool {
         match &self.backend {
             #[cfg(target_os = "macos")]
             Backend::Login => true,
+            #[cfg(target_os = "linux")]
+            Backend::SecretService => true,
             Backend::File(_) => false,
         }
+    }
+
+    /// Present only when the credentials are in a clear-text file because
+    /// this session has no keyring — not when a file was chosen. `neo doctor`
+    /// and the Settings screen surface it; storage behaves the same either
+    /// way, which is exactly why nothing else would notice.
+    #[must_use]
+    pub fn fallback_warning(&self) -> Option<&'static str> {
+        self.fell_back.then_some(NO_KEYRING_WARNING)
     }
 
     pub fn get(&self, account: &str) -> Result<Option<Secret>, KeychainError> {
@@ -271,6 +381,11 @@ impl Keychain {
                 Ok(bytes) => bytes,
                 Err(error) if error.code() == NOT_FOUND => return Ok(None),
                 Err(error) => return Err(KeychainError::from_sec("read", account, &error)),
+            },
+            #[cfg(target_os = "linux")]
+            Backend::SecretService => match secret_service::get(&self.service, account)? {
+                Some(bytes) => bytes,
+                None => return Ok(None),
             },
             Backend::File(path) => match read_file(path, &self.service)?.remove(account) {
                 Some(value) => value.into_bytes(),
@@ -309,13 +424,17 @@ impl Keychain {
     pub fn set(&self, account: &str, secret: &Secret) -> Result<(), KeychainError> {
         let account = check_account(account)?;
         // The audited boundary: the value leaves `Secret` only to reach the
-        // Keychain, and only as bytes handed to `SecItemAdd`.
+        // keyring, and only as the bytes it stores.
         #[allow(clippy::disallowed_methods)]
         let exposed = secret.expose();
         match &self.backend {
             #[cfg(target_os = "macos")]
             Backend::Login => set_generic_password(&self.service, account, exposed.as_bytes())
                 .map_err(|error| KeychainError::from_sec("write", account, &error)),
+            #[cfg(target_os = "linux")]
+            Backend::SecretService => {
+                secret_service::set(&self.service, account, exposed.as_bytes())
+            }
             Backend::File(path) => {
                 // The lock spans the read *and* the write: two processes
                 // storing two different accounts both used to read the old
@@ -339,6 +458,8 @@ impl Keychain {
                 Err(error) if error.code() == NOT_FOUND => Ok(()),
                 Err(error) => Err(KeychainError::from_sec("delete", account, &error)),
             },
+            #[cfg(target_os = "linux")]
+            Backend::SecretService => secret_service::delete(&self.service, account),
             Backend::File(path) => {
                 let _lock = FileLock::exclusive(path, &self.service)?;
                 let mut items = read_file(path, &self.service)?;
@@ -364,16 +485,37 @@ impl Keychain {
 
 /// Where the file backend goes when only `NEO_KEYCHAIN_BACKEND=file` is set
 /// and no `Runtime` chose a path.
+///
+/// The same rule `neo_core::paths` applies, spelled out again here because
+/// `neo-core` depends on `neo-keys` and cannot be depended on back: macOS
+/// keeps it under `~/Library/Application Support`, Linux under
+/// `$XDG_DATA_HOME` (`~/.local/share` when that is unset).
 fn default_file_path() -> PathBuf {
     // An absent or relative `HOME` used to yield `PathBuf::default()`, which
     // made this a *relative* path: a clear-text `keys.json` landed in whatever
     // directory the binary was launched from, and two processes started
     // elsewhere kept two different key stores without either noticing.
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    home.join("Library/Application Support/com.starkbot.neo/keys.json")
+    let home = || {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
+    };
+    #[cfg(target_os = "macos")]
+    {
+        home().join("Library/Application Support/com.starkbot.neo/keys.json")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // `XDG_DATA_HOME` is only honoured when it is absolute; the spec says
+        // a relative value must be ignored, and honouring one would put the
+        // clear-text store wherever the process was launched from.
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .unwrap_or_else(|| home().join(".local/share"))
+            .join("starkbot-neo/keys.json")
+    }
 }
 
 /// The file backend's contents for one service. Missing file means empty.

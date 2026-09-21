@@ -32,5 +32,11 @@ tokio.workspace = true
 tokio-util.workspace = true
 ts-rs.workspace = true
 
+# The private-API window compositing this shell asks for in
+# `tauri.macos.conf.json`. macOS-only by name and by effect; the Linux shell
+# (11.2 L4) opens plain webkit2gtk windows.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { workspace = true, features = ["macos-private-api"] }
+
 [dev-dependencies]
 tauri = { workspace = true, features = ["test"] }

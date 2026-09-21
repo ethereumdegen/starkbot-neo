@@ -14,7 +14,7 @@ pub use accounts::{
 };
 pub use keychain::{
     DEFAULT_SERVICE, KEYCHAIN_BACKEND_ENV, KEYCHAIN_FILE_ENV, Keychain, KeychainError,
-    wanted_file_backend,
+    NO_KEYRING_WARNING, os_keyring_available, wanted_file_backend,
 };
 
 /// State of one Starkbot-owned credential.

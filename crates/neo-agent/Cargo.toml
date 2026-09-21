@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Agent runtimes and provider process bridges for Starkbot Neo."
+# An application crate, never a crates.io library.
+publish = false
 
 [lints]
 workspace = true
@@ -45,6 +47,12 @@ url.workspace = true
 # randomness for PKCE and `getrandom` already arrives with `uuid`.
 uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
+
+# Doctor's Linux rows are two questions to the session bus — does anything
+# own `org.a11y.Bus`, and is `org.a11y.Status.IsEnabled` true — and D-Bus is
+# the only place either answer exists.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

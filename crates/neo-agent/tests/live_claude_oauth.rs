@@ -26,9 +26,7 @@ use neo_agent::agent::{ChatMessage, ChatRequest};
 /// The installed data directory — the same one `neo` itself opens. A live
 /// test cannot use a temporary one: the credential it needs is in this one.
 fn installed_data_dir() -> PathBuf {
-    #[allow(clippy::disallowed_methods)]
-    let home = std::env::var("HOME").expect("a home directory");
-    PathBuf::from(home).join("Library/Application Support/com.starkbot.neo")
+    neo_core::paths::data_dir().expect("a home directory")
 }
 
 fn runtime() -> Arc<Runtime> {

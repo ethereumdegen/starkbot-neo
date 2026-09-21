@@ -1,19 +1,42 @@
 # Starkbot Neo
 
-Starkbot Neo is a local-first macOS agent in active development. The target product combines fast browser and macOS accessibility control, SEO workflows, voice, and an agentic Hypercanvas for static and animated creative work.
+Starkbot Neo is a local-first desktop agent in active development, running on macOS and Linux. The target product combines fast browser and native accessibility control, SEO workflows, voice, and an agentic Hypercanvas for static and animated creative work.
 
 Work is currently in Milestone 1. The Rust workspace, SQLite store, CLI, terminal front end, desktop Connections shell, subscription bridges, the web and accessibility navigators and the agent loop over them are runnable; the queue, media pipeline and Hypercanvas are planned but not yet released.
 
 ## Requirements
 
-- macOS on Apple Silicon or Intel
+- macOS on Apple Silicon or Intel, or Linux (x86-64; developed on Arch/Hyprland)
 - Rust stable (the repository toolchain file pins the required version)
 - A Claude Pro/Max or eligible ChatGPT account for subscription-backed inference, and a TypeSafe key for the navigator
 
+### What Linux does not have yet
+
+The portable half — the store, the CLI, the TUI, the agent loop, the web
+navigator over CDP — is the whole product on either platform. Three things
+differ, and `neo doctor` reports each of them as a row rather than leaving
+you to find out mid-task:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Dictation | on-device, no key, no network | none: `gpt-transcribe` with an OpenAI key is the only path in |
+| `neo app` (native apps) | the Accessibility API | not yet — AT-SPI is the Linux path and `neo-ax` refuses by name until it lands |
+| Desktop shell | Tauri with the macOS private API and a floating panel | plain webkit2gtk windows; no panel |
+
+Credentials go to the login Keychain on macOS and to whatever owns
+`org.freedesktop.secrets` on Linux (gnome-keyring, KWallet, KeePassXC),
+falling back to a `0600` file when the session has no keyring. Data lives
+under `~/Library/Application Support/com.starkbot.neo` on macOS and the XDG
+base directories (`~/.local/share/starkbot-neo` and friends) on Linux.
+
+Building the desktop shell on Linux needs webkit2gtk 4.1, GTK 3, libsoup 3
+and ALSA headers; `neo` itself needs none of them.
+
 ## Run
 
-Check the machine first: `neo doctor` names every connection, permission and
-missing key, and exits non-zero when something has to be fixed.
+Check the machine first: `neo doctor` names every connection, missing key and
+platform capability — the macOS permissions, the Linux accessibility bus —
+and exits non-zero when something has to be fixed.
 
 ```sh
 cargo run -- doctor

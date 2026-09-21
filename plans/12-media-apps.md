@@ -1,19 +1,23 @@
-# 12 — Media through apps: Diffusion Studio and Powermove edit, Degen Media Studio generates
+# 12 — Media through apps: Diffusion Studio, Powermove and degen-paint edit, Degen Media Studio generates
 
 Dated 2026-09-19. Decided by the user: Starkbot authors and edits media by
 **operating media apps**, not by calling generation APIs itself. It uses Jev
 and accessibility, the same way it drives any website or native app. There
-are three apps:
+are four apps:
 
 | App | Role |
 |---|---|
 | **Diffusion Studio** | editor: infinite canvas + timeline video editor (MPL-2.0; macOS app + web) |
 | **Powermove** | editor: AI-native motion and video editor for macOS whose own agent can add or fork panels, effects and workflows (GPL-3.0; Electron + Svelte) |
+| **degen-paint** | editor: stills, vector art and glTF assets — GIMP + Inkscape + a glTF authoring tool, built to be operated (MIT; Tauri app + web, **macOS and Linux**) ([A37](00-decisions.md)) |
 | **Degen Media Studio** (DMS, formerly Degen Media Maker) | **generator only**: fal.ai stills, edits and motion, QuiverAI vectors, as takes with lineage, ready to import into the editors ([13](13-degen-media-studio.md)) |
 
-Starkbot therefore needs **only an OpenAI key and a Jev (TypeSafe) key**. It
-holds no fal or QuiverAI key. DMS owns those. The editors own whatever
-credits or agent logins they use.
+Starkbot therefore needs **only an inference connection and a Jev (TypeSafe)
+key**. It holds no fal or QuiverAI key. DMS and degen-paint own those. The
+editors own whatever credits or agent logins they use.
+
+Diffusion Studio and Powermove ship no Linux build, so on Linux the roster is
+**degen-paint plus DMS** ([17-linux](17-linux.md)).
 
 This supersedes the parts of [07-media](07-media.md) that embed the DMM
 library, and it **retires** [11-hypercanvas](11-hypercanvas.md): canvas and
@@ -36,12 +40,13 @@ decision-record changes are K1′, A12′, A13′, A19, A21 and S8 in
 
 ## 2. The apps, as Starkbot sees them
 
-| | Diffusion Studio | Powermove | Degen Media Studio |
-|---|---|---|---|
-| Starkbot observes via | macOS app: `AxObserver` (**first**, user decision); web app later: CDP snapshot | macOS app (Electron): `AxObserver` with `AXManualAccessibility` on; alternatively `powermove serve` → its web UI in managed Chrome via CDP | local web UI at `127.0.0.1:7788` in managed Chrome, via CDP |
-| Typical work | import takes and footage, arrange on the timeline, text, keyframes, transitions, export | the same, plus motion work, and asking **Powermove's own agent** for a new panel, effect or workflow | shoot-outs, edits, motion, vectors, starring, "send to editor" |
-| Credentials | optional Diffusion Studio credits (its AI features) | its agent needs the Codex CLI or Claude Code, installed and logged in by the user | `FAL_KEY`, `QUIVERAI_API_KEY` in DMS's Keychain |
-| Read-only side channel (grounding only) | `dapi` | project state through its typed tool layer, if exposed (verify in S8b) | `dms` CLI / JSON op API |
+| | Diffusion Studio | Powermove | degen-paint | Degen Media Studio |
+|---|---|---|---|---|
+| Starkbot observes via | macOS app: `AxObserver` (**first**, user decision); web app later: CDP snapshot | macOS app (Electron): `AxObserver` with `AXManualAccessibility` on; alternatively `powermove serve` → its web UI in managed Chrome via CDP | Tauri app on macOS (WKWebView) or Linux (WebKitGTK, which publishes the DOM tree to AT-SPI): `AxObserver`; **or** `dpaint serve` at `127.0.0.1:4317` in managed Chrome via CDP — the same UI bytes either way | local web UI at `127.0.0.1:7788` in managed Chrome, via CDP |
+| Typical work | import takes and footage, arrange on the timeline, text, keyframes, transitions, export | the same, plus motion work, and asking **Powermove's own agent** for a new panel, effect or workflow | open a project, import a take, layers and text, vector paths and booleans, extrude to glTF, run ops from the command palette, read lint and fix what it names, export PNG/SVG/GLB, send to editor | shoot-outs, edits, motion, vectors, starring, "send to editor" |
+| Credentials | optional Diffusion Studio credits (its AI features) | its agent needs the Codex CLI or Claude Code, installed and logged in by the user | `FAL_KEY`, `QUIVERAI_API_KEY` in degen-paint's own keychain, typed on its Settings › Providers screen | `FAL_KEY`, `QUIVERAI_API_KEY` in DMS's Keychain |
+| Read-only side channel (grounding only) | `dapi` | project state through its typed tool layer, if exposed (verify in S8b) | `GET 127.0.0.1:4317/api/v1/{status,overview,doc/:id/digest,doc/:id/lint,history,select,jobs/:id}` | `dms` CLI / JSON op API |
+| Platforms | macOS | macOS | **macOS + Linux** | macOS + Linux (web UI) |
 
 **Policy:** the UI is the primary path. Side channels may be declared by the
 pack only as **read-only grounding**, to verify that a step did what Jev
@@ -72,7 +77,7 @@ removed, only more slowly and with more `BLOCKED` results.
 
 ```
 media-apps/
-  pack.toml                 id, version, the three apps, no requires_env
+  pack.toml                 id, version, the four apps, no requires_env
   vocabulary.md             glossary appended to Jev's rules: composition, layer, clip,
                             keyframe, trim, split, transition, mask, caption, panel,
                             effect, take, star, shoot-out, send-to-editor, export preset …
@@ -82,12 +87,20 @@ media-apps/
     powermove.toml          bundle id, AXManualAccessibility (Electron), waits after
                             hot-load and render, the agent panel's submit = confirm_all
     dms.toml                origin 127.0.0.1:7788; waits after generate (aria-busy)
+    degen-paint.toml        bundle id / Wayland app_id dev.degenpaint.studio; ax_strategy
+                            "none"; settle 300 ms, 1500 ms after export; origin
+                            127.0.0.1:4317 for the web path — generated by `dpaint skill`
   routines/                 Jev-verified fixed step lists (run without Sol):
     ds-import.toml          import → OS open panel → pick → verify in the media bin
     ds-export-mp4.toml      export → preset → confirm → wait → verify file
     pm-import.toml, pm-export-mp4.toml
     dms-shootout.toml       prompt → models → aspect → generate (confirm) → wait → sheet
     dms-send-to-editor.toml star → "send to editor" → note the exported path
+    dp-open-project.toml    Welcome → New/Open → verify the project name in the toolbar
+    dp-import-file.toml     File › Import… → path → destination → verify the new row
+    dp-export-png.toml      File › Export… → format + scale → confirm overwrite → verify
+    dp-send-to-editor.toml  File › Send to Editor… → verify the written paths
+    dp-fix-lint.toml        read the lint panel → select the offender → apply the named fix
   goals/                    Sol decomposition templates: a brief becomes navigate(goal)s
   policy.toml               tighten-only: generate / render-with-credits / export-overwrite /
                             publish / Powermove agent submit ⇒ confirm_all
@@ -162,8 +175,26 @@ accessibility.
   Diffusion Studio; every generate click passed a confirm card quoting
   DMS's estimate; Starkbot made zero fal or Quiver calls itself.
 
-**Acceptance for M6′:** S8a and S8b each pass 4 of 5 runs with no stale or
-occluded clicks and no unconfirmed paid or code-changing actions.
+**S8d: degen-paint, "a still, start to finish"** (A37; the only one of the four
+that runs on Linux, and the one that runs first there)
+- Fixtures: a DMS-style still plus its `<take>.json` sidecar in
+  `~/Movies/Degen Media Studio/acme/`; Inter installed.
+- Brief: *"In degen-paint, start a project 'acme-promo' 1080×1350, bring in the microphone
+  take, put the title 'Loud on purpose' in Inter Bold across the top, make sure lint is
+  clean, export a PNG and send it to the editor."*
+- **Pass:** the PNG exists at 1080×1350; the grounding API reports zero lint
+  findings and a text layer named `title`; the sidecar in
+  `~/Movies/degen-paint/acme-promo/` names the project and the revision; Sol
+  vision confirms the title on the export; the only confirm cards were the
+  overwrite and the send; Starkbot made zero fal or Quiver calls itself.
+- Two forms, same brief: **S8d-web** against `dpaint serve` in managed
+  Chromium (needs [17-linux](17-linux.md) L1), **S8d-native** against the
+  Tauri build over `AxObserver` (WKWebView on macOS, AT-SPI on Linux; needs
+  L3 on Linux).
+
+**Acceptance for M6′:** S8a, S8b and S8d each pass 4 of 5 runs with no stale or
+occluded clicks and no unconfirmed paid or code-changing actions. On Linux,
+S8d alone carries M6′ — Diffusion Studio and Powermove have no build there.
 
 ## 6. What changes in Starkbot
 

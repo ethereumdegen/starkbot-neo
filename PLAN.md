@@ -29,7 +29,7 @@ record. It wins over every other document, including this one.
 | [16-remediation](plans/16-remediation.md) | **what is wrong with the code that exists**, and in what order to fix it: R0 restore CI, R1 safety + truth, R2 user state, R3 navigator contract, R4 resource lifecycle, R5 delete, R6 telemetry |
 | [10-navigator](plans/10-navigator.md) | `jev-nav` — Rust port of `browser-use/jev-ultrafast`: the step loop, TypeSafe wire format, `CdpObserver`, managed Chrome, safety heads, `AxObserver` |
 | [03-agent](plans/03-agent.md) | `neo-judge` + `neo-agent` — intake + routing, queue, router, Sol orchestrator on metalcraft, `Gated<T>`, rules, confirms, trace, caps |
-| [12-media-apps](plans/12-media-apps.md) | **media through apps**: the editors Powermove + Diffusion Studio and the generator Degen Media Studio, driven by Jev + accessibility; the `media-apps` Jev-enablement pack; commanding Powermove's agent; S8 smoke tests |
+| [12-media-apps](plans/12-media-apps.md) | **media through apps**: the editors Powermove, Diffusion Studio and degen-paint and the generator Degen Media Studio, driven by Jev + accessibility; the `media-apps` Jev-enablement pack; commanding Powermove's agent; S8 smoke tests |
 | [13-degen-media-studio](plans/13-degen-media-studio.md) | **Degen Media Studio** (renamed Degen Media Maker) rewritten in Bend 2, **generation only**: fal + Quiver takes, ledger + lineage, shoot-outs, quotes, send-to-editor, an accessibility-first UI, laws |
 | [11-hypercanvas](plans/11-hypercanvas.md) | *(retired 2026-09-19; editing lives in Powermove + Diffusion Studio)* HTML/CSS frames (Web · Graphic · Set · Video · Board), ops + undo, agent passes, pins, knobs, Jev micro-edits, exports |
 | [07-media](plans/07-media.md) | *(largely superseded by 12)* takes + lineage, quality pipeline — reference for the quality pipeline |
@@ -40,6 +40,7 @@ record. It wins over every other document, including this one.
 | [14-tui](plans/14-tui.md) | the **ratatui terminal** front end (`neo tui`, P12): panes, keybindings, the shared event/command seam, TUI acceptance per milestone |
 | [15-heartbeat](plans/15-heartbeat.md) | the **heartbeat** (P13, A26, A27): `heartbeat.md`, cadence settings, tick semantics, user-declared CLIs |
 | [01-accessibility](plans/01-accessibility.md) | `neo-ax` — native-app accessibility actor |
+| [17-linux](plans/17-linux.md) | **Linux** (P16, A36): the AT-SPI `neo-ax` backend, Hyprland window management, Secret Service, XDG paths, `chrome_path()` and the `Ctrl` select-all fix; milestones L0–L4 |
 | [05-platform](plans/05-platform.md) | workspace, dependencies, SQLite schema, keys, registry, permissions, signing, testing, CI |
 | [08-providers](plans/08-providers.md) | the four K6 inference connections (OpenAI key, ChatGPT/Codex, Anthropic key, Claude subscription); provider + runtime traits; what StarkRouter must offer later |
 | [research/](plans/research/) | archived research that is *not* part of the design |

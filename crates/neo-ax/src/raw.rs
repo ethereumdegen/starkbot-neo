@@ -133,6 +133,10 @@ impl MenuLeaf {
 ///
 /// The modifier mask is Carbon's: bit 0 is shift, bit 1 is option, bit 2 is
 /// control, and bit 3 *suppresses* the otherwise implicit command key.
+// Carbon's mask and the ⌘ glyphs are a macOS shape; an AT-SPI backend reads
+// accelerators as ready-made strings and never calls this. The unit test
+// below still exercises it everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn render_shortcut(cmd_char: Option<&str>, modifiers: u32) -> Option<String> {
     let key = cmd_char?.trim();
     if key.is_empty() {

@@ -1391,10 +1391,7 @@ mod tests {
     /// The same data directory the CLI uses, so the test sees the real
     /// credentials and the real selected runtime.
     fn dirs_data_dir() -> std::path::PathBuf {
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default()
-            .join("Library/Application Support/com.starkbot.neo")
+        neo_core::paths::data_dir().unwrap_or_default()
     }
 
     /// The frame loop runs inside `block_in_place`, and every unit of work the

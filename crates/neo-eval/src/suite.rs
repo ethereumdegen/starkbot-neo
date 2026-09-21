@@ -560,12 +560,17 @@ mod tests {
         let listed = list_cases();
         assert_eq!(listed.len(), cases::all().len());
 
-        let textedit = listed
-            .iter()
-            .find(|case| case.id == "type-into-textedit")
-            .expect("TextEdit ships on every Mac");
-        assert!(textedit.runnable());
-        assert_eq!(textedit.app, App::TextEdit);
+        // macOS-only: what "installed" means on Linux is a desktop entry,
+        // and that arrives with L3.
+        #[cfg(target_os = "macos")]
+        {
+            let textedit = listed
+                .iter()
+                .find(|case| case.id == "type-into-textedit")
+                .expect("TextEdit ships on every Mac");
+            assert!(textedit.runnable());
+            assert_eq!(textedit.app, App::TextEdit);
+        }
 
         for case in &listed {
             assert_eq!(case.runnable(), case.app.installed().is_some());

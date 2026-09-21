@@ -931,11 +931,7 @@ async fn sync_account(
 }
 
 fn default_data_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("com.starkbot.neo"))
+    neo_core::paths::data_dir().ok_or_else(|| anyhow!("HOME is not set"))
 }
 
 fn resolve_codex_executable(cli_value: Option<PathBuf>) -> Result<PathBuf> {
@@ -961,7 +957,7 @@ fn resolve_codex_executable(cli_value: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 async fn open_browser(url: &str) -> Result<()> {
-    let status = Command::new("/usr/bin/open")
+    let status = Command::new(neo_agent::runtime::URL_OPENER)
         .arg(url)
         .status()
         .await

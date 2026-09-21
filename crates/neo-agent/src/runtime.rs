@@ -940,6 +940,13 @@ impl Runtime {
         &ACCOUNTS
     }
 
+    /// Which credential store this runtime opened. Doctor reports it; no
+    /// caller outside this crate needs to know, and the secrets themselves
+    /// stay behind [`Runtime::secret`].
+    pub(crate) fn keychain(&self) -> &Keychain {
+        &self.keychain
+    }
+
     pub fn key_status(&self) -> Result<Vec<KeyStatus>, RuntimeError> {
         ACCOUNTS
             .iter()
@@ -1774,22 +1781,32 @@ fn account_of(
     }
 }
 
+/// The desktop's "open this URL" program: `open` on macOS, `xdg-open`
+/// everywhere else. macOS names the absolute path because there is exactly
+/// one; Linux distributions disagree about the prefix, so that one is
+/// resolved on `PATH`.
+#[cfg(target_os = "macos")]
+pub const URL_OPENER: &str = "/usr/bin/open";
+/// As [`URL_OPENER`].
+#[cfg(not(target_os = "macos"))]
+pub const URL_OPENER: &str = "xdg-open";
+
 /// Hand a URL to the user's browser. One fixed system binary, one argument —
 /// not a shell, and not a command a model chose (P3).
 fn open_url(url: &str) -> Result<(), RuntimeError> {
-    let status = std::process::Command::new("/usr/bin/open")
+    let status = std::process::Command::new(URL_OPENER)
         .arg(url)
         .status()
         .map_err(RuntimeError::Io)?;
-    // `open` spawns fine and then exits non-zero when nothing handles the
-    // scheme. Checking only the spawn meant a sign-in whose browser never
-    // appeared sat on the callback listener for the full login timeout and
-    // then reported a timeout, with nothing saying the page was never shown.
-    // The URL is not quoted: it carries this login's `state` and PKCE
-    // challenge, and no `RuntimeError` may hold login material.
+    // The opener spawns fine and then exits non-zero when nothing handles
+    // the scheme. Checking only the spawn meant a sign-in whose browser
+    // never appeared sat on the callback listener for the full login
+    // timeout and then reported a timeout, with nothing saying the page was
+    // never shown. The URL is not quoted: it carries this login's `state`
+    // and PKCE challenge, and no `RuntimeError` may hold login material.
     if !status.success() {
         return Err(RuntimeError::Io(std::io::Error::other(format!(
-            "/usr/bin/open could not open the sign-in page ({status})"
+            "{URL_OPENER} could not open the sign-in page ({status})"
         ))));
     }
     Ok(())

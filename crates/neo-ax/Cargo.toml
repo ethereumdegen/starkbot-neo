@@ -4,7 +4,9 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "macOS Accessibility actor: reads and drives native apps for the Jev navigator."
+description = "Native accessibility actor: reads and drives native apps for the Jev navigator. macOS today; the AT-SPI backend is the Linux path."
+# An application crate, never a crates.io library.
+publish = false
 
 [lints]
 workspace = true
@@ -58,6 +60,25 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
     "CGEventSource",
     "CGEventTypes",
     "CGRemoteOperation",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi.workspace = true
+futures-util.workspace = true
+zbus.workspace = true
+serde_json.workspace = true
+rustix.workspace = true
+wayland-client.workspace = true
+wayland-protocols-misc.workspace = true
+wayland-protocols-wlr.workspace = true
+# The actor thread owns a current-thread runtime, so it needs the reactor
+# `zbus`'s tokio transport and the walk's deadlines run on.
+tokio = { version = "1", default-features = false, features = [
+    "sync",
+    "rt",
+    "time",
+    "net",
+    "io-util",
 ] }
 
 [dev-dependencies]

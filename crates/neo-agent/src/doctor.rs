@@ -5,7 +5,7 @@
 //! reports what it saw, never a guess: a thing that cannot be determined is
 //! `Unknown`, not `Ok`.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use neo_core::{InferenceConnection, KeyState, ProviderAccountStatus, Settings};
 use neo_keys::{ACCOUNT_ANTHROPIC, ACCOUNT_OPENAI, ACCOUNT_TYPESAFE};
@@ -77,10 +77,6 @@ impl DoctorReport {
     }
 }
 
-/// Where the managed Chrome profile's browser comes from (10). Checked as a
-/// file so a missing Chrome is reported rather than discovered mid-task.
-const CHROME: &str = neo_cdp::DEFAULT_CHROME;
-
 impl Runtime {
     /// Every local readiness check, in the order the Doctor tab shows them.
     pub fn doctor(&self) -> Result<DoctorReport, RuntimeError> {
@@ -96,6 +92,7 @@ impl Runtime {
         );
 
         let mut checks = vec![self.store_check()];
+        checks.push(credential_storage_check(self.keychain()));
         checks.push(inference_check(&settings, connection));
         checks.push(navigator_check(&keys));
         checks.push(speech_check(&keys));
@@ -104,7 +101,9 @@ impl Runtime {
         for row in &account {
             checks.push(subscription_check(row));
         }
-        checks.push(chrome_check(Path::new(CHROME)));
+        checks.push(chrome_check(neo_cdp::chrome_path()));
+        #[cfg(target_os = "linux")]
+        checks.extend(linux::checks());
         Ok(DoctorReport { checks })
     }
 
@@ -240,6 +239,14 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         }
         MicrophoneAuth::Authorized => {}
     }
+    // Before the macOS switches, because neither exists where there is no
+    // on-device recogniser at all: a Linux user told "Siri & Dictation is
+    // off" would go looking for a setting that is not there, when what they
+    // actually need is the OpenAI key.
+    let speech = neo_voice::speech_status();
+    if speech == SpeechAuth::Unsupported {
+        return no_on_device_dictation();
+    }
     if !neo_voice::dictation_enabled() {
         // Starkbot never flips this itself: it is the user's System Settings.
         return Check::new(
@@ -249,7 +256,7 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         )
         .with_fix(neo_voice::DICTATION_SETTINGS_URL);
     }
-    match neo_voice::speech_status() {
+    match speech {
         SpeechAuth::Authorized => {
             Check::new("dictation", Health::Ok, "on-device · no key, no network")
         }
@@ -260,7 +267,19 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
             Health::Unknown,
             "speech recognition not authorised yet — the first dictation asks",
         ),
+        SpeechAuth::Unsupported => no_on_device_dictation(),
     }
+}
+
+/// Where there is no on-device recogniser, `gpt-transcribe` is the whole of
+/// dictation — a warning and never a failure, because typing still works.
+fn no_on_device_dictation() -> Check {
+    Check::new(
+        "dictation",
+        Health::Warn,
+        "no on-device speech recogniser on this platform — dictation needs openai gpt-transcribe",
+    )
+    .with_fix("`neo keys set openai`")
 }
 
 /// Speech is OpenAI-API-key only (K6), so a subscription-only user is
@@ -269,7 +288,9 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
 ///
 /// Voice **in** is a separate row: on-device dictation needs no key (K6 as
 /// amended), so a user without an OpenAI key can talk to Starkbot — it just
-/// cannot talk back.
+/// cannot talk back. Where there is no on-device recogniser that is no
+/// longer true, and this row says so rather than promising dictation the
+/// machine cannot do.
 fn speech_check(keys: &[neo_core::KeyStatus]) -> Check {
     match state_of(keys, ACCOUNT_OPENAI) {
         KeyState::Present | KeyState::Limited | KeyState::Unchecked => {
@@ -284,9 +305,21 @@ fn speech_check(keys: &[neo_core::KeyStatus]) -> Check {
         KeyState::Missing => Check::new(
             "speech out",
             Health::Warn,
-            "no openai key — no spoken replies (dictation still works on-device)",
+            format!(
+                "no openai key — no spoken replies ({})",
+                voice_in_without_a_key()
+            ),
         )
         .with_fix("`neo keys set openai`"),
+    }
+}
+
+/// What a missing OpenAI key costs *besides* spoken replies.
+fn voice_in_without_a_key() -> &'static str {
+    if neo_voice::speech_status() == neo_voice::SpeechAuth::Unsupported {
+        "and no dictation either"
+    } else {
+        "dictation still works on-device"
     }
 }
 
@@ -312,16 +345,208 @@ fn subscription_check(account: &neo_core::ProviderAccount) -> Check {
     }
 }
 
-fn chrome_check(chrome: &Path) -> Check {
-    if chrome.is_file() {
-        Check::new("chrome", Health::Ok, chrome.display().to_string())
-    } else {
-        Check::new(
-            "chrome",
-            Health::Fail,
-            format!("{} is not there", chrome.display()),
+/// Where the managed Chrome profile's browser comes from (10). Resolved
+/// rather than assumed, so a missing browser is reported here instead of
+/// discovered mid-task.
+fn chrome_check(chrome: Option<PathBuf>) -> Check {
+    match chrome {
+        Some(path) => Check::new("chrome", Health::Ok, path.display().to_string()),
+        None => Check::new("chrome", Health::Fail, "no Chrome-family browser found")
+            .with_fix("install Google Chrome — the managed profile needs it (10)"),
+    }
+}
+
+/// Where the credentials actually are, and whether this session could have
+/// done better.
+///
+/// The backend alone does not answer the question: a debug build picks the
+/// file deliberately (signing prompts on macOS; a test suite must not write
+/// into the user's own keyring on Linux), and that is not a problem. The
+/// warning exists exactly when the keyring was wanted and the session has
+/// none, so the row keys off it rather than off the backend.
+fn credential_storage_check(keychain: &neo_keys::Keychain) -> Check {
+    let detail = format!(
+        "{} · keyring service {}",
+        if keychain.is_login_keychain() {
+            "os keyring"
+        } else {
+            "clear-text file"
+        },
+        if neo_keys::os_keyring_available() {
+            "present"
+        } else {
+            "absent"
+        },
+    );
+    match keychain.fallback_warning() {
+        Some(warning) => Check::new(
+            "credential storage",
+            Health::Warn,
+            format!("{detail} — {warning}"),
         )
-        .with_fix("install Google Chrome — the managed profile needs it (10)")
+        .with_fix(
+            "start a keyring service — gnome-keyring, KWallet or KeePassXC — and sign in again",
+        ),
+        None => Check::new("credential storage", Health::Ok, detail),
+    }
+}
+
+/// The Linux facts that stand where macOS has TCC (starkbot.md §11).
+///
+/// Nothing here is a permission: Linux grants none and asks for none. What
+/// can be missing is *capability* — an accessibility bus that no one
+/// started, a toolkit switch that leaves Chromium and Electron publishing no
+/// tree at all, a session with no compositor — and each of those is a fact
+/// this can read.
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{Check, Health};
+
+    /// How long the session bus gets to answer both questions. Doctor is a
+    /// startup screen: a wedged bus costs a row, never the report.
+    const BUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// The accessibility bus service, and the object publishing its status.
+    const A11Y_BUS: &str = "org.a11y.Bus";
+    const A11Y_PATH: &str = "/org/a11y/bus";
+    const A11Y_STATUS: &str = "org.a11y.Status";
+
+    pub(super) fn checks() -> Vec<Check> {
+        let (bus, enabled) = match session_bus() {
+            Ok(facts) => facts,
+            Err(error) => {
+                let detail = format!("the session bus did not answer: {error}");
+                return vec![
+                    Check::new("a11y bus", Health::Unknown, detail.clone()),
+                    Check::new("a11y enabled", Health::Unknown, detail),
+                    compositor(),
+                ];
+            }
+        };
+        vec![bus, enabled, compositor()]
+    }
+
+    /// Both a11y rows, from one connection.
+    ///
+    /// The queries run on their own thread with their own current-thread
+    /// runtime because `doctor` is synchronous and every caller reaches it
+    /// from inside a Tokio runtime, where blocking on a future panics.
+    fn session_bus() -> Result<(Check, Check), String> {
+        std::thread::spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            runtime.block_on(async {
+                tokio::time::timeout(BUS_TIMEOUT, a11y())
+                    .await
+                    .map_err(|_| format!("no answer within {BUS_TIMEOUT:?}"))?
+            })
+        })
+        .join()
+        .map_err(|_| "the probe thread panicked".to_owned())?
+    }
+
+    async fn a11y() -> Result<(Check, Check), String> {
+        let connection = zbus::Connection::session()
+            .await
+            .map_err(|error| error.to_string())?;
+        // `NameHasOwner` rather than a call on the service itself: the name
+        // is D-Bus activatable, so calling it would start `at-spi-bus-
+        // launcher` and then report the daemon Doctor had just launched.
+        let dbus = zbus::fdo::DBusProxy::new(&connection)
+            .await
+            .map_err(|error| error.to_string())?;
+        let owned = dbus
+            .name_has_owner(A11Y_BUS.try_into().map_err(|_| "bad bus name".to_owned())?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !owned {
+            return Ok((
+                Check::new(
+                    "a11y bus",
+                    Health::Fail,
+                    format!("nothing owns {A11Y_BUS} on the session bus"),
+                )
+                .with_fix("install at-spi2-core and log in again"),
+                Check::new(
+                    "a11y enabled",
+                    Health::Unknown,
+                    "unreadable while the a11y bus is down",
+                ),
+            ));
+        }
+        let bus = Check::new(
+            "a11y bus",
+            Health::Ok,
+            format!("{A11Y_BUS} answers on the session bus"),
+        );
+        let status = zbus::Proxy::new(&connection, A11Y_BUS, A11Y_PATH, A11Y_STATUS)
+            .await
+            .map_err(|error| error.to_string())?;
+        let enabled = match status.get_property::<bool>("IsEnabled").await {
+            Ok(true) => Check::new("a11y enabled", Health::Ok, "org.a11y.Status.IsEnabled = true"),
+            // Chromium and Electron read this switch and publish nothing
+            // while it is false, so a native run against them observes an
+            // empty tree and blames the app.
+            Ok(false) => Check::new(
+                "a11y enabled",
+                Health::Warn,
+                "org.a11y.Status.IsEnabled = false — Chromium and Electron apps publish no tree",
+            )
+            .with_fix("start the app with --force-renderer-accessibility, or turn accessibility on in the desktop settings"),
+            Err(error) => Check::new("a11y enabled", Health::Unknown, error.to_string()),
+        };
+        Ok((bus, enabled))
+    }
+
+    /// The display server this session runs on.
+    ///
+    /// Reading the tree needs neither, but the input fallback does, and it
+    /// is Wayland-only: X11 is reported rather than refused because AT-SPI
+    /// works there and the actions come first anyway.
+    fn compositor() -> Check {
+        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").map(PathBuf::from);
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".to_owned());
+        match (runtime_dir, wayland) {
+            (Some(dir), Some(display)) => {
+                let socket = if display.is_absolute() {
+                    display
+                } else {
+                    dir.join(display)
+                };
+                if socket.exists() {
+                    Check::new(
+                        "compositor",
+                        Health::Ok,
+                        format!("wayland · {desktop} · {}", socket.display()),
+                    )
+                } else {
+                    Check::new(
+                        "compositor",
+                        Health::Fail,
+                        format!(
+                            "WAYLAND_DISPLAY names {}, which is not there",
+                            socket.display()
+                        ),
+                    )
+                }
+            }
+            _ if std::env::var_os("DISPLAY").is_some() => Check::new(
+                "compositor",
+                Health::Warn,
+                format!("x11 · {desktop} · synthetic input on Wayland is unavailable here"),
+            ),
+            _ => Check::new(
+                "compositor",
+                Health::Fail,
+                "no WAYLAND_DISPLAY and no DISPLAY — there is no session to drive",
+            ),
+        }
     }
 }
 
@@ -408,7 +633,7 @@ mod tests {
 
     #[test]
     fn a_missing_chrome_is_a_failure_with_a_fix() {
-        let check = chrome_check(Path::new("/nope/Google Chrome"));
+        let check = chrome_check(None);
         assert_eq!(check.health, Health::Fail);
         assert!(check.fix.is_some());
     }

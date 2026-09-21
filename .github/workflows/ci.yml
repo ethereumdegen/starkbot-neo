@@ -11,7 +11,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The full workspace, on the only platform that can build all of it.
+  # The full workspace, with the Apple frameworks actually compiled in.
   macos:
     runs-on: macos-14
     steps:
@@ -25,38 +25,36 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
-      - name: Dependency policy
-        uses: EmbarkStudios/cargo-deny-action@v2
 
-  # The portable half, on a runner that is ~10x cheaper and ~5x faster.
+  # The same workspace, on a runner that is ~10x cheaper and ~5x faster.
   #
-  # Everything here is reachable without the macOS frameworks: the navigator
-  # step loop and its safety gate (`jev-nav` minus its `ax` feature), the CDP
-  # client, the store, the settings and event protocol, and the OTLP exporter.
-  # That is where most of the logic — and most of the tests — actually live, so
-  # a broken gate is caught in a minute rather than behind a macOS queue.
-  #
-  # `neo-keys` builds here because the login-Keychain backend is
-  # `cfg(target_os = "macos")` and the file backend is pure Rust; `neo-core`
-  # and `neo-store` follow from that.
+  # Linux is a shipping platform (11.2 L0), not a subset any more: `neo-ax`
+  # falls back to its `unsupported` backend until the AT-SPI one lands,
+  # `neo-voice` has no on-device recogniser and says so, and the desktop
+  # shell builds on webkit2gtk without the macOS private API. So this lane
+  # runs the whole gate and catches a broken one in a minute rather than
+  # behind a macOS queue.
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # webkit2gtk, GTK and libsoup for the Tauri shell; `libxdo` for the
+      # tray dependency it pulls in; ALSA headers for `cpal`'s capture
+      # device. None of them are needed by `neo` itself.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libasound2-dev pkg-config
       - name: Install Rust
         run: rustup show
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: >
-          cargo clippy --all-targets
-          -p jev-nav --no-default-features
-          -p neo-cdp -p neo-otel -p neo-keys -p neo-core -p neo-store
-          -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: >
-          cargo test
-          -p jev-nav --no-default-features
-          -p neo-cdp -p neo-otel -p neo-keys -p neo-core -p neo-store
+        run: cargo test --workspace
 
   # The webview half. `cargo test --workspace` runs the ts-rs
   # bindings-are-committed test, so *type* drift across the bridge is already
@@ -87,6 +85,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Licences, advisories, duplicate versions and source registries. This
+      # lived on the macOS job, where it could never have run: the action is a
+      # Docker container action, and GitHub only supports those on Linux — it
+      # failed with "Container action is only supported on Linux" every time.
+      # `deny.toml` pins the graph to the two darwin triples and the Linux
+      # one regardless of the host it is evaluated on, so nothing is lost by
+      # moving it here.
+      - name: Dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
 
       # Rule 4 — no Python, no shell agent surface (P3).
       - name: No Python

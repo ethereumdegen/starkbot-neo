@@ -43,6 +43,31 @@ http = "1"
 bytes = "1"
 zeroize = "1"
 security-framework = "3"
+# The login Keychain's Linux twin: whatever owns `org.freedesktop.secrets`
+# on the session bus. `rt-tokio-crypto-rust` points its I/O at the reactor
+# the rest of the workspace already runs on and keeps the session's
+# Diffie-Hellman handshake on RustCrypto, for the reason `reqwest` here is
+# on rustls: no C toolchain, one less system library to match.
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+# One zbus for the workspace. `neo-keys` asks the session bus whether a
+# keyring provider exists, `neo-agent`'s doctor asks it for the two
+# accessibility facts of 11, and L3's AT-SPI backend needs the same major —
+# three independent `zbus = "5"` specs is how a duplicate-version finding
+# starts. The runtime feature is `secret-service`'s to choose; only the API
+# features each caller needs are named here.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+# AT-SPI2 over the same zbus, in pure Rust: no `libatspi`, no GObject. The
+# `tokio` feature points its `zbus::Connection` at the runtime `neo-ax`'s
+# actor thread owns; `async-io` still arrives through `atspi-proxies`'
+# non-optional zbus dependency, and zbus prefers tokio when both are on.
+atspi = { version = "0.30", default-features = false, features = ["proxies", "connection", "wrappers", "tokio"] }
+# The Wayland input fallback of 17 §3.3: `zwp_virtual_keyboard_v1` for keys
+# and `zwlr_virtual_pointer_v1` for the pointer, spoken in-process. The
+# alternative was spawning `xdotool` (X11-only) or `ydotool` (a root daemon
+# on `/dev/uinput`), which P3 refuses.
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # `flock` for the screen lease, through a safe API: the workspace denies
 # `unsafe_code`, which rules out calling libc directly for it.
 rustix = { version = "1", features = ["fs"] }
@@ -78,7 +103,10 @@ neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
 spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
-tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
+# `macos-private-api` is not here: it is a macOS-only feature and the Linux
+# shell (11.2 L4) links the same crate without it. `src-tauri` adds it back
+# under its own macOS target table.
+tauri = { version = "2.11.0", default-features = false, features = ["wry"] }
 tauri-build = "2.5.6"
 command-fds = "0.3.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }

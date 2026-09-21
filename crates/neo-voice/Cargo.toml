@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Microphone capture and speech-to-text: on-device macOS dictation, or OpenAI gpt-transcribe."
+# An application crate, never a crates.io library.
+publish = false
 
 [lints]
 workspace = true

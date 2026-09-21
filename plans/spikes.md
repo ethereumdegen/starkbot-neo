@@ -211,3 +211,105 @@ spikes/scripts/hypercanvas-fidelity.sh --compare
 `--compare` writes normalized WebKit captures to `spikes/out/golden/webkit/`, red/yellow diff overlays with cyan region boxes to `spikes/out/golden/diff/`, WebKit box metrics to `spikes/out/golden/webkit-metrics.json`, and the machine-readable perceptual report to `spikes/out/golden/report.json`. Red pixels exceed the anti-aliasing neighborhood tolerance; yellow pixels differ directly but match within a one-pixel neighborhood. A fixture fails when meaningful pixels exceed 0.8% or block SSIM falls below 0.970.
 
 Diagnosis order: inspect reported region boxes; check the matching `data-n` boxes in `webkit-metrics.json`; then classify the divergence as layout, bundled-font metrics, WebKit paint, or Chrome export behavior. Fix shared HTML/CSS for layout drift. Keep a WebKit-only preview normalization only when Chrome export remains correct and the rule is explicit. Never refresh Chrome goldens to bless a WebKit-only regression.
+
+## AT-SPI2 walk cost on Linux (L3, `plans/17-linux.md` §3.1)
+
+Dated 2026-09-21. Arch/Omarchy, Hyprland 0.56.2 on Wayland, `at-spi2-core
+2.60.6`, GTK 3.24.52 + GTK 4.22.4, `webkit2gtk-4.1 2.52.6`, Chromium 152,
+LibreOffice 26.8. Ryzen 7 9700X. Measured with a throwaway `atspi` 0.30 /
+`zbus` 5 probe, each walk repeated and the median taken.
+
+**One D-Bus round trip on the accessibility bus costs ~29 µs.** That single
+number is why §3.1's worry — "a 250-element tree walked naively is thousands
+of round trips" — is true about the *count* and wrong about the *cost*.
+
+### Full-frame walks
+
+`naive` = one property per call, one node at a time, depth-first.
+`pooled` = the five reads every node needs (`GetRole`, `Name`, `GetState`,
+`GetInterfaces`, `GetChildren`) issued together, 32 nodes in flight.
+`shipped` = `pooled` with the menu bar split into a separate pass and the
+per-survivor reads (extents, description, action names, text, value) done
+only for the nodes the role policy might keep.
+
+| App (frame) | Nodes | naive | pooled | shipped | calls: naive → pooled → shipped |
+|---|---:|---:|---:|---:|---|
+| LibreOffice Calc, `probe.csv` open | 2,029 | 373.4 ms | 65.8 ms | **13.9 ms** (277 walked, 250 kept) | 12,174 → 10,145 → 1,951 |
+| Nautilus 50.3 (GTK 4) | 93 | 17.0 ms | 5.8 ms | **8.3 ms** | 558 → 465 → 646 |
+| Chromium 152, `--force-renderer-accessibility` | 234 | 38.5 ms | 12.9 ms | **13.4 ms** | 1,404 → 1,170 → 1,201 |
+| Aether 4.29 (WebKitGTK 2.52) | 150 | 35.5 ms | 8.2 ms | — | 900 → 750 → — |
+| degen-paint Studio (Tauri/WebKitGTK) | 61 | 13.4 ms | 2.3 ms | — | 366 → 305 → — |
+
+End to end through the public API (`AxHandle::table`, including app
+resolution, the compositor round trips, the menu-bar pass and
+`table::build_table`): **LibreOffice Calc 151 ms, degen-paint Studio 9 ms**,
+both inside the 400 ms per-observation deadline and Calc just outside the
+150 ms p50 target of `01-accessibility.md`.
+
+Comparison with the macOS numbers in `plans/01-accessibility.md`: macOS
+batches attributes and measured **3,774 IPC calls → 422, ~1.2 s → ~30 ms** on
+a large web tree, with a gate of p50 < 150 ms per snapshot and < 100 ms per
+table. AT-SPI cannot batch attributes at all — there is no
+`CopyMultipleAttributeValues` — so the call count stays an order of magnitude
+higher (1,951 for a Calc table against macOS's hundreds) and the budget is
+met by **concurrency plus collection-time pruning**, which is the branch
+§3.1 allowed. The menu bar is 1,447 of Calc's 2,029 nodes and is the single
+largest saving.
+
+### Three ways of asking that do not work
+
+* **`Properties.GetAll("org.a11y.atspi.Accessible")` aborts LibreOffice.**
+  It reads `Locale`, LibreOffice's ATK bridge lets the UNO
+  `IllegalAccessibleComponentStateException` that `XAccessibleContext::getLocale()`
+  raises escape, `std::terminate` runs and the process dies with SIGABRT.
+  Reproduced four times; isolated by walking a frame reading *only* `Locale`,
+  which killed Calc after 241 nodes. Two core dumps in `coredumpctl`. The
+  backend therefore reads named properties only and never `Locale` — which
+  also costs one extra round trip per node, since `Name` and `Description`
+  can no longer be folded together.
+* **`Action.GetActions` never returns on WebKitGTK.** A `busctl` call to it
+  on a WebKit button hung past an 8 s timeout, while `NActions` answers `1`
+  and `GetName(0)` answers `"press"` instantly. Chromium answers `GetActions`
+  with two actions whose *names are empty strings*, and `GetName(0)` with
+  `"click"`. The backend uses `NActions` + `GetName(i)`.
+* **`Text.GetText(0, n)` past the end returns `""`.** `GetText(0, 64)` on a
+  Calc cell holding `Region` returns the empty string; `GetText(0, -1)`
+  returns `Region`. A bounded range silently reads a full cell as blank.
+
+### What the toolkits publish
+
+| Question | Chromium 152 | WebKitGTK 2.52 | GTK 4 | LibreOffice/VCL |
+|---|---|---|---|---|
+| `org.a11y.atspi.Cache.GetItems` | 263 items, 1.7 ms, 1 call | **5 items** (useless) | 98 of 93 nodes, 0.7 ms | **2,029 items, 102 ms, 1 call** |
+| `role="option"` | `ListItem` | `ListItem` | — | — |
+| `<progress>` / `role="progressbar"` | `ProgressBar` | `ProgressBar` (both) | — | — |
+| `<dialog>.showModal()` / `role="dialog" aria-modal` | `Dialog` **+ `State::Modal`** | `Dialog`, **no `Modal`** | — | `Dialog`, no `Modal` |
+| `EditableText` on a text input | yes | **no interface at all** | yes | yes |
+| Intermediate container states | populated | **`states=[]` on the GTK wrappers** | populated | `DocumentSpreadsheet` has no `Showing` |
+
+The `Cache` interface is not a usable shortcut: it is complete on VCL and
+atk-bridge apps and near-empty on WebKitGTK, so a walk built on it would see
+five nodes in a Tauri window. It is not used.
+
+Pruning on `State::Showing` is also wrong: LibreOffice's
+`DocumentSpreadsheet` and every WebKitGTK GTK wrapper lack it while being on
+screen, and a `Showing`-gated walk returned **4 nodes** for a 150-node
+Aether window and **1 node** for Calc.
+
+### Spreadsheets
+
+A Calc sheet is a `Table` with `State::ManagesDescendants` and **zero
+children**; `NRows` is 1,048,576 and `NColumns` is 16,384. Cells are reachable
+only through `Table.GetAccessibleAt(row, column)`, are named `A1`, `B1`, … and
+carry their content on the `Text` interface — the same shape macOS reports
+(01 §Field notes, "every cell as a `textfield` labelled `A1`"). The backend
+expands a bounded window of them.
+
+**But only the current cell has geometry.** Every cell obtained through
+`GetAccessibleAt` answers `Component.GetExtents` with a zero rectangle except
+the one the grid selection is on, so `table::build_table`'s
+`is_visible_size()` drops the other 95 of a 96-cell expansion. Measured on a
+fullscreen 2560×1080 Calc window with a four-row document: 96 cells walked,
+**1 row in the table** (`A1`, value `Region`, `TYPE_TEXT`). macOS gets 92.
+This is a LibreOffice defect, not a policy question, and it is not worked
+around by faking rectangles.
