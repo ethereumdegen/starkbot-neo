@@ -188,6 +188,14 @@ pub struct SafetySettings {
     pub on_task_floor: f32,
     pub confirm_timeout_s: u32,
     pub confirm_labels: Vec<String>,
+    /// Hosts a navigator run may never act on (10 §7).
+    ///
+    /// Matched on the host of a link's own `href`, suffix-wise, so
+    /// `ads.example` covers `pixel.ads.example`. Empty by default: the list
+    /// is the user's, and a shipped blocklist would be a policy nobody asked
+    /// for. What is *not* optional is the rule itself, which refuses rather
+    /// than confirms — no approval makes a denied host allowed.
+    pub denied_origins: Vec<String>,
 }
 
 impl Default for SafetySettings {
@@ -233,6 +241,7 @@ impl Default for SafetySettings {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+            denied_origins: Vec::new(),
         }
     }
 }

@@ -15,8 +15,9 @@ use neo_agent::agent::{
 use neo_agent::oauth::OauthProvider;
 use neo_agent::{Runtime, RuntimeError};
 use neo_core::{
-    AppEvent, ConversationId, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI,
-    PROVIDER_OPENAI_CODEX, ProviderAccount, RunId,
+    AppEvent, AskId, ConfirmId, ConversationId, GateOutcome, HeartbeatGate, PROVIDER_ANTHROPIC,
+    PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, Project, ProviderAccount,
+    ResolutionVia, RunId,
 };
 use neo_eval::Selection;
 use serde_json::{Value, json};
@@ -27,7 +28,7 @@ use crate::state::{Desktop, Runs, provider_by_id};
 use crate::view::{
     AxRequestView, AxResponseView, BootstrapView, CaseListingView, CheckView, ConnectionRow,
     ConversationView, Fix, InferenceView, KeyRow, LoginFailed, LoginStart, MessageView, ModelRow,
-    RunKind, SUBSCRIPTIONS, Session, SettingsView,
+    ProjectDetailView, RunKind, SUBSCRIPTIONS, Session, SettingsView,
 };
 
 /// How much of a thread the window paints, and how many threads the switcher
@@ -60,6 +61,32 @@ where
         .await
         .map_err(UiError::from)?
         .map_err(UiError::from)
+}
+
+async fn project_blocking<T, F>(task: F) -> Result<T, UiError>
+where
+    F: FnOnce() -> Result<T, neo_agent::ProjectError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(UiError::from)?
+        .map_err(UiError::from)
+}
+
+fn project_detail(
+    runtime: &Runtime,
+    slug: &str,
+) -> Result<ProjectDetailView, neo_agent::ProjectError> {
+    let project = runtime.project(slug)?;
+    let documents = runtime.project_documents(slug)?;
+    let ticks = runtime.project_ticks(slug, 20)?;
+    Ok(ProjectDetailView {
+        project,
+        soul: documents.soul,
+        heartbeat: documents.heartbeat,
+        ticks,
+    })
 }
 
 /// Both subscription rows as the *store* last recorded them: no Keychain
@@ -169,6 +196,62 @@ pub async fn get_bootstrap(state: State<'_, Desktop>) -> Result<BootstrapView, U
         runs,
     };
     Ok(BootstrapView::new(&runtime, &boot, &accounts, session))
+}
+
+#[tauri::command]
+pub async fn list_projects(state: State<'_, Desktop>) -> Result<Vec<Project>, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || runtime.projects()).await
+}
+
+#[tauri::command]
+pub async fn show_project(
+    state: State<'_, Desktop>,
+    slug: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || project_detail(&runtime, &slug)).await
+}
+
+#[tauri::command]
+pub async fn save_project_document(
+    state: State<'_, Desktop>,
+    slug: String,
+    document: String,
+    content: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        runtime.write_project_document(&slug, &document, &content)?;
+        project_detail(&runtime, &slug)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn configure_project_heartbeat(
+    state: State<'_, Desktop>,
+    slug: String,
+    enabled: bool,
+    every_seconds: u64,
+    on_gate: HeartbeatGate,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        runtime.configure_project_heartbeat(&slug, enabled, every_seconds, on_gate)?;
+        project_detail(&runtime, &slug)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_project_heartbeat(
+    state: State<'_, Desktop>,
+    slug: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    runtime.run_project_heartbeat(&slug).await?;
+    project_detail(&runtime, &slug).map_err(UiError::from)
 }
 
 /// The two subscription rows, verified: this is the call that reads the
@@ -583,6 +666,55 @@ pub async fn stop_run(state: State<'_, Desktop>, run: RunId) -> Result<bool, UiE
     Ok(state.runs().stop(run))
 }
 
+/// The window's answer to a confirm card.
+///
+/// Nothing is published here: the run that raised the card publishes
+/// `ConfirmResolved` with the outcome it actually used, and a command that
+/// announced its own would have the thread showing an approval the run never
+/// acted on.
+#[tauri::command]
+pub async fn resolve_confirm(
+    state: State<'_, Desktop>,
+    id: ConfirmId,
+    outcome: GateOutcome,
+    via: ResolutionVia,
+) -> Result<(), UiError> {
+    // No `blocking` hop: answering a card is a oneshot send to the waiting
+    // run, not a store round trip, and a card is what a person is sitting
+    // in front of waiting on.
+    state
+        .runtime()
+        .resolve_confirm(id, outcome, via)
+        .map_err(card_error)
+}
+
+/// The window's answer to a question.
+#[tauri::command]
+pub async fn answer_ask(
+    state: State<'_, Desktop>,
+    id: AskId,
+    answer: String,
+    via: ResolutionVia,
+) -> Result<(), UiError> {
+    state
+        .runtime()
+        .answer_ask(id, answer, via)
+        .map_err(card_error)
+}
+
+/// A card nobody is waiting on any more gets its own code.
+///
+/// Both front ends can be showing the same card and a voice answer can beat
+/// them both, so losing the race is the ordinary case, not a fault: the
+/// window says something else answered first rather than painting a failure
+/// over an action that did happen.
+fn card_error(error: RuntimeError) -> UiError {
+    if matches!(error, RuntimeError::NoSuchCard(_)) {
+        return UiError::new("no_such_card", error.to_string());
+    }
+    UiError::from(error)
+}
+
 /// Drive a web page to a goal, as `neo nav` does. Returns the run id at once;
 /// progress is `NavStep`, and the end is `TurnFinished`/`TurnFailed`.
 ///
@@ -594,7 +726,7 @@ pub async fn run_nav(
     state: State<'_, Desktop>,
     url: String,
     goal: String,
-    headed: bool,
+    headless: bool,
     profile: Option<PathBuf>,
     attach: Option<Vec<PathBuf>>,
     safety: bool,
@@ -606,7 +738,7 @@ pub async fn run_nav(
         blocking(move || {
             let settings = runtime.settings()?;
             let mut options = BrowserOptions::unattended(&settings, url, goal);
-            options.headed = headed;
+            options.headless = headless;
             options.safety_heads = safety;
             options.profile = profile;
             options.attach = attach.unwrap_or_default();

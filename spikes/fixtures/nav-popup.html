@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Receipts — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Receipts</h1>
+<p>Receipt 5120 opens in its own tab. Marking it read is only possible in that
+tab, so the run has to follow the popup it opened.</p>
+<p><a id="open" href="nav-popup-target.html" target="_blank">Open receipt 5120</a></p>
+<p id="status" aria-live="polite">Receipt 5120 is unread.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+const show=()=>{let s={};try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ q('state').value=JSON.stringify(s);
+ if (s.receipt) q('status').textContent=`Receipt ${s.receipt.id} is ${s.receipt.state}.`;};
+// The popup is same-origin, so it records into the same store this page reads:
+// a tab that never opened leaves the record empty.
+addEventListener('storage',show);show();
+</script></body></html>

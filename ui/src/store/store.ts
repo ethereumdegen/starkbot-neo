@@ -3,9 +3,11 @@ import { create } from "zustand";
 import {
   api,
   errorOf,
+  type AskId,
   type AxRequestView,
   type AxResponseView,
   type CaseListingView,
+  type ConfirmId,
   type ConversationId,
   type Envelope,
   type Json,
@@ -15,12 +17,14 @@ import {
   type SettingsSection,
   type UiError,
 } from "../bridge/api";
+import { claimGate, releaseGate } from "./gates";
 import { applyBootstrap, applyEnvelope, initialState, type AppState } from "./reduce";
 import { currentChatRun, registerRun } from "./runs";
 
 export type Screen =
   | "chat"
   | "runs"
+  | "projects"
   | "automate"
   | "eval"
   | "inspect"
@@ -77,6 +81,12 @@ interface Actions {
   renameConversation: (id: ConversationId, title: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   stop: (run: RunId) => Promise<void>;
+  /**
+   * Answer a card. Pressing twice sends once: the second press finds the
+   * card already claimed and does nothing at all.
+   */
+  resolveConfirm: (id: ConfirmId, outcome: "confirmed" | "denied") => Promise<void>;
+  answerAsk: (id: AskId, answer: string) => Promise<void>;
   startNav: (form: NavForm) => Promise<void>;
   startApp: (app: string, goal: string) => Promise<void>;
   startEval: (filter: string | null, tags: string[], once: boolean) => Promise<void>;
@@ -91,7 +101,7 @@ interface Actions {
 export interface NavForm {
   url: string;
   goal: string;
-  headed: boolean;
+  headless: boolean;
   profile: string;
   attach: string[];
   safety: boolean;
@@ -138,6 +148,46 @@ export const useStore = create<Store>()((set, get) => {
       const tone = REFUSALS[error.code] === true ? "warn" : "fail";
       set((state) => ({ ui: { ...state.ui, banner: { tone, text: error.message } } }));
       return null;
+    } finally {
+      set((state) => ({ ui: { ...state.ui, busy: false } }));
+    }
+  };
+
+  /**
+   * Send one card's answer, at most once.
+   *
+   * A card is a run standing still, so the controls are the ones people hit
+   * hardest — twice, or with Enter held down. The claim is taken before the
+   * command leaves, and the second press finds it taken and returns: two
+   * answers for one card would mean the run acted on whichever raced home.
+   *
+   * The card is not removed here. It goes when the run says it resolved,
+   * which is the only moment the answer has actually landed — and when
+   * another surface answered first, `no_such_card` says so in the words of
+   * the thing that happened rather than as a failure of this window.
+   */
+  const answerCard = async (id: string, send: () => Promise<null>) => {
+    const claimed = claimGate(get().gates, id);
+    if (claimed === null) {
+      return;
+    }
+    set({ gates: claimed, ui: { ...get().ui, busy: true } });
+    try {
+      await send();
+    } catch (thrown) {
+      const error = errorOf(thrown);
+      const gone = error.code === "no_such_card";
+      set((state) => ({
+        // Gone means the resolve that clears this card is already on its
+        // way; keeping the claim stops a second press chasing it.
+        gates: gone ? state.gates : releaseGate(state.gates, id),
+        ui: {
+          ...state.ui,
+          banner: gone
+            ? { tone: "warn", text: "Something else answered that card first." }
+            : { tone: "fail", text: error.message },
+        },
+      }));
     } finally {
       set((state) => ({ ui: { ...state.ui, busy: false } }));
     }
@@ -315,12 +365,16 @@ export const useStore = create<Store>()((set, get) => {
       });
     },
 
+    resolveConfirm: (id, outcome) => answerCard(id, () => api.resolveConfirm(id, outcome)),
+
+    answerAsk: (id, answer) => answerCard(id, () => api.answerAsk(id, answer)),
+
     startNav: async (form) => {
       await guard(async () => {
         const run = await api.runNav(
           form.url,
           form.goal,
-          form.headed,
+          form.headless,
           form.profile.trim() === "" ? null : form.profile.trim(),
           form.attach,
           form.safety,

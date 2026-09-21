@@ -12,6 +12,7 @@ use std::sync::Arc;
 use jev_nav::text::{TextError, TextHelper, TextValue};
 use jev_nav::wire::TypeSafe;
 use neo_core::Settings;
+use neo_core::registry::ModelTier;
 use serde_json::{Value, json};
 
 use crate::runtime::{Runtime, RuntimeError};
@@ -100,19 +101,67 @@ impl Runtime {
     }
 
     /// A text helper on the selected runtime, or `None` when no runtime can
-    /// answer — in which case a run stops at the first `TYPE_TEXT` instead of
-    /// typing something invented.
+    /// answer — in which case a run refuses to start rather than dying at
+    /// the first `TYPE_TEXT` (16 §4, B5).
     pub fn text_helper(self: &Arc<Self>, settings: &Settings) -> Option<Box<dyn TextHelper>> {
         let selected = settings.models.inference.provider.as_str();
         if !crate::runtime::routes_inference(selected) {
             return None;
         }
-        // The text helper's own saved model only applies when it names the same
-        // runtime; otherwise the selected runtime's default is used.
-        let model = (settings.models.text_helper.provider.as_str() == selected)
-            .then(|| settings.models.text_helper.id.clone());
+        // A catalogue this runtime has never fetched is not a failure: it is
+        // the fresh install, and `helper_model` answers `None` for it.
+        let catalogue: Vec<String> = self
+            .models(selected)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|model| model.info.reference.id)
+            .collect();
+        let model = helper_model(selected, &settings.models.text_helper, &catalogue);
         Some(Box::new(RuntimeTextHelper::new(Arc::clone(self), model)))
     }
+}
+
+/// Which vendor's id vocabulary a runtime speaks.
+///
+/// The registry classifies ids per vendor (05 §7), and all three runtimes
+/// that can answer a text-helper request are fronts for one of the two
+/// vendors' families: the Claude subscription and the Claude OAuth runtime
+/// both serve `claude-*` ids, the ChatGPT runtime serves `gpt-*`. Without
+/// this mapping the tier lookup answers `None` for every runtime that can
+/// actually type.
+fn vendor_of(selected: &str) -> Option<&'static str> {
+    match selected {
+        neo_core::PROVIDER_ANTHROPIC_OAUTH | neo_core::PROVIDER_CLAUDE_SUBSCRIPTION => {
+            Some(neo_core::PROVIDER_ANTHROPIC)
+        }
+        neo_core::PROVIDER_OPENAI_CODEX => Some(neo_core::PROVIDER_OPENAI),
+        _ => None,
+    }
+}
+
+/// The model that fills a field in, given what the user saved and what the
+/// selected runtime's catalogue offers.
+///
+/// A field value is a sentence, not a plan, and the helper is called once
+/// per fill: riding the Sol-class model the conversation uses costs a
+/// multiple of the Luna-class tier for the same answer (10 §5, 16 §4). So an
+/// explicitly saved `models.text_helper` wins, but only when it names the
+/// runtime that will serve it — an id from the other vendor's catalogue is
+/// rejected by the API, not silently translated. Otherwise the newest
+/// evergreen Luna-tier id the runtime offers.
+///
+/// `None` means "let the runtime choose", which is the Sol-class default: a
+/// subscription runtime has no catalogue until one is fetched, and refusing
+/// to type until then would be worse than one expensive fill.
+fn helper_model(
+    selected: &str,
+    saved: &neo_core::ModelRef,
+    catalogue: &[String],
+) -> Option<String> {
+    if saved.provider.as_str() == selected {
+        return Some(saved.id.clone());
+    }
+    neo_core::registry::resolve_latest(vendor_of(selected)?, ModelTier::Luna, catalogue)
 }
 
 #[cfg(test)]
@@ -168,5 +217,54 @@ mod tests {
         settings.models.inference.provider =
             neo_core::ProviderId::new(neo_core::PROVIDER_ANTHROPIC);
         assert!(runtime.text_helper(&settings).is_none());
+    }
+
+    /// The helper is called once per field fill, and a field value is a
+    /// sentence: riding the Sol-class model the conversation uses costs a
+    /// multiple of the fast tier for the same answer (16 §4). The Luna tier
+    /// is spelled differently by each vendor, so the lookup has to know
+    /// which vendor's family a subscription runtime serves — that mapping is
+    /// the part that silently answered "no fast model" before.
+    #[test]
+    fn the_helper_takes_the_fast_tier_the_runtime_offers() {
+        let default = Settings::default().models.text_helper;
+        let catalogue = [
+            "claude-opus-5".to_owned(),
+            "claude-haiku-4-5".to_owned(),
+            "claude-haiku-5".to_owned(),
+            "claude-haiku-5-20260101".to_owned(),
+        ];
+        assert_eq!(
+            helper_model(neo_core::PROVIDER_ANTHROPIC_OAUTH, &default, &catalogue).as_deref(),
+            Some("claude-haiku-5"),
+            "the newest evergreen fast id, never a dated snapshot"
+        );
+
+        // Nothing fetched yet, or nothing fast in what was: the runtime's own
+        // default answers rather than the run refusing to type.
+        assert_eq!(
+            helper_model(neo_core::PROVIDER_ANTHROPIC_OAUTH, &default, &[]),
+            None
+        );
+        assert_eq!(
+            helper_model(
+                neo_core::PROVIDER_OPENAI_CODEX,
+                &default,
+                &["gpt-5.6-sol".to_owned()]
+            ),
+            None
+        );
+
+        // A saved id counts only for the runtime that will serve it: the
+        // default names OpenAI's `gpt-5.6-luna`, which Anthropic would
+        // reject, and that is why the two cases above ignored it.
+        let saved = neo_core::ModelRef {
+            provider: neo_core::ProviderId::new(neo_core::PROVIDER_OPENAI_CODEX),
+            id: "gpt-5.6-luna".to_owned(),
+        };
+        assert_eq!(
+            helper_model(neo_core::PROVIDER_OPENAI_CODEX, &saved, &[]).as_deref(),
+            Some("gpt-5.6-luna")
+        );
     }
 }

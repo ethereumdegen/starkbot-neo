@@ -3,6 +3,13 @@
 //! Everything here is a pure function of a `RawNode` tree plus the menu-bar
 //! leaves, so the whole of `plans/01-accessibility.md` §Element table is
 //! testable with no Mac UI.
+//!
+//! Off macOS nothing calls it — the walker that produces `RawNode`s is
+//! `cfg(target_os = "macos")` — and it stays compiled anyway for the same
+//! reason it is pure: its tests are the executable form of 01 §Element
+//! table, and they are worth running on every lane, not only the one that
+//! can open a window.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::mapping::{
     carries_text, display_role, is_busy, is_decoration, is_modal, is_table_worthy, is_tunnel,

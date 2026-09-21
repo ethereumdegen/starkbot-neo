@@ -26,6 +26,7 @@ record. It wins over every other document, including this one.
 | Doc | Owns |
 |---|---|
 | [00-decisions](plans/00-decisions.md) | every firm decision, vocabulary, crate map, milestones, open questions |
+| [16-quality](plans/16-quality.md) | the **quality upgrade** (Q0–Q5): audit-driven plan to the Pi bar — fail-closed safety, no dead ends (confirm/resume/ask), persistent headed Chrome, M4-lite scope cut, verification spine, feel, Linux support |
 | [16-remediation](plans/16-remediation.md) | **what is wrong with the code that exists**, and in what order to fix it: R0 restore CI, R1 safety + truth, R2 user state, R3 navigator contract, R4 resource lifecycle, R5 delete, R6 telemetry |
 | [10-navigator](plans/10-navigator.md) | `jev-nav` — Rust port of `browser-use/jev-ultrafast`: the step loop, TypeSafe wire format, `CdpObserver`, managed Chrome, safety heads, `AxObserver` |
 | [03-agent](plans/03-agent.md) | `neo-judge` + `neo-agent` — intake + routing, queue, router, Sol orchestrator on metalcraft, `Gated<T>`, rules, confirms, trace, caps |
@@ -38,7 +39,8 @@ record. It wins over every other document, including this one.
 | [02-voice](plans/02-voice.md) | `neo-voice` — capture, VAD, STT, TTS, duplex, listen states |
 | [04-ui](plans/04-ui.md) | the **Tauri desktop** front end: app shell, Assist mode, windows + panels, onboarding, settings, Identity, Rust↔TS protocol |
 | [14-tui](plans/14-tui.md) | the **ratatui terminal** front end (`neo tui`, P12): panes, keybindings, the shared event/command seam, TUI acceptance per milestone |
-| [15-heartbeat](plans/15-heartbeat.md) | the **heartbeat** (P13, A26, A27): `heartbeat.md`, cadence settings, tick semantics, user-declared CLIs |
+| [17-projects](plans/17-projects.md) | **projects**: a name, a folder, a cadence and two files (`soul.md`, `heartbeat.md`); the per-project heartbeat (default 4 h), tick rows, index + show pages in both front ends |
+| [15-heartbeat](plans/15-heartbeat.md) | the heartbeat's semantics (P13, A26, A27): prose format, tick rules, user-declared CLIs — *scoped per project by [17](plans/17-projects.md)* |
 | [01-accessibility](plans/01-accessibility.md) | `neo-ax` — native-app accessibility actor |
 | [17-linux](plans/17-linux.md) | **Linux** (P16, A36): the AT-SPI `neo-ax` backend, Hyprland window management, Secret Service, XDG paths, `chrome_path()` and the `Ctrl` select-all fix; milestones L0–L4 |
 | [05-platform](plans/05-platform.md) | workspace, dependencies, SQLite schema, keys, registry, permissions, signing, testing, CI |
@@ -121,19 +123,33 @@ These are end-to-end product contracts, not demo prompts. The default path uses 
 
 ## 3. Milestones
 
-Defined in [00-decisions](plans/00-decisions.md#milestones-supersede-every-earlier-phase-list); each area doc carries the acceptance criteria for its part. Every milestone is proven headlessly in the **`neo` CLI** and then in the **`neo tui` terminal front end**; the desktop UI follows (P12, [14](plans/14-tui.md)).
+The milestone list lives in one place: the table in
+[00-decisions](plans/00-decisions.md#milestones-supersede-every-earlier-phase-list),
+which runs M0–M14 and wins over any sequence restated elsewhere, including the
+picture below. Each area doc carries the acceptance criteria for its part.
+Every milestone is proven headlessly in the **`neo` CLI** and then in the
+**`neo tui` terminal front end**; the desktop UI follows (P12,
+[14](plans/14-tui.md)).
+
+The picture is dependency order, not the numbering — M4′ was inserted after
+M4, and M7/M8 are retired (A13′: editing is Powermove + Diffusion Studio):
 
 ```
 M0 spikes ─▶ M1 shell ─▶ M2 ears + conversation ─▶ M3 navigator (web) ─▶ M4 judge · queue · safety ─▶ M5 Sol orchestrator
-                                                                                  │
-                     ┌────────────────────────────────────────────────────────────┤
-                     ▼                                                            ▼
-              M6′ media via apps (S8)                     M9 packs + GTM ─▶ M10 native apps
-              (M7/M8 retired; Degen Media Studio in Bend: G0–G4, own repo)
-                                        │
-                                        ▼
-                                  M12 video            M11 voice out (any time after M4)            M13 ship
+                                                                             │                               │
+      M4′ heartbeat — a tick is an ordinary                  ◀───────────────┤                               ▼
+      gated task, so it needs M4's                                           │                 M6′ media via apps (S8)
+      queue, caps and confirm cards                                          │                 (M7/M8 retired; Degen Media
+                                                                             │                  Studio is Bend G0–G4, own repo)
+      M12 voice out — any time after M4                      ◀───────────────┘                               │
+          ┌──────────────────────────────────────────────────────────────────────────────────────────────────┘
+          ▼
+      M9 packs + GTM ─▶ M10 component SDK ─▶ M11 native apps ─▶ M13 video ─▶ M14 ship
 ```
+
+M11 owns `neo-ax` and the `AxObserver`, but S8a needs that observer to drive
+the Diffusion Studio macOS app, which is why the spike table below pulls a
+`neo-ax` spike forward ahead of M6′.
 
 First usable product = **M0–M5** (talk → it does the browser task → you watch and confirm), usable from `neo tui` before the desktop shell is finished. First *differentiated* product = **+ M6′** (it makes the media too, by operating Powermove, Diffusion Studio and Degen Media Studio). M9 turns those into GTM workflows.
 
@@ -148,7 +164,7 @@ First usable product = **M0–M5** (talk → it does the browser task → you wa
 | S5 | metalcraft + Sol + one tool with reasoning-item replay; do reasoning summaries come through `rig`? |
 | S6 | Non-activating NSPanel above a fullscreen app; click-through ring. |
 | S7 | Canvas fidelity: a Graphic frame's HTML/CSS → CDP screenshot at 1×/2×/3× vs the same frame in the webview; deterministic frame-stepping of a CSS animation → ffmpeg. |
-| S8 | Media through apps smoke tests ([12 §5](plans/12-media-apps.md#5-smoke-tests-spike-s8-before-m6)): S8a Diffusion Studio **macOS app** via `AxObserver` (needs a `neo-ax` spike ahead of M10), a 10 s 9:16 promo; S8b the same in Powermove plus a panel made by its agent; S8c DMS generate → send to editor → cut. Only OpenAI + TypeSafe keys. |
+| S8 | Media through apps smoke tests ([12 §5](plans/12-media-apps.md#5-smoke-tests-spike-s8-before-m6)): S8a Diffusion Studio **macOS app** via `AxObserver` (needs a `neo-ax` spike ahead of M6′; M11 owns the finished observer), a 10 s 9:16 promo; S8b the same in Powermove plus a panel made by its agent; S8c DMS generate → send to editor → cut. Only OpenAI + TypeSafe keys. |
 
 Numbers and conclusions are recorded in `plans/spikes.md`; any *(verify)* in the docs is resolved there.
 

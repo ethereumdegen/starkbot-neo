@@ -1,6 +1,9 @@
+import corpusText from "../../../fixtures/cards/envelopes.jsonl?raw";
+
 import { describe, expect, it } from "vitest";
 
-import type { AppEvent, Envelope } from "../bridge/api";
+import type { AppEvent, AskView, ConfirmView, Envelope } from "../bridge/api";
+import { claimGate, frontGate, releaseGate } from "./gates";
 import { applyEnvelope, initialState, type AppState } from "./reduce";
 import { elapsedMs } from "./runs";
 import { tally } from "./trace";
@@ -17,6 +20,21 @@ function envelope(event: AppEvent, seq: number, atMs = (clock += 1000)): Envelop
 
 function play(events: [AppEvent, number][], from: AppState = initialState): AppState {
   return events.reduce((state, [event, seq]) => applyEnvelope(state, envelope(event, seq)), from);
+}
+
+/**
+ * The card corpus both front ends are tested against.
+ *
+ * One `neo_core::Envelope` per line, verbatim wire JSON: the TUI's insta
+ * goldens deserialize the same lines into `Envelope` and feed them to its
+ * reducer, so the two front ends cannot quietly disagree about what a
+ * confirm looks like — a field renamed in Rust breaks both at once.
+ */
+function corpus(): Envelope[] {
+  return corpusText
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Envelope);
 }
 
 describe("a turn assembling itself from its events", () => {
@@ -475,5 +493,126 @@ describe("the run list's bounds", () => {
     expect(steps).toHaveLength(40);
     expect(steps[0].step).toBe(10);
     expect(steps[steps.length - 1].step).toBe(49);
+  });
+});
+
+describe("cards, against the corpus both front ends read", () => {
+  const lines = corpus();
+  const [confirmAsked, confirmAnswered, readyAsked, readyAnswered, fieldAsked, fieldAnswered] =
+    lines;
+
+  function replay(...envelopes: Envelope[]): AppState {
+    return envelopes.reduce((state, envelope) => applyEnvelope(state, envelope), initialState);
+  }
+
+  it("raises the confirm the wire describes, with the sentence and the page it is about", () => {
+    const state = replay(confirmAsked);
+
+    expect(state.gates.confirms).toHaveLength(1);
+    const card = state.gates.confirms[0];
+    // The sentence is the backend's and is shown verbatim; `cause` is the
+    // tag it was raised under, not a second version of the sentence.
+    expect(card.action_sentence).toMatch(/pay/i);
+    expect(card.cause).toBe("safety:spends");
+    expect(card.context).toContain("https://");
+    // Q2 has no remembered allows, and a card offering one would promise a
+    // decision nothing honours.
+    expect(card.can_remember).toBe(false);
+    expect(frontGate(state.gates)).toEqual({ kind: "confirm", confirm: card });
+  });
+
+  it("takes the card down when the run resolves it, whoever answered", () => {
+    const state = replay(confirmAsked, confirmAnswered);
+
+    expect(state.gates.confirms).toEqual([]);
+    expect(frontGate(state.gates)).toBeNull();
+  });
+
+  it("raises no ghost when the resolve overtakes its own request", () => {
+    // The run publishes the resolve while the request is still crossing the
+    // IPC boundary. A window that ignored the early resolve would show a
+    // card nothing is waiting on, and nothing would ever take it down.
+    const state = replay(confirmAnswered, confirmAsked);
+
+    expect(state.gates.confirms).toEqual([]);
+    // And the memory of it is spent, not kept: that id can never be asked
+    // again, so holding it would only be a leak.
+    expect(state.gates.settled).toEqual([]);
+  });
+
+  it("does not raise a second card when a request is republished", () => {
+    const state = replay(confirmAsked, confirmAsked);
+
+    expect(state.gates.confirms).toHaveLength(1);
+  });
+
+  it("offers the hand-over's one option and clears it on the answer", () => {
+    const asked = replay(readyAsked);
+
+    expect(asked.gates.asks).toHaveLength(1);
+    const ask: AskView = asked.gates.asks[0];
+    expect(ask.options).toEqual(["I'm ready"]);
+    expect(ask.question).toMatch(/sign in/i);
+
+    expect(replay(readyAsked, readyAnswered).gates.asks).toEqual([]);
+  });
+
+  it("asks for free text when the run has no options to offer", () => {
+    const asked = replay(fieldAsked);
+
+    expect(asked.gates.asks[0].options).toEqual([]);
+    expect(replay(fieldAsked, fieldAnswered).gates.asks).toEqual([]);
+  });
+
+  it("answers an ask that resolved before it arrived with no card at all", () => {
+    const state = replay(fieldAnswered, fieldAsked);
+
+    expect(state.gates.asks).toEqual([]);
+    expect(state.gates.settled).toEqual([]);
+  });
+
+  it("keeps a card through the bootstrap that repairs a gap", () => {
+    // The run is still blocked while this window re-bootstraps, and the
+    // bootstrap has no cards in it: dropping them would hide the only
+    // control that unblocks the run.
+    const asked = replay(confirmAsked);
+    const confirm: ConfirmView = asked.gates.confirms[0];
+    const state = applyEnvelope(asked, {
+      seq: 99,
+      at: "1970-01-01T00:01:00Z",
+      event: { type: "notice", level: "warning", code: "event_gap", text: "dropped 12 events" },
+    });
+
+    expect(state.sync.needsBootstrap).toBe(true);
+    expect(state.gates.confirms).toEqual([confirm]);
+  });
+
+  it("lets one press through and refuses the second until the run answers", () => {
+    const asked = replay(confirmAsked);
+    const id = asked.gates.confirms[0].id;
+
+    const claimed = claimGate(asked.gates, id);
+    if (claimed === null) {
+      throw new Error("the first press was refused");
+    }
+    // The second press of Approve, or Deny straight after it: the card is
+    // already claimed and a second answer would reach a run that has
+    // already been told what to do.
+    expect(claimGate(claimed, id)).toBeNull();
+
+    // The resolve is what releases it, so the claim cannot outlive the card.
+    const resolved = applyEnvelope({ ...asked, gates: claimed }, confirmAnswered);
+    expect(resolved.gates.pending).toEqual({});
+  });
+
+  it("makes the card answerable again when the command itself was refused", () => {
+    const asked = replay(confirmAsked);
+    const id = asked.gates.confirms[0].id;
+    const claimed = claimGate(asked.gates, id);
+    if (claimed === null) {
+      throw new Error("the first press was refused");
+    }
+
+    expect(claimGate(releaseGate(claimed, id), id)).not.toBeNull();
   });
 });

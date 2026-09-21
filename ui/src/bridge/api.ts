@@ -48,6 +48,9 @@ import {
   type RunId,
   type SettingsView,
   type UiError,
+  type HeartbeatGate,
+  type Project,
+  type ProjectDetailView,
 } from "./generated";
 
 // One import for every consumer: `from "../bridge/api"` reaches the generated
@@ -114,10 +117,88 @@ export type EvalCaseState =
 export type NoticeLevel = "info" | "warning" | "error";
 
 /**
+ * `neo_core::ConfirmId` and `AskId` are `#[serde(transparent)]` newtypes over
+ * a Uuid, exactly as `RunId` is — they cross as strings.
+ */
+export type ConfirmId = string;
+export type AskId = string;
+export type TaskId = string;
+
+/** Which surface answered a card. A press in this window is always `card`. */
+export type ResolutionVia = "card" | "thread" | "pill" | "voice" | "timeout";
+
+/**
+ * How a confirm ended. The window only ever *sends* the first two: a timeout
+ * is the broker's arithmetic, and a cancellation is the run giving up on its
+ * own question.
+ */
+export type GateOutcome = "confirmed" | "denied" | "timed_out" | "cancelled";
+
+/** `neo_core::Usd`: internally tagged on `kind`, with the amount in `usd`. */
+export type Usd =
+  | { kind: "exact"; usd: number }
+  | { kind: "estimated"; usd: number }
+  | { kind: "unpriced" };
+
+export interface TokenCounts {
+  input: number;
+  output: number;
+  cached_input: number;
+  reasoning: number;
+}
+
+export interface Units {
+  tokens: TokenCounts;
+  audio_seconds: number;
+  characters: number;
+  images: number;
+  video_seconds: number;
+}
+
+export interface Usage {
+  usd: Usd;
+  units: Units;
+}
+
+/**
+ * A question the run is blocked on: it will not act until this is answered.
+ *
+ * `action_sentence` is a whole sentence in the product's voice — the backend
+ * writes it, the card shows it, and a front end that recomposed it from
+ * `cause` would say something the other front end does not. `cause` is the
+ * machine-ish tag behind it (`safety:spends`, `label:pay`) and `context` is
+ * "<page title> — <url>" when there is a page involved.
+ */
+export interface ConfirmView {
+  id: ConfirmId;
+  task_id: TaskId;
+  cause: string;
+  action_sentence: string;
+  context: string | null;
+  estimated_cost: Usage | null;
+  can_remember: boolean;
+  /** Unix milliseconds. The broker enforces it; the card only shows it. */
+  expires_at: number;
+}
+
+/**
+ * Something the run needs told. `options` empty means free text — an unknown
+ * field value — and a non-empty list means the answer is one of its strings,
+ * which is how a sign-in hand-over arrives as a single "I'm ready".
+ */
+export interface AskView {
+  id: AskId;
+  task_id: TaskId;
+  question: string;
+  options: string[];
+  voice_window_ends: number | null;
+}
+
+/**
  * Only the variants a front end in this batch acts on are spelled out.
  *
- * The wire carries more than these — `listen_state`, `task_upserted`,
- * `confirm_request` and the rest of `neo_core::AppEvent`. They are not in the
+ * The wire carries more than these — `listen_state`, `task_upserted`, `ring`
+ * and the rest of `neo_core::AppEvent`. They are not in the
  * union on purpose: a catch-all `{ type: string }` member would poison every
  * `switch` narrowing, since `string` overlaps every literal tag. An unmodelled
  * variant arrives at runtime, matches no `case`, and falls into the `default`
@@ -156,6 +237,13 @@ export type AppEvent =
   // stop from a crash without matching on prose.
   | { type: "turn_failed"; run: RunId; error: string; code: string }
   | { type: "nav_step"; run: RunId; step: number; line: string; kind: NavStepKind }
+  // A run is blocked on a question. The card stays up until the matching
+  // `*_resolved` arrives — which it always does, because the run publishes
+  // it whoever answered and however it ended, including on a timeout.
+  | { type: "confirm_request"; confirm: ConfirmView }
+  | { type: "confirm_resolved"; confirm_id: ConfirmId; outcome: GateOutcome; via: ResolutionVia }
+  | { type: "ask_request"; ask: AskView }
+  | { type: "ask_resolved"; ask_id: AskId; answer: string; via: ResolutionVia }
   | {
       type: "eval_case";
       run: RunId;
@@ -199,6 +287,24 @@ export const api = {
   handshake: () => invoke<number>("handshake", { uiVersion: BRIDGE_VERSION }),
 
   getBootstrap: () => invoke<BootstrapView>("get_bootstrap"),
+  listProjects: () => invoke<Project[]>("list_projects"),
+  showProject: (slug: string) => invoke<ProjectDetailView>("show_project", { slug }),
+  saveProjectDocument: (slug: string, document: "soul.md" | "heartbeat.md", content: string) =>
+    invoke<ProjectDetailView>("save_project_document", { slug, document, content }),
+  configureProjectHeartbeat: (
+    slug: string,
+    enabled: boolean,
+    everySeconds: number,
+    onGate: HeartbeatGate,
+  ) =>
+    invoke<ProjectDetailView>("configure_project_heartbeat", {
+      slug,
+      enabled,
+      everySeconds,
+      onGate,
+    }),
+  runProjectHeartbeat: (slug: string) =>
+    invoke<ProjectDetailView>("run_project_heartbeat", { slug }),
 
   // Chat.
   sendMessage: (conversation: ConversationId, text: string) =>
@@ -220,15 +326,25 @@ export const api = {
   loadThread: (id: ConversationId, limit: number) =>
     invoke<MessageView[]>("load_thread", { id, limit }),
 
+  // Cards. `via` is fixed at `card` rather than taken from the caller: a
+  // press in this window *is* a card press, and a front end that could claim
+  // otherwise would put a lie in the run's own record of how it was answered.
+  // Both commands reject with `no_such_card` when something else answered
+  // first — the other front end, the user's voice, or the clock.
+  resolveConfirm: (id: ConfirmId, outcome: "confirmed" | "denied") =>
+    invoke<null>("resolve_confirm", { id, outcome, via: "card" }),
+  answerAsk: (id: AskId, answer: string) =>
+    invoke<null>("answer_ask", { id, answer, via: "card" }),
+
   // Automate.
   runNav: (
     url: string,
     goal: string,
-    headed: boolean,
+    headless: boolean,
     profile: string | null,
     attach: string[],
     safety: boolean,
-  ) => invoke<RunId>("run_nav", { url, goal, headed, profile, attach, safety }),
+  ) => invoke<RunId>("run_nav", { url, goal, headless, profile, attach, safety }),
   runAppGoal: (app: string, goal: string) => invoke<RunId>("run_app_goal", { app, goal }),
 
   // Inspect.

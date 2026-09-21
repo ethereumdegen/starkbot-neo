@@ -5,10 +5,10 @@
 //! name the account or the failure, never the value. Nothing here formats a
 //! source with `{:?}`, and nothing here reads a secret.
 
-use neo_agent::RuntimeError;
 use neo_agent::agent::{AgentError, ToolError};
 use neo_agent::ax::AxError;
 use neo_agent::screen::ScreenBusy;
+use neo_agent::{ProjectError, RuntimeError};
 use neo_core::CoreError;
 use neo_eval::EvalError;
 use neo_store::StoreError;
@@ -92,6 +92,24 @@ impl From<RuntimeError> for UiError {
         }
     }
 }
+impl From<ProjectError> for UiError {
+    fn from(error: ProjectError) -> Self {
+        if let ProjectError::Runtime(inner) = error {
+            return Self::from(inner);
+        }
+        let code = match &error {
+            ProjectError::Busy => "heartbeat_busy",
+            ProjectError::InvalidName
+            | ProjectError::InvalidRoot(_)
+            | ProjectError::InvalidDocument => "validation",
+            ProjectError::Store(_) => "store",
+            ProjectError::Agent(_) => "agent",
+            ProjectError::Io { .. } => "io",
+            ProjectError::Runtime(_) => unreachable!("handled above"),
+        };
+        Self::new(code, error.to_string())
+    }
+}
 
 /// A command ran on a blocking thread and the thread itself failed.
 impl From<tokio::task::JoinError> for UiError {
@@ -122,6 +140,15 @@ impl From<ToolError> for UiError {
             }
             ToolError::ScreenBusy(ref busy) => screen_busy(busy),
             ToolError::Runtime(inner) => Self::from(*inner),
+            // The user has no runtime that can write a field value, which is
+            // a settings choice they can make from this window: point at the
+            // setting rather than at a shell command the desktop app has no
+            // terminal for.
+            ToolError::NoTextHelper => {
+                Self::new("no_text_helper", error.to_string()).with_fix(Fix::Manual {
+                    detail: "Settings → Models → inference runtime".to_owned(),
+                })
+            }
             ToolError::Browser(_) | ToolError::App { .. } | ToolError::Cancelled(_) => {
                 Self::new("tool", error.to_string())
             }

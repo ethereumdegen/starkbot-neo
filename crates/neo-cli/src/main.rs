@@ -73,16 +73,17 @@ enum CommandKind {
     Nav {
         url: String,
         goal: String,
-        /// Show the browser window instead of running headless.
+        /// Run without a window, in a profile that dies with the run. The
+        /// default is the app's own Chrome, headed, where logins persist.
         #[arg(long)]
-        headed: bool,
+        headless: bool,
         /// Ask no safety heads. Fixtures only: nothing can trip the gate.
         #[arg(long)]
         no_safety: bool,
         /// A file a file input may be given. Repeatable.
         #[arg(long, value_name = "PATH")]
         attach: Vec<PathBuf>,
-        /// Reuse a Chrome profile directory, so a login survives runs.
+        /// Use this Chrome profile directory instead of the app's own.
         #[arg(long, value_name = "PATH")]
         profile: Option<PathBuf>,
     },
@@ -100,6 +101,16 @@ enum CommandKind {
         app: String,
         goal: String,
     },
+    /// Named standing work and its per-project heartbeat.
+    Projects {
+        #[command(subcommand)]
+        command: Option<ProjectCommand>,
+    },
+    /// Run project heartbeats.
+    Heartbeat {
+        #[command(subcommand)]
+        command: HeartbeatCommand,
+    },
     /// Run the terminal front end (P12, plans/14-tui.md).
     Tui,
     /// Run the desktop front end (P12, `src-tauri`).
@@ -116,7 +127,7 @@ enum CommandKind {
         #[arg(long)]
         filter: Option<String>,
         /// Only cases with any of these tags (`browser`, `app`, `spreadsheet`,
-        /// `media`, `smoke`, `known-gap`).
+        /// `media`, `smoke`, `known-gap`, `nav-review`, `nav-review-live`).
         #[arg(long)]
         tag: Vec<String>,
         /// Run each case once instead of the five-run consensus, for a quick
@@ -175,6 +186,46 @@ enum AxCommand {
         /// Levels separated by `›` or `>`.
         path: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Create a managed project, or register an existing directory.
+    Add {
+        name: String,
+        #[arg(long, value_name = "PATH")]
+        root: Option<PathBuf>,
+    },
+    /// Show the two documents, clock, and recent ticks.
+    Show { project: String },
+    /// Open one project document in $EDITOR.
+    Edit {
+        project: String,
+        #[arg(long, conflicts_with = "soul", required_unless_present = "soul")]
+        heartbeat: bool,
+        #[arg(
+            long,
+            conflicts_with = "heartbeat",
+            required_unless_present = "heartbeat"
+        )]
+        soul: bool,
+    },
+    /// Configure this project's clock.
+    Heartbeat {
+        project: String,
+        #[arg(long, value_name = "DURATION")]
+        every: Option<String>,
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        #[arg(long, conflicts_with = "on")]
+        off: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HeartbeatCommand {
+    /// Run one project's heartbeat now, in the foreground.
+    Run { project: String },
 }
 
 #[derive(Subcommand)]
@@ -313,7 +364,7 @@ async fn run(
         CommandKind::Nav {
             url,
             goal,
-            headed,
+            headless,
             no_safety,
             attach,
             profile,
@@ -324,7 +375,7 @@ async fn run(
                 nav::NavOptions {
                     url,
                     goal,
-                    headed,
+                    headless,
                     no_safety,
                     attach,
                     profile,
@@ -340,6 +391,8 @@ async fn run(
             let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
             nav::run_app(runtime, nav::AppNavOptions { app, goal }).await
         }
+        CommandKind::Projects { command } => run_projects(data_dir, command).await,
+        CommandKind::Heartbeat { command } => run_heartbeat(data_dir, command).await,
         CommandKind::Doctor => run_doctor(data_dir),
         CommandKind::Sessions => run_sessions(data_dir),
         CommandKind::Tui => run_tui(data_dir).await,
@@ -782,6 +835,95 @@ async fn run_ask(
             }))
         }
     }
+}
+
+async fn run_projects(data_dir: Option<PathBuf>, command: Option<ProjectCommand>) -> Result<()> {
+    let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
+    match command {
+        None => print_json(&runtime.projects()?),
+        Some(ProjectCommand::Add { name, root }) => {
+            print_json(&runtime.create_project(&name, root.as_deref())?)
+        }
+        Some(ProjectCommand::Show { project }) => {
+            let row = runtime.project(&project)?;
+            let documents = runtime.project_documents(&project)?;
+            let ticks = runtime.project_ticks(&project, 20)?;
+            print_json(&serde_json::json!({
+                "project": row,
+                "soul": documents.soul,
+                "heartbeat": documents.heartbeat,
+                "ticks": ticks,
+            }))
+        }
+        Some(ProjectCommand::Edit {
+            project,
+            heartbeat,
+            soul: _,
+        }) => {
+            let row = runtime.project(&project)?;
+            let document = if heartbeat { "heartbeat.md" } else { "soul.md" };
+            let path = Path::new(&row.root).join(document);
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_owned());
+            let status = std::process::Command::new(&editor)
+                .arg(&path)
+                .status()
+                .with_context(|| format!("could not start editor `{editor}`"))?;
+            if !status.success() {
+                return Err(anyhow!("editor `{editor}` exited unsuccessfully"));
+            }
+            Ok(())
+        }
+        Some(ProjectCommand::Heartbeat {
+            project,
+            every,
+            on,
+            off,
+        }) => {
+            let current = runtime.project(&project)?;
+            let seconds = every
+                .as_deref()
+                .map(parse_duration)
+                .transpose()?
+                .unwrap_or(current.heartbeat_every_seconds);
+            let enabled = if on {
+                true
+            } else if off {
+                false
+            } else {
+                current.heartbeat_enabled
+            };
+            print_json(&runtime.configure_project_heartbeat(
+                &project,
+                enabled,
+                seconds,
+                current.on_gate,
+            )?)
+        }
+    }
+}
+
+async fn run_heartbeat(data_dir: Option<PathBuf>, command: HeartbeatCommand) -> Result<()> {
+    let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
+    match command {
+        HeartbeatCommand::Run { project } => {
+            print_json(&runtime.run_project_heartbeat(&project).await?)
+        }
+    }
+}
+
+fn parse_duration(value: &str) -> Result<u64> {
+    let (number, multiplier) = match value.as_bytes().last().copied() {
+        Some(b'm') => (&value[..value.len() - 1], 60),
+        Some(b'h') => (&value[..value.len() - 1], 60 * 60),
+        Some(b'd') => (&value[..value.len() - 1], 24 * 60 * 60),
+        _ => (value, 1),
+    };
+    let amount = number
+        .parse::<u64>()
+        .with_context(|| format!("invalid duration `{value}`"))?;
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("duration `{value}` is too large"))
 }
 
 /// `neo account --provider …`: the two subscription paths (K6 b and d). The

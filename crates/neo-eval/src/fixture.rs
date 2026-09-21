@@ -44,6 +44,15 @@ pub enum Fixture {
     TextDocument { app: String },
     /// Only bring the app to the front. For apps with no document model.
     Activate { app: String },
+    /// Serve the review set's pages and clear what they recorded (16 §6.2).
+    ///
+    /// The web half of the suite needs the same guarantee the document half
+    /// needs: a case must not be scored against the previous case's
+    /// leftovers. A page's record lives in the browser profile, so it
+    /// survives the tab, the run and the browser — which is exactly why it
+    /// has to be cleared before the agent starts. `url` is the origin's
+    /// read-only state page, the same one the probe reads.
+    WebPage { app: String, url: String },
 }
 
 impl Fixture {
@@ -63,6 +72,10 @@ impl Fixture {
             }),
             "text_document" => Some(Self::TextDocument { app }),
             "activate" => Some(Self::Activate { app }),
+            "web_page" => Some(Self::WebPage {
+                app,
+                url: fixture.get("url").and_then(Value::as_str)?.to_owned(),
+            }),
             _ => None,
         }
     }
@@ -80,6 +93,9 @@ impl Fixture {
                 json!({ "fixture": { "kind": "text_document", "app": app } })
             }
             Self::Activate { app } => json!({ "fixture": { "kind": "activate", "app": app } }),
+            Self::WebPage { app, url } => {
+                json!({ "fixture": { "kind": "web_page", "app": app, "url": url } })
+            }
         }
     }
 
@@ -89,14 +105,24 @@ impl Fixture {
             Self::FreshDocument { app }
             | Self::Spreadsheet { app, .. }
             | Self::TextDocument { app }
-            | Self::Activate { app } => app,
+            | Self::Activate { app }
+            | Self::WebPage { app, .. } => app,
         }
     }
 }
 
 /// Apply the fixture. Errors are the harness's, not the agent's: a case whose
 /// fixture fails must not be scored as a model failure.
-pub async fn apply(fixture: &Fixture) -> Result<Value, ProbeError> {
+pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Value, ProbeError> {
+    // The web fixtures touch no accessibility surface at all: they start the
+    // fixture server and clear one origin's record. Asking for the
+    // Accessibility grant first would refuse the whole navigation review set
+    // on a machine that has never needed it.
+    if let Fixture::WebPage { url, .. } = fixture {
+        crate::pages::serve().await?;
+        let cleared = crate::pages::reset_state(runtime.data_dir(), url).await?;
+        return Ok(json!({ "fixture": "web_page", "state": cleared }));
+    }
     if !AxHandle::trusted() {
         return Err(ProbeError::NotTrusted);
     }
@@ -201,6 +227,8 @@ pub async fn apply(fixture: &Fixture) -> Result<Value, ProbeError> {
                 "text_len": table.text.chars().count(),
             }))
         }
+        // Answered above, before any accessibility handle was taken.
+        Fixture::WebPage { url, .. } => crate::pages::reset_state(runtime.data_dir(), url).await,
     }
 }
 

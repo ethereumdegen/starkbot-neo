@@ -1,5 +1,6 @@
 import type { BootstrapView, Envelope } from "../bridge/api";
 import { initialConversation, reduceConversation, type ConversationState } from "./conversation";
+import { initialGates, reduceGates, type GatesState } from "./gates";
 import { initialHealth, reduceHealth, type HealthState } from "./health";
 import { initialRuns, reduceRuns, registerRun, type RunsState } from "./runs";
 import { initialSettings, reduceSettings, type SettingsState } from "./settings";
@@ -22,6 +23,7 @@ export interface AppState {
   trace: TraceState;
   settings: SettingsState;
   health: HealthState;
+  gates: GatesState;
 }
 
 export const initialState: AppState = {
@@ -31,6 +33,7 @@ export const initialState: AppState = {
   trace: initialTrace,
   settings: initialSettings,
   health: initialHealth,
+  gates: initialGates,
 };
 
 /**
@@ -53,6 +56,7 @@ export function applyEnvelope(state: AppState, envelope: Envelope): AppState {
     trace: reduceTrace(state.trace, event),
     settings: reduceSettings(state.settings, event),
     health: reduceHealth(state.health, event, clock),
+    gates: reduceGates(state.gates, event),
   };
 
   const changed = (Object.keys(next) as (keyof AppState)[]).some((key) => next[key] !== state[key]);
@@ -85,6 +89,10 @@ export function applyBootstrap(state: AppState, boot: BootstrapView): AppState {
     runs,
     trace: state.trace,
     settings: { settings: boot.settings, revision: state.settings.revision + 1 },
+    // Cards are not in the bootstrap and must not be dropped by one: a run
+    // blocked on a confirm is still blocked while this window repairs a gap,
+    // and clearing the card would hide the only control that unblocks it.
+    gates: state.gates,
     health: { ...state.health, accountsStale: false },
   };
 }

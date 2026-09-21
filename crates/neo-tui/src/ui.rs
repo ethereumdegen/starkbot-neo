@@ -1,4 +1,6 @@
-//! Rendering (14 §2). Pure: it reads `State` and writes cells, nothing else.
+//! Rendering (14 §2). Pure: it reads `State` and writes cells, and reports
+//! back one fact the reducer cannot know — whether the card's sentence
+//! actually reached the frame (04 §13).
 //!
 //! Every state carries a word as well as a colour and a glyph, so `NO_COLOR`, a
 //! two-colour terminal and a colour-blind reader all still read it (14 §2).
@@ -12,8 +14,8 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::runs::{Run, RunState, TraceKind};
 use crate::state::{
-    COMMAND_LINE, LoginPhase, Mode, Pane, Role, Row, Section, State, StepCard, TurnProgress, View,
-    connection_label, key_label, listen_label,
+    COMMAND_LINE, Card, CardKind, LoginPhase, Mode, Pane, Role, Row, Section, State, StepCard,
+    TurnProgress, View, connection_label, key_label, listen_label,
 };
 
 /// Below this the TUI renders one line and keeps consuming events (14 §2).
@@ -22,7 +24,27 @@ pub const MIN_HEIGHT: u16 = 20;
 
 const GREY: Color = Color::DarkGray;
 
-pub fn draw(frame: &mut Frame, state: &State) {
+/// The card overlay's width. Wide enough for a sentence plus a URL on one
+/// wrap, narrow enough to leave the frame around it readable.
+const CARD_WIDTH: u16 = 72;
+/// Below this a card is not drawn at all: there is no honest way to put a
+/// sentence, its context and two keys in less.
+const CARD_MIN_WIDTH: u16 = 40;
+
+/// What the frame that was just drawn contains, for the decisions the
+/// reducer makes about it afterwards.
+///
+/// One field today, and it is the important one: `y` may not resolve a
+/// confirm whose sentence has not been on screen (04 §13, 14 §3), and only
+/// the renderer knows whether it got there. The default is "nothing was
+/// painted", so a frame that was never drawn can never arm a card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Painted {
+    /// The card's sentence reached the frame and nothing covers it.
+    pub card: bool,
+}
+
+pub fn draw(frame: &mut Frame, state: &State) -> Painted {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         let line = Paragraph::new("terminal too small — 60×20 minimum")
@@ -32,7 +54,7 @@ pub fn draw(frame: &mut Frame, state: &State) {
             .flex(Flex::Center)
             .areas(area);
         frame.render_widget(line, middle);
-        return;
+        return Painted::default();
     }
 
     let header_height = u16::from(area.height >= 24);
@@ -57,6 +79,12 @@ pub fn draw(frame: &mut Frame, state: &State) {
     }
     frame.render_widget(status_line(state, header_height == 0, status.width), status);
 
+    // The card goes under the overlays that own the keyboard, because one of
+    // them is how a free-text question gets answered and the question has to
+    // stay readable behind it.
+    let mut painted = Painted {
+        card: render_card(frame, area, state),
+    };
     if state.help {
         render_help(frame, area);
     }
@@ -72,6 +100,17 @@ pub fn draw(frame: &mut Frame, state: &State) {
     if state.quit_prompt {
         render_quit(frame, area);
     }
+    // An overlay that covers the sentence has un-shown it, whatever was
+    // drawn underneath: the arming rule is about what the user can read.
+    if state.help
+        || state.sessions.is_some()
+        || state.login.is_some()
+        || state.prompt.is_some()
+        || state.quit_prompt
+    {
+        painted.card = false;
+    }
+    painted
 }
 
 // ------------------------------------------------------------------- header
@@ -200,6 +239,12 @@ fn pane_title(state: &State, pane: Pane) -> String {
             Some(run) => format!(" Mind · {} · {} ", run.kind.label(), run.state.word()),
             None => format!(" Activity ({}) ", state.activity.len()),
         },
+        Pane::Projects => match state.projects.get(state.project_row) {
+            Some(project) if state.project_detail.is_some() => {
+                format!(" Project · {} ", project.name)
+            }
+            _ => format!(" Projects ({}) ", state.projects.len()),
+        },
     }
 }
 
@@ -242,7 +287,9 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
     } else {
         let body = match pane {
             Pane::Runs => runs_lines(state),
-            _ => mind_lines(state),
+            Pane::Mind => mind_lines(state),
+            Pane::Projects => project_lines(state),
+            Pane::Conversation => Vec::new(),
         };
         frame.render_widget(
             Paragraph::new(body)
@@ -258,6 +305,78 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
             marker,
         );
     }
+}
+
+fn project_lines(state: &State) -> Vec<Line<'static>> {
+    let Some(selected) = state.projects.get(state.project_row) else {
+        return vec![Line::styled(
+            "No projects yet. Use `neo projects add \"Name\"`.",
+            Style::new().fg(GREY),
+        )];
+    };
+    if let Some((documents, ticks)) = &state.project_detail {
+        let clock = if selected.heartbeat_enabled {
+            format!(
+                "every {}s · next {:?}",
+                selected.heartbeat_every_seconds, selected.next_due_at
+            )
+        } else {
+            "off".to_owned()
+        };
+        let mut lines = vec![
+            Line::styled(selected.name.clone(), Style::new().fg(Color::Cyan).bold()),
+            Line::raw(selected.root.clone()),
+            Line::raw(format!("heartbeat: {clock}")),
+            Line::raw(""),
+            Line::styled("soul.md", Style::new().bold()),
+            Line::raw(documents.soul.clone()),
+            Line::raw(""),
+            Line::styled("heartbeat.md", Style::new().bold()),
+            Line::raw(documents.heartbeat.clone()),
+            Line::raw(""),
+            Line::styled("recent ticks", Style::new().bold()),
+        ];
+        lines.extend(ticks.iter().map(|tick| {
+            Line::raw(format!(
+                "{}  {:?}  {}",
+                tick.started_at,
+                tick.outcome,
+                tick.reason.as_deref().unwrap_or("")
+            ))
+        }));
+        lines.push(Line::styled(
+            "Enter back · e heartbeat · E soul · r run · t toggle",
+            Style::new().fg(GREY),
+        ));
+        return lines;
+    }
+    let mut lines = Vec::new();
+    for (index, project) in state.projects.iter().enumerate() {
+        let cursor = if index == state.project_row {
+            "›"
+        } else {
+            " "
+        };
+        let clock = if project.heartbeat_enabled {
+            format!("every {}s", project.heartbeat_every_seconds)
+        } else {
+            "off".to_owned()
+        };
+        lines.push(Line::styled(
+            format!("{cursor} {}", project.name),
+            if index == state.project_row {
+                Style::new().fg(Color::Cyan).bold()
+            } else {
+                Style::new()
+            },
+        ));
+        lines.push(Line::raw(format!("  {} · {clock}", project.slug)));
+        lines.push(Line::styled(
+            format!("  last {:?}", project.last_tick_at),
+            Style::new().fg(GREY),
+        ));
+    }
+    lines
 }
 
 /// The conversation, wrapped to `width`: the thread, then whatever the
@@ -796,6 +915,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "        next step, and is sent as a new turn if that one just ended.",
         "        Esc leaves insert, Esc again stops the run; what it already did stays.",
         "Prompts: Enter saves · Ctrl-U clears a pre-filled value · Esc cancels",
+        "On a card: y / n answer a confirm once it is on screen · j k pick · 1-9 answer · i types",
         "Settings: s set key · x remove key · K check key · c sign in · d sign out",
         "          r refresh models · Enter toggles a bool or cycles a choice",
         "",
@@ -825,11 +945,6 @@ fn render_help(frame: &mut Frame, area: Rect) {
         });
         lines.push(Line::from(spans));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "y / n resolve a confirm only while its card is on screen and armed.",
-        Style::new().fg(GREY),
-    ));
 
     let block = Block::bordered()
         .title(" Keys ")
@@ -973,6 +1088,154 @@ fn truncate_tail(value: &str, width: usize) -> String {
     }
     let skip = count - width.saturating_sub(1);
     format!("…{}", value.chars().skip(skip).collect::<String>())
+}
+
+/// The card: what is about to happen, where, and the keys that answer it
+/// (04 §13, 16 §5.5).
+///
+/// Says whether the sentence reached the frame, which is what arms `y` and
+/// `n`. Nothing is drawn at all when the overlay would not fit: half a
+/// sentence about money is worse than no sentence, and an undrawn card is
+/// one no keystroke can resolve.
+fn render_card(frame: &mut Frame, area: Rect, state: &State) -> bool {
+    let Some(card) = state.card.as_ref() else {
+        return false;
+    };
+    let width = CARD_WIDTH.min(area.width);
+    // The block's own border takes a column either side.
+    let column = width.saturating_sub(2);
+    let confirm = matches!(card.kind, CardKind::Confirm { .. });
+
+    // The sentence, in full. It wraps rather than being cut, and a word
+    // wider than the overlay is split, so nothing reads as a shorter claim
+    // than the core made.
+    let mut lines = wrapped(
+        "",
+        Style::new(),
+        &card.sentence,
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+        column,
+    );
+    let sentence_rows = lines.len();
+    // One blank line between blocks, and none around a block that is not
+    // there: an ask carries no context rows, and two blank lines where they
+    // would have been reads as something failed to load.
+    for (label, value) in [
+        ("where ", card.context.as_deref()),
+        ("why   ", card.cause.as_deref()),
+        ("cost  ", card.cost.as_deref()),
+    ] {
+        if let Some(value) = value {
+            if lines.len() == sentence_rows {
+                lines.push(Line::raw(""));
+            }
+            lines.extend(wrapped(
+                label,
+                Style::new().fg(GREY),
+                value,
+                Style::new(),
+                column,
+            ));
+        }
+    }
+    if !card.options().is_empty() {
+        lines.push(Line::raw(""));
+        for (index, option) in card.options().iter().enumerate() {
+            let chosen = index == card.selected();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} {} ", index + 1, if chosen { "▸" } else { " " }),
+                    Style::new().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    option.clone(),
+                    if chosen {
+                        Style::new().add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    },
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::raw(""));
+    lines.push(card_keys(card));
+    if !state.queued_cards.is_empty() {
+        lines.push(Line::styled(
+            format!("{} more waiting behind this one", state.queued_cards.len()),
+            Style::new().fg(GREY),
+        ));
+    }
+
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    if height > area.height || width < CARD_MIN_WIDTH {
+        return false;
+    }
+    let (title, hint, colour) = if confirm {
+        (
+            " Confirm ",
+            " y approves · n denies · Enter is not an answer ",
+            Color::Yellow,
+        )
+    } else if card.free_text() {
+        (
+            " Question ",
+            " i types the answer · the card stays until it is answered ",
+            Color::Cyan,
+        )
+    } else {
+        (
+            " Question ",
+            " j k moves · 1-9 answers · y sends the highlighted one ",
+            Color::Cyan,
+        )
+    };
+    let block = Block::bordered()
+        .title(title)
+        .title_bottom(hint)
+        .border_style(Style::new().fg(colour));
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    true
+}
+
+/// The keys line: what this card can be answered with *now*.
+///
+/// Before the debounce elapses it says so instead of offering keys that do
+/// nothing — a binding that is advertised and inert is worse than one that
+/// is visibly not ready yet.
+fn card_keys(card: &Card) -> Line<'static> {
+    if card.free_text() {
+        return Line::from(vec![
+            Span::styled("[i]", Style::new().fg(Color::Cyan)),
+            Span::raw(" type your answer"),
+        ]);
+    }
+    if !card.live() {
+        return Line::styled("reading…", Style::new().fg(GREY));
+    }
+    if matches!(card.kind, CardKind::Confirm { .. }) {
+        let mut spans = vec![
+            Span::styled("[y]", Style::new().fg(Color::Green)),
+            Span::raw(" yes   "),
+            Span::styled("[n]", Style::new().fg(Color::Red)),
+            Span::raw(" no"),
+        ];
+        // Q2 approvals are single-shot, so the affordance is not offered at
+        // all rather than offered and refused.
+        if card.can_remember {
+            spans.push(Span::styled("   [r]", Style::new().fg(Color::Cyan)));
+            spans.push(Span::raw(" remember this"));
+        }
+        return Line::from(spans);
+    }
+    Line::from(vec![
+        Span::styled("[y]", Style::new().fg(Color::Green)),
+        Span::raw(" send the highlighted answer"),
+    ])
 }
 
 fn render_prompt(frame: &mut Frame, area: Rect, state: &State) {

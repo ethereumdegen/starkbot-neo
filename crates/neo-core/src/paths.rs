@@ -23,6 +23,7 @@ use std::path::PathBuf;
 pub const BUNDLE_ID: &str = "com.starkbot.neo";
 
 /// The directory name under each XDG base directory.
+#[cfg(not(target_os = "macos"))]
 const XDG_DIR: &str = "starkbot-neo";
 
 /// The store, the backups and anything else that must survive a reinstall.

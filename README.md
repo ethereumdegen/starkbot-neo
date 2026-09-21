@@ -1,8 +1,32 @@
 # Starkbot Neo
 
-Starkbot Neo is a local-first desktop agent in active development, running on macOS and Linux. The target product combines fast browser and native accessibility control, SEO workflows, voice, and an agentic Hypercanvas for static and animated creative work.
+Starkbot Neo is a local-first desktop agent in active development, running on
+macOS and, as of the Linux port, on Linux too. It drives a browser over CDP and
+native apps over the platform accessibility API — macOS Accessibility, AT-SPI on
+Linux — with the Jev navigator, a classifier that answers one operation head, one
+target head and the safety heads per step, and puts that loop behind an agent that
+takes work by voice or text. The product it is being built into is a go-to-market
+marketing and media harness: SEO and GTM workflows on the web, and media made by
+operating real media apps rather than by generating files itself. It is not a shell
+or coding agent; there is no `bash` tool and no general file access.
 
-Work is currently in Milestone 1. The Rust workspace, SQLite store, CLI, terminal front end, desktop Connections shell, subscription bridges, the web and accessibility navigators and the agent loop over them are runnable; the queue, media pipeline and Hypercanvas are planned but not yet released.
+Status, as observed in this tree rather than as planned:
+
+- The M0 spikes S1–S7 are run and their numbers recorded in
+  [`plans/spikes.md`](plans/spikes.md); S8 (media through apps) has not been
+  run, because nothing downstream of it is being built yet.
+- M1 (workspace, SQLite store, `neo` CLI, the ratatui terminal front end, the
+  Tauri developer shell, the subscription bridges, `neo doctor`) is complete
+  except the Apple signing identity, which is still waiting on the user
+  (00-decisions, *Still open* #1) and is what M1 is formally blocked on.
+- M3's web navigator runs, the accessibility path with it (`neo nav`,
+  `neo app`), together with a slice of M5: a streaming ReAct agent loop over
+  the `browse`, `app` and `ax` tools.
+- M4's deterministic rules, Jev safety heads, confirmation queue and
+  user-question cards are live in both interactive front ends. A tripped action
+  pauses for approval instead of silently proceeding or ending the run.
+- Voice is push-to-talk capture plus speech-to-text; there is no speech out.
+- Media through apps, packs and the GTM workflows are unbuilt.
 
 ## Requirements
 
@@ -52,6 +76,20 @@ cargo run -- gui                      # desktop app, Vite dev server on :1420
 cargo run -- nav https://example.com "click the More information link"
 cargo run -- app com.apple.Numbers "pick the Blank template"
 ```
+
+Projects keep standing context in `soul.md`, recurring work in
+`heartbeat.md`, and an independent heartbeat clock (four hours by default):
+
+```sh
+cargo run -- projects add "Q4 launch"
+cargo run -- projects edit q4-launch --soul
+cargo run -- projects edit q4-launch --heartbeat
+cargo run -- projects heartbeat q4-launch --on --every 4h
+cargo run -- heartbeat run q4-launch
+```
+
+Managed projects live under the data directory. `--root /existing/folder`
+attaches an existing folder without creating or scanning unrelated files.
 
 `cargo run` is `neo`: the workspace's `default-members` names `crates/neo-cli`,
 which is also why a bare `cargo build`, `cargo test` or `cargo clippy` covers
@@ -143,10 +181,11 @@ reaches an attribute, and text typed into a field is counted
 
 ## Project plans
 
-- [`PLAN.md`](PLAN.md) — milestone sequence and current status
+- [`PLAN.md`](PLAN.md) — what the product is and who does what
+- [`plans/00-decisions.md`](plans/00-decisions.md) — the decision record, including the authoritative milestone table
+- [`plans/16-quality.md`](plans/16-quality.md) — the quality upgrade (Q0–Q5), which is the work currently in progress
 - [`plans/`](plans/) — architecture and product contracts
 - [`plans/08-providers.md`](plans/08-providers.md) — account, provider, and cost policy
-- [`plans/11-hypercanvas.md`](plans/11-hypercanvas.md) — Hypercanvas architecture
 
 ## Status and safety
 

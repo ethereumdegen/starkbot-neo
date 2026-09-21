@@ -49,6 +49,11 @@ pub enum Action {
     LineSubmit,
     LineCancel,
     OpenSettings,
+    OpenProject,
+    RunProjectHeartbeat,
+    ToggleProjectHeartbeat,
+    EditProjectHeartbeat,
+    EditProjectSoul,
     SelectNext,
     SelectPrevious,
     SelectFirst,
@@ -309,6 +314,16 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
     if control && key.code == KeyCode::Char('n') {
         return Action::NewConversation;
     }
+    if state.focus == Pane::Projects {
+        match key.code {
+            KeyCode::Enter => return Action::OpenProject,
+            KeyCode::Char('r') => return Action::RunProjectHeartbeat,
+            KeyCode::Char('t') => return Action::ToggleProjectHeartbeat,
+            KeyCode::Char('e') => return Action::EditProjectHeartbeat,
+            KeyCode::Char('E') => return Action::EditProjectSoul,
+            _ => {}
+        }
+    }
     if let Some(action) = list_key(key, control) {
         return action;
     }
@@ -316,6 +331,7 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
         KeyCode::Char('1') => Action::FocusPane(Pane::Conversation),
         KeyCode::Char('2') => Action::FocusPane(Pane::Runs),
         KeyCode::Char('3') => Action::FocusPane(Pane::Mind),
+        KeyCode::Char('4') => Action::FocusPane(Pane::Projects),
         KeyCode::Tab => Action::FocusNext,
         KeyCode::BackTab => Action::FocusPrevious,
         KeyCode::Char('<') => Action::ShrinkSplit,
@@ -336,7 +352,7 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
             Action::Unavailable("the queue worker is not built yet — nothing to pause")
         }
         KeyCode::Char('o' | 'O') => {
-            Action::Unavailable("no long-lived managed Chrome yet — `:nav <url> <goal> --headed`")
+            Action::Unavailable("no long-lived managed Chrome yet — `:nav <url> <goal>`")
         }
         KeyCode::Char('g') if state.pending_g => Action::SelectFirst,
         KeyCode::Char('g') => Action::PendingG,

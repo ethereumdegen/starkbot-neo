@@ -66,6 +66,11 @@ pub enum SpeechAuth {
 }
 
 /// Current microphone authorisation. Never prompts.
+///
+/// Off macOS there is no per-application gate to read — ALSA/PulseAudio hand
+/// the device over or fail to open it — so this reports `Authorized` and a
+/// real refusal arrives as a [`VoiceError::Device`] from capture instead of
+/// being guessed at here.
 #[must_use]
 pub fn microphone_status() -> MicrophoneAuth {
     #[cfg(target_os = "macos")]
@@ -79,6 +84,10 @@ pub fn microphone_status() -> MicrophoneAuth {
 }
 
 /// Current speech-recognition authorisation. Never prompts.
+///
+/// Off macOS there is no `Speech.framework` to authorise, so the honest
+/// answer is `Denied`: the on-device backend is absent, and callers that
+/// need to explain that should read `BACKENDS`.
 #[must_use]
 pub fn speech_status() -> SpeechAuth {
     #[cfg(target_os = "macos")]
@@ -114,7 +123,7 @@ pub fn dictation_enabled() -> bool {
 
 /// Make sure the microphone may be opened, prompting once if TCC has never
 /// asked. Blocks on the prompt, because push-to-talk has nothing to do until
-/// it is answered.
+/// it is answered. Off macOS nothing gates the open, so it is a no-op.
 pub(crate) fn ensure_microphone() -> Result<(), VoiceError> {
     #[cfg(target_os = "macos")]
     {

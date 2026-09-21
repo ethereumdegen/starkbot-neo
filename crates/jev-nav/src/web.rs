@@ -71,6 +71,8 @@ struct FrameContributions {
     guards: Vec<(String, Value)>,
     /// Element actions `snapshot.js` dropped, summed over every frame.
     omitted: u64,
+    /// Deterministic page signals summed across readable child frames.
+    signals: HashMap<String, u64>,
     /// Frames CDP listed that no snapshot came back from — cross-origin, or
     /// gone between the listing and the evaluation.
     unreadable: u64,
@@ -99,6 +101,10 @@ fn merge_frames(root: &mut Value, frames: FrameContributions) {
     root["text"] = json!(text.chars().take(6000).collect::<String>());
     root["marker"] = json!([root["marker"].clone(), frames.markers]);
     root["omitted_actions"] = json!(omitted);
+    for (name, count) in frames.signals {
+        let total = root["signals"][&name].as_u64().unwrap_or(0) + count;
+        root["signals"][name] = json!(total);
+    }
     root["signals"]["cross_origin_frames"] = json!(frames.unreadable);
 }
 
@@ -236,6 +242,13 @@ impl CdpObserver {
             };
             observed_frames += 1;
             frames_seen.omitted += child["omitted_actions"].as_u64().unwrap_or(0);
+            if let Some(signals) = child["signals"].as_object() {
+                for (name, count) in signals {
+                    if let Some(count) = count.as_u64() {
+                        *frames_seen.signals.entry(name.clone()).or_insert(0) += count;
+                    }
+                }
+            }
             frames_seen
                 .markers
                 .push(json!([&frame.id, child["marker"].clone()]));
@@ -602,6 +615,7 @@ mod tests {
             text: vec!["inside the frame".into()],
             guards: vec![("4294967297".into(), json!("guard"))],
             omitted: 7,
+            signals: std::collections::HashMap::new(),
             unreadable: 2,
         };
 

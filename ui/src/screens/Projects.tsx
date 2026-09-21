@@ -1,0 +1,227 @@
+import { useEffect, useState } from "react";
+
+import {
+  api,
+  errorOf,
+  type HeartbeatGate,
+  type Project,
+  type ProjectDetailView,
+} from "../bridge/api";
+import panes from "../styles/panes.module.css";
+
+function when(value: number | null): string {
+  return value === null ? "never" : new Date(value).toLocaleString();
+}
+
+export function Projects() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [detail, setDetail] = useState<ProjectDetailView | null>(null);
+  const [soul, setSoul] = useState("");
+  const [heartbeat, setHeartbeat] = useState("");
+  const [everySeconds, setEverySeconds] = useState("14400");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const applyDetail = (next: ProjectDetailView) => {
+    setDetail(next);
+    setSoul(next.soul);
+    setHeartbeat(next.heartbeat);
+    setEverySeconds(String(next.project.heartbeat_every_seconds));
+    setProjects((current) => current.map((project) =>
+      project.slug === next.project.slug ? next.project : project,
+    ));
+  };
+
+  const run = async (work: () => Promise<ProjectDetailView>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      applyDetail(await work());
+    } catch (thrown) {
+      setError(errorOf(thrown).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let live = true;
+    void api.listProjects().then((rows) => {
+      if (live) setProjects(rows);
+    }).catch((thrown) => {
+      if (live) setError(errorOf(thrown).message);
+    });
+    return () => { live = false; };
+  }, []);
+
+  const open = async (project: Project) => {
+    setBusy(true);
+    setError(null);
+    try {
+      applyDetail(await api.showProject(project.slug));
+    } catch (thrown) {
+      setError(errorOf(thrown).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={`${panes.columns} ${panes.split}`}>
+      <section className={panes.pane}>
+        <div className={panes.head}><h2>Projects</h2></div>
+        <div className={`${panes.body} ${panes.tight}`}>
+          {projects.length === 0 && (
+            <p className={panes.empty}>No projects yet. Create one with <code>neo projects add</code>.</p>
+          )}
+          {projects.map((project) => (
+            <button
+              key={project.slug}
+              className={panes.row}
+              aria-selected={detail?.project.slug === project.slug}
+              onClick={() => { void open(project); }}
+            >
+              <span className={panes.rowTitle}>{project.name}</span>
+              <span className={panes.rowMeta}>
+                <span>{project.heartbeat_enabled ? `every ${project.heartbeat_every_seconds}s` : "heartbeat off"}</span>
+                <span>last {when(project.last_tick_at)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className={panes.pane}>
+        <div className={panes.head}>
+          <h2>{detail?.project.name ?? "Project"}</h2>
+          {detail !== null && (
+            <button
+              className={`${panes.spacer} primary`}
+              disabled={busy}
+              onClick={() => { void run(() => api.runProjectHeartbeat(detail.project.slug)); }}
+            >
+              Run heartbeat
+            </button>
+          )}
+        </div>
+        <div className={panes.body}>
+          {error !== null && <p className="fail" role="alert">{error}</p>}
+          {detail === null ? (
+            <p className={panes.empty}>Select a project to inspect its standing context and clock.</p>
+          ) : (
+            <>
+              <div className={panes.form}>
+                <h3>Clock</h3>
+                <p className={panes.hint}>{detail.project.root}</p>
+                <label className={panes.check}>
+                  <input
+                    type="checkbox"
+                    checked={detail.project.heartbeat_enabled}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      void run(() => api.configureProjectHeartbeat(
+                        detail.project.slug,
+                        enabled,
+                        detail.project.heartbeat_every_seconds,
+                        detail.project.on_gate,
+                      ));
+                    }}
+                  />
+                  Run automatically
+                </label>
+                <div className={panes.field}>
+                  <label htmlFor="project-interval">Every (seconds)</label>
+                  <input
+                    id="project-interval"
+                    type="number"
+                    min={300}
+                    max={604800}
+                    value={everySeconds}
+                    onChange={(event) => setEverySeconds(event.target.value)}
+                  />
+                </div>
+                <div className={panes.field}>
+                  <label htmlFor="project-on-gate">When a gate appears</label>
+                  <select
+                    id="project-on-gate"
+                    value={detail.project.on_gate}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const gate = event.target.value as HeartbeatGate;
+                      void run(() => api.configureProjectHeartbeat(
+                        detail.project.slug,
+                        detail.project.heartbeat_enabled,
+                        detail.project.heartbeat_every_seconds,
+                        gate,
+                      ));
+                    }}
+                  >
+                    <option value="hold">Hold for me</option>
+                    <option value="skip">Skip the gated action</option>
+                  </select>
+                </div>
+                <div className={panes.actions}>
+                  <button
+                    disabled={
+                      busy
+                      || Number(everySeconds) < 300
+                      || Number(everySeconds) > 604800
+                    }
+                    onClick={() => {
+                      void run(() => api.configureProjectHeartbeat(
+                        detail.project.slug,
+                        detail.project.heartbeat_enabled,
+                        Number(everySeconds),
+                        detail.project.on_gate,
+                      ));
+                    }}
+                  >
+                    Apply clock
+                  </button>
+                </div>
+                <p className={panes.hint}>Next {when(detail.project.next_due_at)}</p>
+              </div>
+
+              <div className={panes.form}>
+                <h3>soul.md</h3>
+                <textarea rows={8} value={soul} onChange={(event) => setSoul(event.target.value)} />
+                <div className={panes.actions}>
+                  <button disabled={busy} onClick={() => {
+                    void run(() => api.saveProjectDocument(detail.project.slug, "soul.md", soul));
+                  }}>Save soul</button>
+                </div>
+              </div>
+
+              <div className={panes.form}>
+                <h3>heartbeat.md</h3>
+                <textarea rows={8} value={heartbeat} onChange={(event) => setHeartbeat(event.target.value)} />
+                <div className={panes.actions}>
+                  <button disabled={busy} onClick={() => {
+                    void run(() => api.saveProjectDocument(detail.project.slug, "heartbeat.md", heartbeat));
+                  }}>Save heartbeat</button>
+                </div>
+              </div>
+
+              <div className={panes.form}>
+                <h3>Recent ticks</h3>
+                {detail.ticks.length === 0 ? <p className={panes.empty}>No ticks yet.</p> : (
+                  <table className={panes.table}>
+                    <thead><tr><th>Started</th><th>Outcome</th><th>Reason</th></tr></thead>
+                    <tbody>{detail.ticks.map((tick) => (
+                      <tr key={tick.id}>
+                        <td>{when(tick.started_at)}</td>
+                        <td>{tick.outcome}</td>
+                        <td>{tick.reason ?? ""}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}

@@ -215,6 +215,15 @@ fn navigator_check(keys: &[neo_core::KeyStatus]) -> Check {
 ///
 /// Three separate gates, each with its own fix, because "voice does not work"
 /// is useless to a user who has to know *which* switch is off.
+///
+/// The three answers are asked **once per process**. Each is a macOS
+/// authorisation query that takes over a second on a machine where nothing
+/// has warmed the frameworks, and `Bootstrap` embeds this report — so a fresh
+/// install, which is exactly the path with no OpenAI key and therefore no
+/// early return, paid ~4.6 s before `neo tui` could draw its first frame. The
+/// values are also stable for a process's life in every way that matters: a
+/// user who flips a System Settings switch mid-session has already been told
+/// which switch to flip, and re-running the app re-asks.
 fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
     use neo_voice::{MicrophoneAuth, SpeechAuth};
 
@@ -225,7 +234,8 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
             "openai gpt-transcribe · on-device available as a fallback",
         );
     }
-    match neo_voice::microphone_status() {
+    let (microphone, dictation, speech) = *VOICE_AUTHORISATION;
+    match microphone {
         MicrophoneAuth::Denied => {
             return Check::new("dictation", Health::Fail, "microphone access is denied")
                 .with_fix(neo_voice::MICROPHONE_SETTINGS_URL);
@@ -243,11 +253,10 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
     // on-device recogniser at all: a Linux user told "Siri & Dictation is
     // off" would go looking for a setting that is not there, when what they
     // actually need is the OpenAI key.
-    let speech = neo_voice::speech_status();
     if speech == SpeechAuth::Unsupported {
         return no_on_device_dictation();
     }
-    if !neo_voice::dictation_enabled() {
+    if !dictation {
         // Starkbot never flips this itself: it is the user's System Settings.
         return Check::new(
             "dictation",
@@ -270,6 +279,23 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         SpeechAuth::Unsupported => no_on_device_dictation(),
     }
 }
+
+/// The three macOS voice answers, asked once and kept.
+///
+/// See [`dictation_check`] for why this is cached rather than probed per
+/// report. Off macOS each of the three is a compile-time constant in
+/// `neo-voice`, so nothing is probed and the cache costs nothing.
+static VOICE_AUTHORISATION: std::sync::LazyLock<(
+    neo_voice::MicrophoneAuth,
+    bool,
+    neo_voice::SpeechAuth,
+)> = std::sync::LazyLock::new(|| {
+    (
+        neo_voice::microphone_status(),
+        neo_voice::dictation_enabled(),
+        neo_voice::speech_status(),
+    )
+});
 
 /// Where there is no on-device recogniser, `gpt-transcribe` is the whole of
 /// dictation — a warning and never a failure, because typing still works.

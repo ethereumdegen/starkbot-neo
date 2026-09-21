@@ -6,6 +6,7 @@ mod connection;
 mod conversations;
 mod models;
 mod presence;
+mod projects;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ pub use connection::{APPLICATION_ID, SCHEMA_VERSION, migrations, open_read_only}
 pub use conversations::{ConversationRepository, NewMessage, NewTurn};
 pub use models::{CachedModel, GLOBAL_SCOPE, ModelRepository};
 pub use presence::{Lease, PresenceRepository, Resource, Session, SessionKind};
+pub use projects::{FinishHeartbeatTick, ProjectRepository};
 pub use settings::SettingsRepository;
 
 use actor::{ReadPool as Pool, Writer as Actor};
@@ -57,6 +59,10 @@ pub enum StoreError {
     InvalidConversationRow(String),
     #[error("conversation `{0}` does not exist")]
     UnknownConversation(String),
+    #[error("project `{0}` does not exist")]
+    UnknownProject(String),
+    #[error("heartbeat interval must be between 300 and 604800 seconds, got {0}")]
+    InvalidHeartbeatInterval(u64),
     #[error("value for `{0}` does not fit in a SQLite integer")]
     ValueOverflow(&'static str),
     #[error("invalid provider account status `{0}`")]
@@ -115,6 +121,9 @@ impl Store {
 
     pub fn conversations(&self) -> ConversationRepository {
         ConversationRepository::new(self.writer.clone(), self.readers.clone())
+    }
+    pub fn projects(&self) -> ProjectRepository {
+        ProjectRepository::new(self.writer.clone(), self.readers.clone())
     }
 }
 

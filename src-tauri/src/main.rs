@@ -51,6 +51,11 @@ fn main() -> std::process::ExitCode {
         .invoke_handler(tauri::generate_handler![
             commands::handshake,
             commands::get_bootstrap,
+            commands::list_projects,
+            commands::show_project,
+            commands::save_project_document,
+            commands::configure_project_heartbeat,
+            commands::run_project_heartbeat,
             commands::connections,
             commands::begin_login,
             commands::open_login_page,
@@ -74,6 +79,8 @@ fn main() -> std::process::ExitCode {
             commands::send_message,
             commands::steer_run,
             commands::stop_run,
+            commands::resolve_confirm,
+            commands::answer_ask,
             commands::run_nav,
             commands::run_app_goal,
             commands::run_ax,
@@ -84,6 +91,7 @@ fn main() -> std::process::ExitCode {
             // Subscribed before the window can invoke anything, so the first
             // turn a screen starts cannot outrun the stream that reports it.
             let runtime = tauri::Manager::state::<Desktop>(app).runtime();
+            runtime.start_heartbeat_scheduler();
             events::forward(app.handle().clone(), &runtime);
             eprintln!("neo-desktop: window `main` created");
             Ok(())

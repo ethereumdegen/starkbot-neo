@@ -319,14 +319,14 @@ pub fn resolve(
         decision.target_confidence = Some(target.confidence);
         decision.target = Some(target.choice);
     }
-    // Every head that was asked for must be answered. An unreadable one fails
-    // the step rather than defaulting: the whole point of R1.1 is that a
-    // provider returning garbage stops the run instead of scoring `outward`
-    // at zero and sending the message.
+    // Asked for, therefore required (A-Q7, R1.1). A head that did not come
+    // back is a broken response, not a safe one: the alternative is executing
+    // a mutation whose risk nothing scored, which is exactly how a truncated
+    // answer used to score `outward` at zero and send the message.
     for name in &request.safety {
         decision
             .safety
-            .insert((*name).into(), evaluation.yes(name)?);
+            .insert((*name).into(), evaluation.noul(name)?);
     }
     Ok(decision)
 }

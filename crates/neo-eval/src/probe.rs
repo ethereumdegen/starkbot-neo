@@ -32,6 +32,21 @@ pub enum Probe {
     /// window title. Useful for the pruning work A23 calls for — a case can
     /// assert that a spreadsheet's menus survived the 250-row budget.
     Surface { app: String },
+    /// What a web page recorded about what was done to it (16 §6.2).
+    ///
+    /// The navigation review set needs the *page's* state, and an
+    /// accessibility read of Chrome's window cannot give it: a shadow-root
+    /// field, a cross-origin frame and a closed popup tab are all invisible
+    /// to it, and a page that scrolled looks identical to one that did not.
+    /// So each review-set fixture mirrors what its own handlers did into
+    /// `localStorage`, and this reads that back from a tab of the harness's
+    /// own on the same origin — see [`crate::pages`] for why a probe cannot
+    /// simply read the tab the navigator drove.
+    ///
+    /// `url` is the read-only state page on the origin being scored, which is
+    /// what selects the origin: the cross-origin case records on one and the
+    /// frame lives on the other.
+    Page { app: String, url: String },
 }
 
 impl Probe {
@@ -47,6 +62,10 @@ impl Probe {
                 cell: probe.get("cell").and_then(Value::as_str)?.to_owned(),
             }),
             "surface" => Some(Self::Surface { app }),
+            "page" => Some(Self::Page {
+                app,
+                url: probe.get("url").and_then(Value::as_str)?.to_owned(),
+            }),
             _ => None,
         }
     }
@@ -60,13 +79,19 @@ impl Probe {
                 json!({ "probe": { "kind": "cell", "app": app, "cell": cell } })
             }
             Self::Surface { app } => json!({ "probe": { "kind": "surface", "app": app } }),
+            Self::Page { app, url } => {
+                json!({ "probe": { "kind": "page", "app": app, "url": url } })
+            }
         }
     }
 
     #[must_use]
     pub fn app(&self) -> &str {
         match self {
-            Self::AppText { app } | Self::Cell { app, .. } | Self::Surface { app } => app,
+            Self::AppText { app }
+            | Self::Cell { app, .. }
+            | Self::Surface { app }
+            | Self::Page { app, .. } => app,
         }
     }
 }
@@ -82,7 +107,15 @@ pub fn cell_of(app: App, cell: &str) -> Probe {
 
 /// Observe the application. The returned object becomes the `probe` tool
 /// call's arguments, so every key here is assertable with `ExpectToolArg`.
-pub async fn run_probe(_runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeError> {
+pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeError> {
+    // A page probe reads the browser profile, not the accessibility tree, so
+    // it neither needs nor waits on the Accessibility grant — and it must not
+    // refuse on a machine that has not been granted one, because the
+    // navigation review set is the half of the suite that does not drive a
+    // native app at all.
+    if let Probe::Page { url, .. } = probe {
+        return crate::pages::read_state(runtime.data_dir(), url).await;
+    }
     if !AxHandle::trusted() {
         return Err(ProbeError::NotTrusted);
     }
@@ -197,6 +230,8 @@ pub async fn run_probe(_runtime: &Runtime, probe: &Probe) -> Result<Value, Probe
                 "roles": roles,
             }))
         }
+        // Answered above, before the accessibility handle was taken.
+        Probe::Page { url, .. } => crate::pages::read_state(runtime.data_dir(), url).await,
     }
 }
 
@@ -220,6 +255,13 @@ pub enum ProbeError {
     NotTrusted,
     #[error("could not read the application: {0}")]
     Ax(String),
+    /// The review set's own pages are missing or unreachable. A harness
+    /// fault, reported as the run's error so a case is not scored as a model
+    /// failure for it.
+    #[error("the review set's fixtures are not available: {0}")]
+    Fixtures(String),
+    #[error("could not read the page back: {0}")]
+    Browser(String),
 }
 
 #[cfg(test)]
@@ -240,6 +282,10 @@ mod tests {
             },
             Probe::Surface {
                 app: "Numbers".into(),
+            },
+            Probe::Page {
+                app: "com.google.Chrome".into(),
+                url: "http://127.0.0.1:8787/nav-state.html".into(),
             },
         ] {
             let config = AgentConfig {

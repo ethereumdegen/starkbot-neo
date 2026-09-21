@@ -91,6 +91,11 @@ pub struct Selection {
     /// count a front end shows is the count that runs.
     pub filter: Option<String>,
     /// Any-of over case tags (`browser`, `spreadsheet`, `known-gap`, …).
+    ///
+    /// [`cases::REVIEW_TAG`] is the release gate's own tag and
+    /// [`cases::LIVE_TAG`] the three real-site cases; they are deliberately
+    /// disjoint, because any-of has no way to exclude a tag and a gate that
+    /// could not be run without the network would not be a gate (16 §6.2).
     pub tags: Vec<String>,
     /// One run per case instead of the [`cases::CONSENSUS_RUNS`] consensus.
     /// A quick look, never evidence that a case passes.

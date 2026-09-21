@@ -3,11 +3,11 @@
 mod common;
 
 use neo_core::{
-    AppEvent, InferenceConnection, KeyState, Message, MessageKind, MessageRole, MessageSource,
-    NavStepKind, NoticeLevel, PROVIDER_ANTHROPIC, PROVIDER_OPENAI, ReasoningEffort, Settings,
-    TurnUsage,
+    AppEvent, ConfirmId, GateOutcome, InferenceConnection, KeyState, Message, MessageKind,
+    MessageRole, MessageSource, NavStepKind, NoticeLevel, PROVIDER_ANTHROPIC, PROVIDER_OPENAI,
+    ReasoningEffort, ResolutionVia, Settings, TurnUsage,
 };
-use neo_tui::{RunKind, RunState};
+use neo_tui::{Action, CARD_ARM_MS, Card, CardKind, Command, Mode, RunKind, RunState, State};
 
 #[test]
 fn settings_changed_replaces_what_the_settings_view_renders() {
@@ -363,4 +363,362 @@ fn the_stored_record_of_a_steer_is_adopted_rather_than_doubled() {
         },
     });
     assert_eq!(state.thread.len(), 2);
+}
+
+// ---------------------------------------------------------------- the cards
+//
+// Driven from `fixtures/cards/envelopes.jsonl` (16 §5.5) rather than from
+// envelopes written here: the webview's reducer tests read the same file, so
+// a field either front end stops honouring fails on one side or the other.
+
+/// Arm the card the way the loop does: draw a frame, fold the renderer's
+/// report back in, then let the debounce elapse.
+fn arm(state: &mut State) {
+    common::paint(state, 100, 30);
+    state.tick(CARD_ARM_MS);
+}
+
+fn confirm_id(card: &Card) -> ConfirmId {
+    match card.kind {
+        CardKind::Confirm { id, .. } => id,
+        CardKind::Ask { .. } => panic!("an ask card where a confirm was expected"),
+    }
+}
+
+/// A tripped gate is a card, and the card carries what the user needs to
+/// decide: the sentence, the page, and why it stopped.
+#[test]
+fn a_confirm_request_raises_the_card_the_corpus_describes() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+
+    let card = state.card.as_ref().unwrap_or_else(|| panic!("no card"));
+    assert_eq!(card.sentence, "`Pay $42.00 now` says “pay”.");
+    assert_eq!(
+        card.context.as_deref(),
+        Some("Checkout — https://shop.test/cart")
+    );
+    assert_eq!(card.cause.as_deref(), Some("safety:spends"));
+    // Q2 has nowhere to keep a remembered allow, so no card may claim it can.
+    assert!(!card.can_remember);
+    // It arrives unarmed and unrendered: the keys are dead until a frame has
+    // carried the sentence for the debounce window.
+    assert!(!card.live(), "a card was live before it was ever drawn");
+    assert_eq!(state.mode, Mode::Card);
+}
+
+/// The resolution takes the card down, whoever made it — this front end, the
+/// webview, a voice answer, or the broker timing it out. A card left over a
+/// run that has moved on is the dead end this phase removes.
+#[test]
+fn a_resolution_takes_the_card_down_and_an_unrelated_one_leaves_it_alone() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    let live = confirm_id(state.card.as_ref().unwrap_or_else(|| panic!("no card")));
+
+    // Another gate's resolution is not this card's.
+    state.apply(AppEvent::ConfirmResolved {
+        confirm_id: ConfirmId::new(),
+        outcome: GateOutcome::TimedOut,
+        via: ResolutionVia::Timeout,
+    });
+    assert!(
+        state.card.is_some(),
+        "an unrelated resolution cleared the card"
+    );
+
+    state.apply(AppEvent::ConfirmResolved {
+        confirm_id: live,
+        outcome: GateOutcome::TimedOut,
+        via: ResolutionVia::Timeout,
+    });
+    assert!(state.card.is_none(), "the card outlived its gate");
+    assert_eq!(state.mode, Mode::Normal);
+}
+
+/// `y` and `n` become one command each, addressed to the gate and stamped
+/// with the surface that answered it. The reducer returns the command; it
+/// never reaches the runtime itself (14 §4).
+#[test]
+fn y_and_n_emit_the_resolution_for_this_card_via_the_card() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    let live = confirm_id(state.card.as_ref().unwrap_or_else(|| panic!("no card")));
+    arm(&mut state);
+
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: true }),
+        Some(Command::ResolveConfirm {
+            confirm: live,
+            outcome: GateOutcome::Confirmed,
+            via: ResolutionVia::Card,
+        })
+    );
+    // The card stays up until the core says the gate is settled: the answer
+    // has to reach the run before the sentence may leave the screen.
+    assert!(state.card.is_some());
+
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: false }),
+        Some(Command::ResolveConfirm {
+            confirm: live,
+            outcome: GateOutcome::Denied,
+            via: ResolutionVia::Card,
+        })
+    );
+}
+
+/// The arming rule is the reducer's too, not only the keymap's: an action
+/// that arrives from anywhere else — a future binding table, a replayed
+/// macro — must not resolve a card nobody has seen (04 §13).
+#[test]
+fn an_unarmed_card_refuses_the_resolution_and_says_why() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+
+    // Never drawn: `rendered` is false, so nothing resolves.
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: true }),
+        None
+    );
+    assert!(
+        state
+            .status
+            .as_deref()
+            .is_some_and(|line| line.contains("y and n")),
+        "a refused keystroke said nothing: {:?}",
+        state.status
+    );
+
+    // Drawn, but inside the debounce window.
+    common::paint(&mut state, 100, 30);
+    state.tick(CARD_ARM_MS - 1);
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: true }),
+        None
+    );
+
+    state.tick(CARD_ARM_MS);
+    assert!(
+        state
+            .apply_action(Action::ResolveConfirm { approve: true })
+            .is_some(),
+        "the card never armed"
+    );
+}
+
+/// An options ask is answered with the option's own text, so the broker
+/// never has to map an index back onto a list it may have reordered.
+#[test]
+fn an_options_ask_answers_with_the_option_the_user_picked() {
+    let mut state = common::state();
+    state.apply(common::envelope(8));
+    arm(&mut state);
+    let card = state.card.as_ref().unwrap_or_else(|| panic!("no card"));
+    let ask = match card.kind {
+        CardKind::Ask { id, .. } => id,
+        CardKind::Confirm { .. } => panic!("a confirm card where an ask was expected"),
+    };
+    assert_eq!(card.highlighted(), Some("andrew@stark.test"));
+
+    // `j` moves the highlight; `y` sends whatever it is on.
+    state.apply_action(Action::SelectNext);
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: true }),
+        Some(Command::AnswerAsk {
+            ask,
+            answer: "ops@stark.test".to_owned(),
+            via: ResolutionVia::Card,
+        })
+    );
+
+    // A digit picks and sends in one keystroke.
+    assert_eq!(
+        state.apply_action(Action::AnswerAsk(1)),
+        Some(Command::AnswerAsk {
+            ask,
+            answer: "andrew@stark.test".to_owned(),
+            via: ResolutionVia::Card,
+        })
+    );
+    // A number that is not on the card answers nothing.
+    assert_eq!(state.apply_action(Action::AnswerAsk(7)), None);
+    // Neither does the arming rule stop applying to digits.
+    state.apply(AppEvent::AskResolved {
+        ask_id: ask,
+        answer: "ops@stark.test".to_owned(),
+        via: ResolutionVia::Card,
+    });
+    state.apply(common::envelope(8));
+    assert_eq!(state.apply_action(Action::AnswerAsk(1)), None);
+}
+
+/// A free-text question is typed into the prompt overlay — the one overlay
+/// that takes the keyboard back off a card — and sent unmasked.
+#[test]
+fn a_free_text_ask_is_answered_through_the_prompt() {
+    let mut state = common::state();
+    state.apply(common::envelope(5));
+    arm(&mut state);
+    let ask = match state
+        .card
+        .as_ref()
+        .unwrap_or_else(|| panic!("no card"))
+        .kind
+    {
+        CardKind::Ask { id, .. } => id,
+        CardKind::Confirm { .. } => panic!("a confirm card where an ask was expected"),
+    };
+    // There is nothing to pick, so `y` opens the prompt instead of answering.
+    assert_eq!(
+        state.apply_action(Action::ResolveConfirm { approve: true }),
+        None
+    );
+    let prompt = state.prompt.as_ref().unwrap_or_else(|| panic!("no prompt"));
+    assert_eq!(
+        prompt.label,
+        "Tell me what goes in “Invoice number” and I'll carry on."
+    );
+    assert!(
+        !prompt.masked,
+        "an invoice number was collected as a secret"
+    );
+
+    for character in "INV-2291".chars() {
+        state.apply_action(Action::PromptChar(character));
+    }
+    assert_eq!(
+        state.apply_action(Action::PromptSubmit),
+        Some(Command::AnswerAsk {
+            ask,
+            answer: "INV-2291".to_owned(),
+            via: ResolutionVia::Card,
+        })
+    );
+    assert!(state.prompt.is_none());
+    assert!(
+        state.card.is_some(),
+        "the question left before it was settled"
+    );
+
+    // An empty answer is not an answer: the question is still waiting.
+    state.apply_action(Action::EnterInsert);
+    assert!(state.prompt.is_some(), "i did not reopen the answer prompt");
+    assert_eq!(state.apply_action(Action::PromptSubmit), None);
+
+    state.apply(common::envelope(6));
+    assert!(
+        state.card.is_none(),
+        "the answered question stayed on screen"
+    );
+}
+
+/// One card on screen at a time — two sentences competing for one keystroke
+/// is how the wrong thing gets approved — but the second gate is kept, not
+/// dropped, and it comes up unarmed in its turn.
+#[test]
+fn a_second_gate_waits_behind_the_card_on_screen() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    let first = confirm_id(state.card.as_ref().unwrap_or_else(|| panic!("no card")));
+    arm(&mut state);
+    state.apply(common::envelope(7));
+    assert_eq!(state.queued_cards.len(), 1);
+    assert_eq!(
+        confirm_id(state.card.as_ref().unwrap_or_else(|| panic!("no card"))),
+        first,
+        "the newer gate pushed the one being read off the screen"
+    );
+
+    // The same gate republished must not double it.
+    state.apply(common::envelope(7));
+    assert_eq!(state.queued_cards.len(), 1);
+
+    state.apply(AppEvent::ConfirmResolved {
+        confirm_id: first,
+        outcome: GateOutcome::Confirmed,
+        via: ResolutionVia::Card,
+    });
+    let card = state
+        .card
+        .as_ref()
+        .unwrap_or_else(|| panic!("the queued gate was dropped"));
+    assert_eq!(card.cause.as_deref(), Some("upload:forms.test"));
+    assert!(!card.live(), "a queued card came up already armed");
+    assert!(state.queued_cards.is_empty());
+}
+
+/// A gate can settle while it is still waiting its turn — the broker times it
+/// out, or another surface answers it — and must not then be shown.
+#[test]
+fn a_queued_gate_that_settles_first_is_never_shown() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    state.apply(common::envelope(7));
+    let queued = confirm_id(
+        state
+            .queued_cards
+            .front()
+            .unwrap_or_else(|| panic!("nothing queued")),
+    );
+    state.apply(AppEvent::ConfirmResolved {
+        confirm_id: queued,
+        outcome: GateOutcome::TimedOut,
+        via: ResolutionVia::Timeout,
+    });
+    assert!(state.queued_cards.is_empty());
+
+    let live = confirm_id(state.card.as_ref().unwrap_or_else(|| panic!("no card")));
+    state.apply(AppEvent::ConfirmResolved {
+        confirm_id: live,
+        outcome: GateOutcome::Confirmed,
+        via: ResolutionVia::Card,
+    });
+    assert!(state.card.is_none(), "a settled gate was put on screen");
+}
+
+/// `r` is honest while the core cannot remember an allow: it says so and
+/// changes nothing. A card that silently toggled a flag nothing honours
+/// would be promising the user something the product does not do.
+#[test]
+fn remembering_an_allow_says_it_is_not_built_yet() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    arm(&mut state);
+    let before = state.card.clone();
+
+    assert_eq!(state.apply_action(Action::ToggleRemember), None);
+    assert!(
+        state
+            .status
+            .as_deref()
+            .is_some_and(|line| line.contains("not built yet")),
+        "r claimed something: {:?}",
+        state.status
+    );
+    assert_eq!(state.card, before, "r changed the card");
+}
+
+/// The whole corpus, in order, through the reducer: every request raises its
+/// card and every resolution takes it down, leaving nothing behind. This is
+/// the drift guard — the webview replays the same eight envelopes.
+#[test]
+fn the_shared_corpus_leaves_no_card_behind() {
+    let mut state = common::state();
+    let events = common::corpus();
+    assert_eq!(events.len(), 8, "the corpus changed shape");
+    for event in events {
+        let request = matches!(
+            event,
+            AppEvent::ConfirmRequest { .. } | AppEvent::AskRequest { .. }
+        );
+        state.apply(event);
+        if request {
+            assert!(state.card.is_some(), "a request raised no card");
+        }
+    }
+    // Envelopes 7 and 8 are the two extra gates, and the corpus never
+    // resolves them: they are the queue's fixtures.
+    assert_eq!(state.queued_cards.len(), 1);
+    assert!(state.card.is_some());
 }

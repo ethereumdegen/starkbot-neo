@@ -85,6 +85,7 @@ pub async fn run(data_dir: Option<PathBuf>, options: EvalOptions) -> Result<()> 
 ///
 /// `run_suite` deliberately returns the report rather than printing it, so
 /// every decision about a terminal is made here.
+#[allow(clippy::print_stdout)]
 fn render(
     report: &SuiteReport,
     save_to: Option<&std::path::Path>,

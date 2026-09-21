@@ -9,18 +9,23 @@ use std::collections::VecDeque;
 use neo_agent::agent::STOPPED;
 use neo_agent::ax::AxRequest;
 use neo_agent::doctor::{DoctorReport, Health};
+use neo_agent::projects::ProjectDocuments;
 use neo_agent::runtime::{Bootstrap, StoreInfo};
 use neo_core::{
-    AppEvent, ConversationId, InferenceConnection, KeyState, KeyStatus, ListenState, MessageId,
-    MessageKind, ModelRef, PROVIDER_ANTHROPIC, PROVIDER_CHATGPT_CODEX,
-    PROVIDER_CLAUDE_SUBSCRIPTION, PROVIDER_OPENAI, ProviderAccount, ProviderAccountStatus,
-    ProviderId, ReasoningEffort, RunId, Settings, TimestampMs, TurnUsage,
+    AppEvent, AskId, AskView, ConfirmId, ConfirmView, ConversationId, GateOutcome,
+    InferenceConnection, KeyState, KeyStatus, ListenState, MessageId, MessageKind, ModelRef,
+    PROVIDER_ANTHROPIC, PROVIDER_CHATGPT_CODEX, PROVIDER_CLAUDE_SUBSCRIPTION, PROVIDER_OPENAI,
+    Project, ProviderAccount, ProviderAccountStatus, ProviderId, ReasoningEffort, ResolutionVia,
+    RunId, Settings, TaskId, TimestampMs, TurnUsage, Usd,
 };
 use neo_eval::Selection;
 use serde_json::{Value, json};
 
 use crate::keys::Action;
 use crate::runs::{RUNS_CAP, Run, RunKind, RunState, TraceKind, eval_line, nav_trace};
+// The renderer's report of the frame it just drew. The only thing this
+// module takes from `ui`, and it is data, not rendering.
+use crate::ui::Painted;
 
 /// Shown on a first run, naming the keystrokes that finish setup.
 const SETUP_HINT: &str =
@@ -50,6 +55,11 @@ const COMPOSER_STEERS: &str = "Enter steers the running turn · Esc twice stops 
 /// Connections screen fixes.
 const COMPOSER_BLOCKED: &str = "no inference connection — press , then c to sign in";
 
+/// What the status line says when a key would have resolved a card that is
+/// not armed yet. Not silence: a keystroke that did nothing and said nothing
+/// reads as a broken binding, and the user presses it again harder.
+const CARD_UNREAD: &str = "give the card a moment — y and n go live once it has been on screen";
+
 /// Panes in the M1 pane row.
 ///
 /// [`Pane::Mind`] shows the selected run's trace; with nothing selected it
@@ -60,16 +70,18 @@ pub enum Pane {
     Conversation,
     Runs,
     Mind,
+    Projects,
 }
 
 impl Pane {
-    pub const ALL: [Self; 3] = [Self::Conversation, Self::Runs, Self::Mind];
+    pub const ALL: [Self; 4] = [Self::Conversation, Self::Runs, Self::Mind, Self::Projects];
 
     pub const fn index(self) -> usize {
         match self {
             Self::Conversation => 0,
             Self::Runs => 1,
             Self::Mind => 2,
+            Self::Projects => 3,
         }
     }
 
@@ -78,6 +90,7 @@ impl Pane {
             Self::Conversation => "Conversation",
             Self::Runs => "Runs",
             Self::Mind => "Mind",
+            Self::Projects => "Projects",
         }
     }
 
@@ -90,8 +103,9 @@ impl Pane {
     }
 }
 
-/// Input mode (14 §3). `Card` exists so the keymap can enforce the confirm rule
-/// before M4 can raise a card.
+/// Input mode (14 §3). `Card` is what a raised confirm or ask puts the front
+/// end into: the card owns the keyboard while it is up, and the mode word on
+/// the status line is how a user reads that.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -495,6 +509,14 @@ pub enum PromptKind {
     },
     /// Rename the open conversation.
     Rename,
+    /// The typed answer to a free-text question (16 §5.5). The same one-line
+    /// overlay a model id uses, unmasked: a question with no options has to
+    /// be answered in words, and a card cannot collect them — while a card is
+    /// up it owns the keyboard, so the prompt is what lets the user type at
+    /// all.
+    Ask {
+        ask: AskId,
+    },
 }
 
 /// One row of the session picker.
@@ -618,6 +640,22 @@ pub enum Command {
     RenameConversation {
         title: String,
     },
+    OpenProject {
+        slug: String,
+    },
+    RunProjectHeartbeat {
+        slug: String,
+    },
+    ToggleProjectHeartbeat {
+        slug: String,
+        enabled: bool,
+        every_seconds: u64,
+        on_gate: neo_core::HeartbeatGate,
+    },
+    EditProjectDocument {
+        slug: String,
+        document: &'static str,
+    },
     PatchSettings {
         section: &'static str,
         patch: Value,
@@ -660,6 +698,20 @@ pub enum Command {
     CheckKey {
         account: String,
     },
+    /// Answer a confirm gate (`Runtime::resolve_confirm`). `via` is decided
+    /// here rather than in the loop: the front end knows which of its own
+    /// surfaces the answer came from, and the decision trail records it.
+    ResolveConfirm {
+        confirm: ConfirmId,
+        outcome: GateOutcome,
+        via: ResolutionVia,
+    },
+    /// Answer a question (`Runtime::answer_ask`).
+    AnswerAsk {
+        ask: AskId,
+        answer: String,
+        via: ResolutionVia,
+    },
     /// Repaint the whole screen (`Ctrl-L`).
     ///
     /// Marking the state dirty would only re-diff against a back buffer
@@ -680,7 +732,9 @@ pub enum Command {
 pub struct NavSpec {
     pub url: String,
     pub goal: String,
-    pub headed: bool,
+    /// Run without a visible window. Headed is the default (Q1.1): a browser
+    /// the user cannot see doing their banking is not the product.
+    pub headless: bool,
     pub profile: Option<String>,
     /// Ask the Jev safety heads. Off means *no* head is asked, so nothing can
     /// trip the confirm gate: fixtures only.
@@ -740,6 +794,24 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RenameConversation")
                 .field("title", title)
                 .finish(),
+            Self::OpenProject { slug } => formatter
+                .debug_struct("OpenProject")
+                .field("slug", slug)
+                .finish(),
+            Self::RunProjectHeartbeat { slug } => formatter
+                .debug_struct("RunProjectHeartbeat")
+                .field("slug", slug)
+                .finish(),
+            Self::ToggleProjectHeartbeat { slug, enabled, .. } => formatter
+                .debug_struct("ToggleProjectHeartbeat")
+                .field("slug", slug)
+                .field("enabled", enabled)
+                .finish(),
+            Self::EditProjectDocument { slug, document } => formatter
+                .debug_struct("EditProjectDocument")
+                .field("slug", slug)
+                .field("document", document)
+                .finish(),
             Self::PatchSettings { section, patch } => formatter
                 .debug_struct("PatchSettings")
                 .field("section", section)
@@ -783,6 +855,25 @@ impl std::fmt::Debug for Command {
                 .debug_struct("CheckKey")
                 .field("account", account)
                 .finish(),
+            Self::ResolveConfirm {
+                confirm,
+                outcome,
+                via,
+            } => formatter
+                .debug_struct("ResolveConfirm")
+                .field("confirm", confirm)
+                .field("outcome", outcome)
+                .field("via", via)
+                .finish(),
+            // A typed answer is whatever the page asked for, which may be a
+            // one-time code or an invoice number. The shape is printed; the
+            // text is counted, exactly as `Ax` does.
+            Self::AnswerAsk { ask, answer, via } => formatter
+                .debug_struct("AnswerAsk")
+                .field("ask", ask)
+                .field("chars", &answer.chars().count())
+                .field("via", via)
+                .finish(),
             Self::ReBootstrap => formatter.write_str("ReBootstrap"),
             Self::Redraw => formatter.write_str("Redraw"),
         }
@@ -812,16 +903,245 @@ pub struct Activity {
     pub detail: String,
 }
 
-/// A pending confirm card. M4 fills this; M1 never does, which is exactly why
-/// `y` can never resolve anything today (14 §3, 04 §13).
+/// How long a card's sentence has to have been on screen before `y`/`n` are
+/// live (04 §13, 14 §3). A gate the user has not had time to read is not a
+/// gate; the debounce is what makes the keystroke a decision.
+pub const CARD_ARM_MS: u64 = 600;
+
+/// A pending confirm or ask: the one thing on screen a paused run is waiting
+/// for (04 §13, 14 §3, 16 §5.5).
+///
+/// Raised by [`AppEvent::ConfirmRequest`]/[`AppEvent::AskRequest`] and cleared
+/// by the matching resolution — including one this front end did not make,
+/// because a timeout or another surface's answer settles the same gate.
+/// `armed` and `rendered` are the two halves of the safety rule: nothing
+/// resolves a card whose sentence has not reached a frame and stayed there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Card {
-    pub id: String,
+    /// Which gate this is, with the id its resolution needs.
+    pub kind: CardKind,
+    /// What is about to happen, as one complete sentence in the product's
+    /// voice. Never abbreviated on screen: half a sentence about money is
+    /// worse than no sentence.
     pub sentence: String,
-    /// Set by the render loop once the sentence has been on screen ≥ 600 ms.
+    /// Where it is about to happen — "<page title> — <url>".
+    pub context: Option<String>,
+    /// Why the gate tripped, as the machine tagged it: `safety:spends`,
+    /// `label:pay`, `upload:forms.test`.
+    pub cause: Option<String>,
+    /// What the action is expected to cost, already in words: the reducer
+    /// owns no pricing table, exactly as it owns no clock.
+    pub cost: Option<String>,
+    /// Whether an approval could be remembered. False for every card in Q2 —
+    /// approvals are single-shot — so the affordance is not offered.
+    pub can_remember: bool,
+    /// Set once the debounce has elapsed with the sentence on screen.
     pub armed: bool,
-    /// Set by the renderer after the card's sentence actually reached the frame.
+    /// Set by the renderer after the card's sentence actually reached the
+    /// frame, and cleared when it stops reaching it.
     pub rendered: bool,
+    /// When the sentence first reached a frame, on the reducer's clock.
+    shown_ms: Option<u64>,
+}
+
+/// The two gates, each carrying what its answer has to be addressed to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardKind {
+    /// Yes or no to one action.
+    Confirm { id: ConfirmId, task: TaskId },
+    /// One question. `options` empty means free text, which is typed into the
+    /// prompt overlay rather than chosen.
+    Ask {
+        id: AskId,
+        task: TaskId,
+        options: Vec<String>,
+        /// Which option is highlighted, for the numbered list.
+        selected: usize,
+    },
+}
+
+impl Card {
+    /// A confirm card from the core's view of the gate.
+    #[must_use]
+    pub fn confirm(view: &ConfirmView) -> Self {
+        Self {
+            kind: CardKind::Confirm {
+                id: view.id,
+                task: view.task_id,
+            },
+            sentence: view.action_sentence.clone(),
+            context: view.context.clone(),
+            cause: Some(view.cause.clone()),
+            cost: view
+                .estimated_cost
+                .as_ref()
+                .and_then(|usage| cost_words(usage.usd)),
+            can_remember: view.can_remember,
+            armed: false,
+            rendered: false,
+            shown_ms: None,
+        }
+    }
+
+    /// An ask card. The question is the sentence: there is nothing else to
+    /// say about a question, and the options carry the rest.
+    #[must_use]
+    pub fn ask(view: &AskView) -> Self {
+        Self {
+            kind: CardKind::Ask {
+                id: view.id,
+                task: view.task_id,
+                options: view.options.clone(),
+                selected: 0,
+            },
+            sentence: view.question.clone(),
+            context: None,
+            cause: None,
+            cost: None,
+            can_remember: false,
+            armed: false,
+            rendered: false,
+            shown_ms: None,
+        }
+    }
+
+    /// The answer a keystroke would give, which is what `y` takes: the
+    /// highlighted option, or nothing for a free-text question.
+    #[must_use]
+    pub fn highlighted(&self) -> Option<&str> {
+        match &self.kind {
+            CardKind::Confirm { .. } => None,
+            CardKind::Ask {
+                options, selected, ..
+            } => options.get(*selected).map(String::as_str),
+        }
+    }
+
+    /// A question with no options, which has to be typed rather than chosen.
+    #[must_use]
+    pub fn free_text(&self) -> bool {
+        matches!(&self.kind, CardKind::Ask { options, .. } if options.is_empty())
+    }
+
+    /// Whether a keystroke may resolve this card: its sentence is on the
+    /// frame and has been there long enough to have been read.
+    #[must_use]
+    pub const fn live(&self) -> bool {
+        self.armed && self.rendered
+    }
+
+    fn is_confirm(&self, id: ConfirmId) -> bool {
+        matches!(self.kind, CardKind::Confirm { id: mine, .. } if mine == id)
+    }
+
+    fn is_ask(&self, id: AskId) -> bool {
+        matches!(self.kind, CardKind::Ask { id: mine, .. } if mine == id)
+    }
+
+    /// The numbered answers. Empty for a confirm and for a free-text
+    /// question, which is exactly what "there is nothing to pick" means.
+    #[must_use]
+    pub fn options(&self) -> &[String] {
+        match &self.kind {
+            CardKind::Confirm { .. } => &[],
+            CardKind::Ask { options, .. } => options,
+        }
+    }
+
+    /// Which numbered answer is highlighted.
+    #[must_use]
+    pub const fn selected(&self) -> usize {
+        match &self.kind {
+            CardKind::Confirm { .. } => 0,
+            CardKind::Ask { selected, .. } => *selected,
+        }
+    }
+
+    /// Highlight one answer by index, and say whether there was one there.
+    fn select(&mut self, index: usize) -> bool {
+        let CardKind::Ask {
+            options, selected, ..
+        } = &mut self.kind
+        else {
+            return false;
+        };
+        if index >= options.len() {
+            return false;
+        }
+        *selected = index;
+        true
+    }
+
+    /// Move the highlight, clamped: a list of two answers does not wrap
+    /// round to the dangerous one because a key was held down.
+    fn move_selection(&mut self, delta: i32) {
+        let CardKind::Ask {
+            options, selected, ..
+        } = &mut self.kind
+        else {
+            return;
+        };
+        if options.is_empty() {
+            return;
+        }
+        let last = i64::try_from(options.len() - 1).unwrap_or(0);
+        let next = (i64::try_from(*selected).unwrap_or(0) + i64::from(delta)).clamp(0, last);
+        *selected = usize::try_from(next).unwrap_or(0);
+    }
+
+    /// Two cards for the same gate. The id, not the sentence: the core may
+    /// republish a pending gate with reworded context after a re-bootstrap.
+    fn same_gate(&self, other: &Self) -> bool {
+        match other.kind {
+            CardKind::Confirm { id, .. } => self.is_confirm(id),
+            CardKind::Ask { id, .. } => self.is_ask(id),
+        }
+    }
+
+    /// The renderer's report, folded in: the sentence reached a frame, or it
+    /// stopped reaching one. Says whether anything changed, so a frame is
+    /// only owed when it did.
+    fn painted(&mut self, on_screen: bool, now_ms: u64) -> bool {
+        if self.rendered == on_screen {
+            return false;
+        }
+        self.rendered = on_screen;
+        if on_screen {
+            self.shown_ms = Some(now_ms);
+        } else {
+            // A card a resize pushed off the frame is unarmed again: the
+            // debounce is about *this* sighting of the sentence.
+            self.shown_ms = None;
+            self.armed = false;
+        }
+        true
+    }
+
+    /// Arm the card once the debounce has elapsed on screen.
+    fn arm(&mut self, now_ms: u64) -> bool {
+        if self.armed || !self.rendered {
+            return false;
+        }
+        let Some(shown) = self.shown_ms else {
+            return false;
+        };
+        if now_ms.saturating_sub(shown) < CARD_ARM_MS {
+            return false;
+        }
+        self.armed = true;
+        true
+    }
+}
+
+/// What a confirm says the action will cost, or nothing when the core could
+/// not price it. Plan-backed work is [`Usd::Unpriced`] (05 §7), and inventing
+/// a figure for it would be a number nobody can reconcile with a bill.
+fn cost_words(usd: Usd) -> Option<String> {
+    match usd {
+        Usd::Exact(amount) => Some(format!("${amount:.2}")),
+        Usd::Estimated(amount) => Some(format!("about ${amount:.2}")),
+        Usd::Unpriced => None,
+    }
 }
 
 pub use neo_agent::agent::{ChatMessage, Role};
@@ -970,6 +1290,9 @@ pub struct State {
     pub store: StoreInfo,
     /// The readiness checks the core computed for this frame (05 §10).
     pub doctor: DoctorReport,
+    pub projects: Vec<Project>,
+    pub project_row: usize,
+    pub project_detail: Option<(ProjectDocuments, Vec<neo_core::HeartbeatTick>)>,
 
     pub listen: Option<ListenState>,
     pub mic_device: Option<String>,
@@ -977,8 +1300,8 @@ pub struct State {
     pub view: View,
     pub mode: Mode,
     pub focus: Pane,
-    pub scroll: [u16; 3],
-    pub follow: [bool; 3],
+    pub scroll: [u16; 4],
+    pub follow: [bool; 4],
     pub tab_only: bool,
 
     /// The conversation, oldest first.
@@ -1019,7 +1342,15 @@ pub struct State {
     pub prompt: Option<Prompt>,
     /// The login overlay, when a subscription sign-in is in flight.
     pub login: Option<Login>,
+    /// The card on screen: the gate a paused run is waiting on.
     pub card: Option<Card>,
+    /// Gates that tripped while another card was already up, oldest first.
+    ///
+    /// One slot on screen, because two sentences competing for one keystroke
+    /// is how the wrong thing gets approved. A queue rather than a drop,
+    /// because a confirm nobody is ever shown is the dead end this phase
+    /// exists to remove.
+    pub queued_cards: VecDeque<Card>,
     pub help: bool,
     pub quit_prompt: bool,
     pub quit: bool,
@@ -1056,6 +1387,7 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
         } = bootstrap;
         Self {
             bridge_version,
@@ -1066,13 +1398,16 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
+            project_row: 0,
+            project_detail: None,
             listen: None,
             mic_device: None,
             view: View::Panes,
             mode: Mode::Normal,
             focus: Pane::Conversation,
-            scroll: [0; 3],
-            follow: [true; 3],
+            scroll: [0; 4],
+            follow: [true; 4],
             tab_only: false,
             thread: Vec::new(),
             conversation: None,
@@ -1091,6 +1426,7 @@ impl State {
             prompt: None,
             login: None,
             card: None,
+            queued_cards: VecDeque::new(),
             help: false,
             quit_prompt: false,
             quit: false,
@@ -1113,6 +1449,7 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
         } = bootstrap;
         self.bridge_version = bridge_version;
         self.settings = settings;
@@ -1121,14 +1458,17 @@ impl State {
         self.account = account;
         self.accounts = accounts;
         self.store = store;
+        self.projects = projects;
+        self.project_row = self.project_row.min(self.projects.len().saturating_sub(1));
+        self.project_detail = None;
         self.doctor = doctor;
         self.row = self.row.min(self.rows().len().saturating_sub(1));
         self.dirty = true;
     }
 
     /// Advance the reducer's clock. Only redraws when a live run's rendered
-    /// elapsed would actually change, so an idle front end still draws zero
-    /// frames (14 §4).
+    /// elapsed would actually change, or when the card's debounce just
+    /// elapsed, so an idle front end still draws zero frames (14 §4).
     pub fn tick(&mut self, now_ms: u64) {
         let before = self
             .runs
@@ -1138,6 +1478,29 @@ impl State {
         self.now_ms = now_ms;
         if let Some(before) = before
             && before != self.elapsed_second()
+        {
+            self.dirty = true;
+        }
+        // Arming is a clock fact, and this is where the clock arrives. The
+        // frame it owes is the one that stops saying "reading…" and starts
+        // offering the keys.
+        if self.card.as_mut().is_some_and(|card| card.arm(now_ms)) {
+            self.dirty = true;
+        }
+    }
+
+    /// What the renderer painted on the frame it just drew.
+    ///
+    /// The only thing the reducer cannot work out for itself: whether the
+    /// card's sentence actually reached the terminal. A card the frame was
+    /// too small for, or one another overlay covered, is not on screen, and
+    /// nothing a keystroke does may pretend otherwise (04 §13).
+    pub fn painted(&mut self, painted: Painted) {
+        let now = self.now_ms;
+        if self
+            .card
+            .as_mut()
+            .is_some_and(|card| card.painted(painted.card, now))
         {
             self.dirty = true;
         }
@@ -1563,12 +1926,66 @@ impl State {
                     self.thread.clear();
                 }
             }
+            // A tripped gate is the one thing on screen the run cannot get
+            // past without the user, so it goes up as a card (16 §5.5). It
+            // arrives unarmed and unrendered: the keys only come alive once
+            // the renderer says the sentence reached the frame and the
+            // debounce has elapsed on it.
+            AppEvent::ConfirmRequest { ref confirm } => self.raise_card(Card::confirm(confirm)),
+            AppEvent::AskRequest { ref ask } => self.raise_card(Card::ask(ask)),
+            // Resolved is resolved, whoever resolved it: this front end, the
+            // webview, a voice answer, or the broker's own timeout. The card
+            // simply goes away — a front end that waited for its own
+            // keystroke would leave a dead card over a run that has moved on.
+            AppEvent::ConfirmResolved { confirm_id, .. } => {
+                self.clear_card(|card| card.is_confirm(confirm_id));
+            }
+            AppEvent::AskResolved { ask_id, .. } => {
+                self.clear_card(|card| card.is_ask(ask_id));
+            }
             AppEvent::Notice { ref text, .. } => self.status = Some(text.clone()),
             _ => {}
         }
         self.push_activity(activity);
         self.row = self.row.min(self.rows().len().saturating_sub(1));
         self.dirty = true;
+    }
+
+    /// Put a gate on screen, or behind the one already there.
+    ///
+    /// The same gate republished — a re-bootstrap, a reconnected webview —
+    /// must not double: it is matched by id and the card on screen keeps its
+    /// arming, because the sentence never left the frame.
+    fn raise_card(&mut self, card: Card) {
+        if self.card.as_ref().is_some_and(|live| live.same_gate(&card))
+            || self
+                .queued_cards
+                .iter()
+                .any(|queued| queued.same_gate(&card))
+        {
+            return;
+        }
+        if self.card.is_some() {
+            self.queued_cards.push_back(card);
+            return;
+        }
+        self.card = Some(card);
+        self.mode = Mode::Card;
+    }
+
+    /// Take down the card the resolution settled, and raise the next one.
+    ///
+    /// A queued gate can settle before it is ever shown — the broker times it
+    /// out, or another surface answers it — so the queue is swept too.
+    fn clear_card(&mut self, settled: impl Fn(&Card) -> bool) {
+        self.queued_cards.retain(|card| !settled(card));
+        if !self.card.as_ref().is_some_and(&settled) {
+            return;
+        }
+        self.card = self.queued_cards.pop_front();
+        if self.card.is_none() && self.mode == Mode::Card {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Take the store's record of a steering message onto the row already on
@@ -1858,6 +2275,11 @@ impl State {
                 self.status = Some("kill switch: nothing is running".into());
             }
             Action::StopRun => return self.stop_selected(),
+            Action::OpenProject => return self.open_project(),
+            Action::RunProjectHeartbeat => return self.run_project_heartbeat(),
+            Action::ToggleProjectHeartbeat => return self.toggle_project_heartbeat(),
+            Action::EditProjectHeartbeat => return self.edit_project_document("heartbeat.md"),
+            Action::EditProjectSoul => return self.edit_project_document("soul.md"),
             Action::FocusPane(pane) => self.focus = pane,
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrevious => self.focus = self.focus.previous(),
@@ -1876,7 +2298,16 @@ impl State {
                     }
                 }
             }
-            Action::EnterInsert => self.mode = Mode::Insert,
+            // With a card up, `i` is "answer the question", not "compose":
+            // the card owns the keyboard, so insert mode would have nothing
+            // to type into.
+            Action::EnterInsert => {
+                if self.card.is_some() {
+                    self.open_ask_prompt();
+                } else {
+                    self.mode = Mode::Insert;
+                }
+            }
             Action::LeaveInsert => self.mode = Mode::Normal,
             Action::EnterCommand => {
                 self.mode = Mode::Command;
@@ -1913,8 +2344,22 @@ impl State {
                 self.mode = Mode::Normal;
                 self.row = 0;
             }
-            Action::SelectNext => self.move_row(1),
-            Action::SelectPrevious => self.move_row(-1),
+            // A card owns the keyboard while it is up, so motion moves its
+            // options rather than a settings row nobody can see behind it.
+            Action::SelectNext => {
+                if self.card.is_some() {
+                    self.move_option(1);
+                } else {
+                    self.move_row(1);
+                }
+            }
+            Action::SelectPrevious => {
+                if self.card.is_some() {
+                    self.move_option(-1);
+                } else {
+                    self.move_row(-1);
+                }
+            }
             Action::SelectFirst => self.select_first(),
             Action::SelectLast => self.select_last(),
             Action::SelectPageDown => self.move_row(10),
@@ -2000,18 +2445,205 @@ impl State {
             }
             Action::PromptCancel => self.prompt = None,
             Action::PromptSubmit => return self.submit_prompt(),
-            Action::ResolveConfirm { .. }
-            | Action::ToggleRemember
-            | Action::ShowMe
-            | Action::AnswerAsk(_) => {
-                self.status = Some("confirm cards arrive with the queue worker".into());
+            Action::ResolveConfirm { approve } => return self.resolve_card(approve),
+            Action::ToggleRemember => {
+                // Q2 approvals are single-shot: the broker has nowhere to
+                // keep a remembered allow yet, and a card that offered to
+                // remember one would be promising something nothing honours.
+                self.status = Some(
+                    "remembering an allow is not built yet — this answer covers this one action"
+                        .into(),
+                );
             }
-            Action::UnfocusCard => self.mode = Mode::Normal,
+            Action::ShowMe => {
+                self.status = Some(
+                    "showing the page needs the long-lived managed Chrome, which is not built yet"
+                        .into(),
+                );
+            }
+            Action::AnswerAsk(option) => return self.answer_option(option),
+            // The card stays: the run is waiting on it, and `Esc` is not an
+            // answer. It leaves CARD mode so the mode word stops claiming a
+            // focus the keyboard no longer has.
+            Action::UnfocusCard => {
+                self.mode = Mode::Normal;
+                if self.card.is_some() {
+                    self.status =
+                        Some("the run is waiting on this — answer it or stop the run".into());
+                }
+            }
             Action::PendingG => self.pending_g = !self.pending_g,
             Action::Unavailable(reason) => self.status = Some(reason.into()),
         }
         self.dirty = true;
         None
+    }
+
+    // ----------------------------------------------------------- the card
+
+    /// `y`/`n` on the card that is on screen.
+    ///
+    /// The keymap already refuses these unless the card is armed and
+    /// rendered. This is the same rule again, on purpose: the keymap is only
+    /// one way an [`Action`] reaches the reducer, and "nothing resolves a
+    /// card the user has not seen" has to hold for all of them (04 §13).
+    fn resolve_card(&mut self, approve: bool) -> Option<Command> {
+        let card = self.card.as_ref()?;
+        if !card.live() {
+            self.status = Some(CARD_UNREAD.into());
+            return None;
+        }
+        match card.kind {
+            CardKind::Confirm { id, .. } => {
+                let (outcome, note) = if approve {
+                    (GateOutcome::Confirmed, "approved — the run carries on")
+                } else {
+                    // Denial is not a failure: the broker turns it into a
+                    // steer, so the turn tries something else (16 §5.3).
+                    (
+                        GateOutcome::Denied,
+                        "denied — the run is told, and tries another way",
+                    )
+                };
+                self.status = Some(note.into());
+                Some(Command::ResolveConfirm {
+                    confirm: id,
+                    outcome,
+                    via: ResolutionVia::Card,
+                })
+            }
+            // `y` takes the highlighted answer. There is no `n` to a
+            // question: refusing to answer is leaving it alone.
+            CardKind::Ask { .. } => {
+                if !approve {
+                    self.status =
+                        Some("a question has no \"no\" — answer it, or stop the run with x".into());
+                    return None;
+                }
+                self.answer_highlighted()
+            }
+        }
+    }
+
+    /// Answer an ask with the option under the highlight.
+    fn answer_highlighted(&mut self) -> Option<Command> {
+        let card = self.card.as_ref()?;
+        let CardKind::Ask { id, .. } = card.kind else {
+            return None;
+        };
+        let Some(answer) = card.highlighted().map(str::to_owned) else {
+            // Nothing to take: the question wants words, so collect them.
+            self.open_ask_prompt();
+            return None;
+        };
+        self.status = Some(format!("answered “{answer}”"));
+        Some(Command::AnswerAsk {
+            ask: id,
+            answer,
+            via: ResolutionVia::Card,
+        })
+    }
+
+    /// A digit highlights one answer and sends it in the same keystroke.
+    ///
+    /// Behind the arming rule like `y` is: a numbered list is easier to hit
+    /// by accident than a single letter, not harder.
+    fn answer_option(&mut self, option: u8) -> Option<Command> {
+        let card = self.card.as_mut()?;
+        if !card.live() {
+            self.status = Some(CARD_UNREAD.into());
+            return None;
+        }
+        if !card.select(usize::from(option).saturating_sub(1)) {
+            self.status = Some(format!("there is no answer {option} on this card"));
+            return None;
+        }
+        self.answer_highlighted()
+    }
+
+    /// `j`/`k` over the numbered answers.
+    fn move_option(&mut self, delta: i32) {
+        if let Some(card) = self.card.as_mut() {
+            card.move_selection(delta);
+        }
+    }
+
+    /// Collect the typed answer to a free-text question.
+    ///
+    /// The prompt overlay rather than the composer: while a card is up it
+    /// owns the keyboard, and the prompt is the one overlay that takes it
+    /// back (`keys.rs` checks it first). Unmasked — an invoice number is not
+    /// a secret, and a user retyping one they cannot see gets it wrong.
+    fn open_ask_prompt(&mut self) {
+        let Some(card) = self.card.as_ref() else {
+            return;
+        };
+        let CardKind::Ask { id, .. } = card.kind else {
+            self.status = Some("this one is y or n".into());
+            return;
+        };
+        if !card.free_text() {
+            self.status = Some("pick an answer by its number".into());
+            return;
+        }
+        let label = card.sentence.clone();
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Ask { ask: id },
+            label,
+            hint: "Enter answers · Ctrl-U clears · Esc cancels",
+            masked: false,
+            buffer: String::new(),
+        });
+    }
+
+    fn selected_project(&self) -> Option<&Project> {
+        self.projects.get(self.project_row)
+    }
+
+    fn open_project(&mut self) -> Option<Command> {
+        if self.project_detail.take().is_some() {
+            return None;
+        }
+        self.selected_project().map(|project| Command::OpenProject {
+            slug: project.slug.clone(),
+        })
+    }
+
+    fn run_project_heartbeat(&self) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::RunProjectHeartbeat {
+                slug: project.slug.clone(),
+            })
+    }
+
+    fn toggle_project_heartbeat(&self) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::ToggleProjectHeartbeat {
+                slug: project.slug.clone(),
+                enabled: !project.heartbeat_enabled,
+                every_seconds: project.heartbeat_every_seconds,
+                on_gate: project.on_gate,
+            })
+    }
+
+    fn edit_project_document(&self, document: &'static str) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::EditProjectDocument {
+                slug: project.slug.clone(),
+                document,
+            })
+    }
+
+    pub fn show_project(
+        &mut self,
+        projects: Vec<Project>,
+        documents: ProjectDocuments,
+        ticks: Vec<neo_core::HeartbeatTick>,
+    ) {
+        self.projects = projects;
+        self.project_row = self.project_row.min(self.projects.len().saturating_sub(1));
+        self.project_detail = Some((documents, ticks));
+        self.dirty = true;
     }
 
     /// `x` and `:stop`: cancel the run being traced.
@@ -2065,6 +2697,7 @@ impl State {
                 self.selected_run = self.runs.last().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = true;
             }
+            (_, Pane::Projects) => self.project_row = 0,
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, u16::MAX),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, 0),
         }
@@ -2078,6 +2711,7 @@ impl State {
                 self.selected_run = self.runs.first().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = self.runs.len() <= 1;
             }
+            (_, Pane::Projects) => self.project_row = self.projects.len().saturating_sub(1),
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, 0),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, u16::MAX),
         }
@@ -2115,6 +2749,7 @@ impl State {
             Pane::Mind => self
                 .selected_run()
                 .map_or(self.activity.len(), |run| run.trace.len()),
+            Pane::Projects => self.projects.len().saturating_mul(3),
         }
     }
 
@@ -2140,6 +2775,14 @@ impl State {
         // wants and selecting a run is.
         if self.focus == Pane::Runs {
             self.move_run_selection(delta.signum());
+            return;
+        }
+        if self.focus == Pane::Projects {
+            let last = self.projects.len().saturating_sub(1);
+            let next = i64::from(i32::try_from(self.project_row).unwrap_or(0) + delta.signum())
+                .clamp(0, i64::try_from(last).unwrap_or(0));
+            self.project_row = usize::try_from(next).unwrap_or(0);
+            self.project_detail = None;
             return;
         }
         let scroll = i32::from(self.scroll[self.focus.index()]) + delta;
@@ -2274,7 +2917,7 @@ impl State {
         let mut goal: Vec<&str> = Vec::new();
         while let Some(word) = words.next() {
             match word {
-                "--headed" => spec.headed = true,
+                "--headless" => spec.headless = true,
                 "--no-safety" => spec.safety_heads = false,
                 "--profile" => match words.next() {
                     Some(path) => spec.profile = Some(path.to_owned()),
@@ -2598,6 +3241,22 @@ impl State {
                     return None;
                 }
                 Some(Command::RenameConversation { title })
+            }
+            // The card stays up until the core says the question is settled:
+            // the answer has to reach the run before the question can leave
+            // the screen, and only [`AppEvent::AskResolved`] knows that.
+            PromptKind::Ask { ask } => {
+                let answer = prompt.buffer.trim().to_owned();
+                if answer.is_empty() {
+                    self.status = Some("nothing typed — the question is still waiting".into());
+                    return None;
+                }
+                self.status = Some("answer sent".into());
+                Some(Command::AnswerAsk {
+                    ask,
+                    answer,
+                    via: ResolutionVia::Card,
+                })
             }
         }
     }
@@ -3314,7 +3973,7 @@ pub struct CommandSpec {
 pub const COMMAND_LINE: [CommandSpec; 20] = [
     CommandSpec {
         name: "nav",
-        args: "<url> <goal> [--headed] [--profile P] [--no-safety]",
+        args: "<url> <goal> [--headless] [--profile P] [--no-safety]",
         help: "drive a web page to a goal",
         unavailable: None,
     },

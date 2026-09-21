@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# A branch with an open PR is otherwise built twice for the same commit, and
+# a push to it leaves the previous run burning a runner for nothing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -101,6 +107,12 @@ jobs:
         run: |
           test -z "$(git ls-files '*.py')"
           ! git grep -nE '\bpython3?\b' -- ':!plans/**' ':!spikes/**' ':!**/*.md'
+
+      # No credential file may ever be tracked. The vendor-host greps below
+      # match hostnames, not key material, and a `.env` that reaches a branch
+      # is a rotation, not a revert (16 §3).
+      - name: No credential file
+        run: test -z "$(git ls-files '.env' '*.env' '**/.env')"
 
       # Rule 3, absolute half — a front end never names a vendor host (P12).
       - name: No vendor host in a front end

@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invoice INV-2291 — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Invoice INV-2291</h1>
+<p>Coffee subscription · 12.00 EUR · due today. Nothing leaves this machine:
+the button only records that it was pressed.</p>
+<button id="pay">Pay 12.00 EUR</button>
+<p id="status" aria-live="polite">Invoice INV-2291 is unpaid.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+q('pay').onclick=()=>{
+  record('paid',{invoice:'INV-2291',amount:'12.00 EUR'});
+  q('status').textContent='Invoice INV-2291 is paid.';
+};
+</script></body></html>

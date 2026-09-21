@@ -153,6 +153,32 @@ pub enum VoiceError {
         on_device: String,
     },
 
+    /// A backend was asked for by name that this build cannot construct.
+    ///
+    /// Only reachable off macOS today, where the on-device path does not
+    /// exist at all; the message carries the platform's own backend table so
+    /// the caller is told what it *can* have, not merely what it cannot.
+    #[error(
+        "the `{backend}` transcriber is not available on this platform; available here: {available} — add an OpenAI key in Connections, or export OPENAI_API_KEY, to use `openai`"
+    )]
+    BackendUnavailable {
+        /// The backend that was requested, by its stable name.
+        backend: &'static str,
+        /// The backends this build does have, comma-separated.
+        available: String,
+    },
+
+    /// The OpenAI backend was asked for without a credential.
+    ///
+    /// Distinct from [`VoiceError::NoTranscriber`]: that one means *nothing*
+    /// can run, this one means the caller named a backend and the key for it
+    /// is missing. Falling back silently to another backend would send the
+    /// audio somewhere the caller did not choose.
+    #[error(
+        "the `openai` transcriber needs an OpenAI key; add one in Connections, or export OPENAI_API_KEY"
+    )]
+    MissingOpenAiKey,
+
     /// A capability that only exists on macOS.
     #[error("{0} is only available on macOS")]
     Unsupported(&'static str),

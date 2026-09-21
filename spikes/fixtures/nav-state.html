@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture state — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:680px}
+pre{background:#f4f4f4;border-radius:6px;padding:10px;font:13px ui-monospace,monospace}</style></head>
+<body><h1>Fixture state</h1>
+<p>What the review-set fixtures on this origin have recorded. This page only
+reads: the eval harness opens it in a tab of its own to clear the record
+before a case and to read it back after one, because a probe cannot attach to
+the tab the navigator drove.</p>
+<pre id="state">{}</pre><pre id="session">no session</pre>
+<script>
+const read=key=>{try{return localStorage.getItem(key)}catch(e){return null}};
+document.getElementById('state').textContent=read('neo-eval')||'{}';
+document.getElementById('session').textContent=read('neo-eval-session')?'session open':'no session';
+</script></body></html>

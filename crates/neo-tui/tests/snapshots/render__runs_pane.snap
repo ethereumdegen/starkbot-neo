@@ -3,7 +3,7 @@ source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
 Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
-1  Conversation    2  Runs (1/2 live)    3  Mind · chat · failed
+1  Conversation    2  Runs (1/2 live)    3  Mind · chat · failed    4  Projects (0)
 ┌ Runs (1/2 live) ─────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │▸× chat failed     0:15  1 step(s)                                                                                    │
 │   post the launch note                                                                                               │
@@ -53,7 +53,7 @@ fg=Cyan bg=Reset mod=NONE  ▸×
 fg=DarkGray bg=Reset mod=NONE  0:15  1 step(s)
 fg=DarkGray bg=Reset mod=NONE  0:23  3 step(s)
 fg=DarkGray bg=Reset mod=NONE  1  Conversation    2
-fg=DarkGray bg=Reset mod=NONE  3  Mind · chat · failed
+fg=DarkGray bg=Reset mod=NONE  3  Mind · chat · failed    4  Projects (0)
 fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
 fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
 fg=DarkGray bg=Reset mod=NONE  │

@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Ledger extract — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+table{border-collapse:collapse;margin:12px 0}td,th{border:1px solid #bbb;padding:6px 10px;text-align:left}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Ledger extract</h1>
+<table><tr><th>Field</th><th>Value</th></tr>
+<tr><td>Period</td><td>2026-Q2</td></tr>
+<tr><td>Reconciliation reference</td><td id="reference">AX-7731-QF</td></tr>
+<tr><td>Closing balance</td><td id="balance">18,402.55 EUR</td></tr></table>
+<p>Nothing here is clickable: the only way to answer is to read the page.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+// The page publishes its own ground truth, so the case compares the agent's
+// answer against what this document says rather than against a literal copied
+// into the suite — change the table and the assertion follows.
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+record('ledger',{reference:q('reference').textContent,balance:q('balance').textContent});
+</script></body></html>

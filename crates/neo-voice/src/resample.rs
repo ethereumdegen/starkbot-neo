@@ -66,9 +66,11 @@ pub(crate) fn to_pcm16(samples: &[f32]) -> Vec<i16> {
 
 /// Unpack signed 16-bit PCM back to normalised floats.
 ///
-/// Used by the on-device backend, which hands AVFoundation an `f32` buffer —
-/// so on a platform without one it has no caller but the round-trip test
-/// below, which is worth keeping everywhere.
+/// Used by the on-device backend, which hands AVFoundation an `f32` buffer.
+/// That backend is macOS-only, so off macOS this would be dead code and the
+/// workspace denies warnings; the `test` arm keeps the round-trip test — the
+/// thing that would catch a scaling bug — running on every platform.
+#[cfg(any(target_os = "macos", test))]
 #[must_use]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn from_pcm16(pcm16: &[i16]) -> Vec<f32> {

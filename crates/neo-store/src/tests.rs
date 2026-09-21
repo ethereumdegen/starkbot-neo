@@ -3,9 +3,9 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use neo_core::{
-    Allowance, ConversationId, MessageKind, MessageRole, MessageSource, ModelCapabilities,
-    ModelInfo, ModelRef, ModelUseCase, ProviderAccount, ProviderAccountStatus, ProviderId,
-    RateLimitKind, RateLimitWindow, Settings,
+    Allowance, ConversationId, HeartbeatGate, HeartbeatOutcome, MessageKind, MessageRole,
+    MessageSource, ModelCapabilities, ModelInfo, ModelRef, ModelUseCase, ProviderAccount,
+    ProviderAccountStatus, ProviderId, RateLimitKind, RateLimitWindow, Settings,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -13,8 +13,8 @@ use tempfile::TempDir;
 
 use crate::connection::prune_backups;
 use crate::{
-    APPLICATION_ID, GLOBAL_SCOPE, NewMessage, NewTurn, SCHEMA_VERSION, Store, StoreError,
-    migrations, open_read_only,
+    APPLICATION_ID, FinishHeartbeatTick, GLOBAL_SCOPE, NewMessage, NewTurn, SCHEMA_VERSION, Store,
+    StoreError, migrations, open_read_only,
 };
 
 fn test_store() -> (TempDir, Store) {
@@ -926,5 +926,69 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
             .unwrap_or_else(|error| panic!("{error}"))
             .len(),
         3
+    );
+}
+
+#[test]
+fn project_clock_round_trips_detail_due_state_and_ticks() {
+    let (_temp, store) = test_store();
+    let projects = store.projects();
+    let created = projects
+        .create(
+            "launch".to_owned(),
+            "Launch".to_owned(),
+            "/tmp/launch".to_owned(),
+            1_000,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projects
+            .get("launch")
+            .unwrap_or_else(|error| panic!("{error}")),
+        created
+    );
+
+    let configured = projects
+        .configure_heartbeat("launch", true, 300, HeartbeatGate::Skip, 2_000)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(configured.next_due_at, Some(302_000));
+    assert!(
+        projects
+            .due(301_999)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .is_empty()
+    );
+    assert_eq!(
+        projects
+            .due(302_000)
+            .unwrap_or_else(|error| panic!("{error}")),
+        vec![configured]
+    );
+
+    let tick = projects
+        .finish_tick(FinishHeartbeatTick {
+            project: "launch".to_owned(),
+            started_at: 302_000,
+            finished_at: 302_100,
+            outcome: HeartbeatOutcome::Skipped,
+            reason: Some("empty".to_owned()),
+            task_id: None,
+            goal_bytes: 0,
+            next_due_at: Some(602_100),
+            consecutive_failures: 0,
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projects
+            .ticks("launch", 10)
+            .unwrap_or_else(|error| panic!("{error}")),
+        vec![tick]
+    );
+    assert_eq!(
+        projects
+            .get("launch")
+            .unwrap_or_else(|error| panic!("{error}"))
+            .next_due_at,
+        Some(602_100)
     );
 }

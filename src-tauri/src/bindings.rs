@@ -37,8 +37,9 @@ mod tests {
     use neo_agent::ax::{ActReport, TrustReport};
     use neo_agent::doctor::Health;
     use neo_core::{
-        ConversationId, InferenceConnection, KeySource, KeyState, MessageId, MessageKind,
-        MessageRole, ProviderAccountStatus, RunId,
+        ConversationId, HeartbeatGate, HeartbeatOutcome, HeartbeatTick, InferenceConnection,
+        KeySource, KeyState, MessageId, MessageKind, MessageRole, Project, ProviderAccountStatus,
+        RunId, TaskId,
     };
     use ts_rs::{Config, TS};
 
@@ -46,7 +47,7 @@ mod tests {
     use crate::view::{
         AxRequestView, AxResponseView, BootstrapView, CaseListingView, CheckView, ConnectionRow,
         ConversationView, Fix, InferenceView, KeyRow, LoginFailed, LoginStart, MessageView,
-        ModelRow, RunKind, RunView, RuntimeOption, SettingsView,
+        ModelRow, ProjectDetailView, RunKind, RunView, RuntimeOption, SettingsView,
     };
 
     /// The command that rewrites the committed file, quoted verbatim by the
@@ -115,12 +116,17 @@ mod tests {
         append::<ConversationId>(&mut out, &cfg);
         append::<MessageId>(&mut out, &cfg);
         append::<Health>(&mut out, &cfg);
+        append::<TaskId>(&mut out, &cfg);
         append::<ProviderAccountStatus>(&mut out, &cfg);
         append::<KeyState>(&mut out, &cfg);
         append::<KeySource>(&mut out, &cfg);
         append::<InferenceConnection>(&mut out, &cfg);
         append::<MessageRole>(&mut out, &cfg);
         append::<MessageKind>(&mut out, &cfg);
+        append::<HeartbeatGate>(&mut out, &cfg);
+        append::<HeartbeatOutcome>(&mut out, &cfg);
+        append::<HeartbeatTick>(&mut out, &cfg);
+        append::<Project>(&mut out, &cfg);
         append::<TrustReport>(&mut out, &cfg);
         append::<ActReport>(&mut out, &cfg);
 
@@ -141,6 +147,7 @@ mod tests {
         append::<MessageView>(&mut out, &cfg);
         append::<CaseListingView>(&mut out, &cfg);
         append::<BootstrapView>(&mut out, &cfg);
+        append::<ProjectDetailView>(&mut out, &cfg);
         append::<AxRequestView>(&mut out, &cfg);
         append::<AxResponseView>(&mut out, &cfg);
         out
@@ -168,8 +175,7 @@ mod tests {
     /// the pin lives here instead: regenerating never bumped the version, so
     /// a `ui/dist` built one field-rename ago still reported `2` and passed
     /// `handshake` — the skew the handshake exists to catch. Both halves
-    /// move together or the test below is red.
-    const PUBLISHED: (u64, u32) = (0x7bda_f52d_52bf_9c55, 2);
+    const PUBLISHED: (u64, u32) = (0x5c0e_1423_534f_753a, 3);
 
     fn generated() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/bridge/generated.ts")

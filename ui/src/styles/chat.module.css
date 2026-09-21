@@ -85,6 +85,57 @@
   border-left: 2px solid var(--danger);
 }
 
+/* A card: a run is standing still until this is answered, so it is the one
+   thing in the thread that is louder than the conversation around it. The
+   edge is `--confirm` because that is what the token is for; the fill is the
+   ordinary card fill, since a whole coloured block would read as an error. */
+.gate {
+  align-self: stretch;
+  max-width: none;
+  background: var(--surface-raised);
+  border-left: 2px solid var(--confirm);
+}
+
+/* The machine-ish reason behind the sentence (`safety:spends`, `label:pay`).
+   Shown beside it, never instead of it: the sentence is the product's voice
+   and this is the tag it was raised under. */
+.gateCause {
+  font-family: ui-monospace, "SF Mono", monospace;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-2);
+}
+
+/* Where this is about to happen — "<page title> — <url>" — and what it may
+   cost. Quieter than the sentence, because it is what the sentence is
+   checked against rather than the thing being decided. */
+.gateContext {
+  font-size: var(--meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.gateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.gateActions input {
+  flex: 1 1 24ch;
+}
+
+/* The answer is with the run and the card is inert until the run says it
+   landed. The word is the carrier; the disabled buttons alone would read as
+   a card that had broken. */
+.gateSent {
+  font-size: var(--caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--working);
+}
+
 /* Fixed at the bottom of the pane: the thread above it scrolls, this never
    shrinks and never scrolls out of reach. */
 .composer {

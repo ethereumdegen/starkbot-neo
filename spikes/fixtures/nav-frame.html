@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Embedded panel — fixture</title>
+<style>body{font:14px system-ui;margin:8px}button{font:inherit}</style></head>
+<body><p>Delivery notice 8841 needs acknowledging.</p>
+<button id="ack">Acknowledge notice 8841</button><output id="frame-state">pending</output>
+<script>
+// Served from the *other* host name of the same fixture server, so this
+// document is a cross-origin (out-of-process) frame inside nav-crossorigin.html.
+// It cannot touch the parent's storage; it says what happened over postMessage
+// and the parent records it. That is what makes the case prove OOPIF clicking
+// rather than same-origin DOM access.
+document.getElementById('ack').onclick=()=>{
+  document.getElementById('frame-state').value='acknowledged';
+  parent.postMessage({fixture:'nav-frame',notice:8841,state:'acknowledged'},'*');
+};
+</script></body></html>

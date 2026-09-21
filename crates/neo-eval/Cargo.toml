@@ -15,6 +15,10 @@ workspace = true
 async-trait.workspace = true
 neo-agent.workspace = true
 neo-ax.workspace = true
+# The review set scores a page by reading the browser profile back (16 §6.2):
+# a probe cannot attach to the tab the navigator drove, so it opens one of its
+# own on the same origin.
+neo-cdp.workspace = true
 neo-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,4 +28,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+# The gated fixture test observes a review-set page through the same web
+# observer the navigator uses, which is how a case's target control is proven
+# reachable without spending a model turn on it.
+jev-nav.workspace = true
 tempfile.workspace = true

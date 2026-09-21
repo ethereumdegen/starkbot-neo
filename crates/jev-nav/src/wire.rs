@@ -61,24 +61,35 @@ impl Evaluation {
         if valid { Ok(answer) } else { Err(invalid()) }
     }
 
-    /// A yes/no head as a probability.
+    /// A yes/no head's probability, from the `noul` shape TypeSafe answers
+    /// with: `{"type":"noul","noul":0.93}` — confirmed against the live API
+    /// on 2026-09-21 and recorded in `plans/spikes.md`, which retires the
+    /// *(verify)* this carried.
     ///
-    /// `Err` for a missing key, a non-object answer, a non-numeric value,
-    /// `NaN`, or anything outside `0..=1` — the same standard [`Self::choice`]
-    /// holds the operation and target heads to. This returned `Option` until
-    /// R1.1, and its one caller read `None` as "no risk": a truncated response
-    /// scored `outward` at `0.0` and the send executed unconfirmed. A head
-    /// that was never asked for is the caller's business, not this method's —
-    /// `policy::resolve` asks only for the heads its request carried.
-    pub fn yes(&self, name: &str) -> Result<f64, WireError> {
+    /// Fails closed (A-Q7). A head that was asked and did not come back, or
+    /// came back in a shape this does not recognise, is an error rather than
+    /// an absent probability: the callers are the safety heads, and an
+    /// unanswered safety question used to read as "not risky", which is the
+    /// one interpretation a mis-shaped response must never get.
+    pub fn noul(&self, name: &str) -> Result<f64, WireError> {
+        let invalid = || WireError::Invalid(name.to_owned());
         self.answers
             .get(name)
-            .and_then(|answer| answer.get("noul"))
+            .ok_or_else(invalid)?
+            .get("noul")
             .and_then(Value::as_f64)
             .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
-            .ok_or_else(|| WireError::Invalid(name.to_owned()))
+            .ok_or_else(invalid)
     }
 }
+
+/// How long one Jev call may take before the step fails.
+///
+/// Short on purpose (10 §3): a step's whole budget is a few hundred
+/// milliseconds, so a classifier that has not answered in five seconds has
+/// already failed the loop whether or not it eventually replies. The retry
+/// ladder in `evaluate` covers the transient statuses; this covers silence.
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct TypeSafe {
@@ -116,7 +127,7 @@ impl TypeSafe {
                 .http
                 .post(&self.endpoint)
                 .bearer_auth(&self.key)
-                .timeout(Duration::from_secs(25))
+                .timeout(TIMEOUT)
                 .json(&body)
                 .send()
                 .await
@@ -161,5 +172,56 @@ impl TypeSafe {
             }
         });
         self.evaluate(&state, &questions).await.map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // A failed `expect` in a test is the test failing, which is the point.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn evaluation(answers: Value) -> Evaluation {
+        Evaluation {
+            model: "jev-test".into(),
+            answers: answers.as_object().cloned().expect("an answers object"),
+            usage: Value::Null,
+            latency: Duration::ZERO,
+        }
+    }
+
+    /// The live shape, verbatim from `api.typesafe.ai` (plans/spikes.md).
+    #[test]
+    fn a_yes_no_head_reads_its_probability() {
+        let evaluation = evaluation(json!({ "spends": { "type": "noul", "noul": 0.93 } }));
+
+        assert_eq!(evaluation.noul("spends").expect("a well-formed head"), 0.93);
+    }
+
+    /// The regression this change exists for: a head that is absent, or that
+    /// answers in some other shape, must not be readable as a probability at
+    /// all — the navigator treats an unreadable safety head as maximally
+    /// risky, and it can only do that if this refuses to invent one.
+    #[test]
+    fn an_unanswered_or_mis_shaped_head_is_an_error_not_a_zero() {
+        let missing = evaluation(json!({ "outward": { "type": "noul", "noul": 0.1 } }));
+        assert!(matches!(
+            missing.noul("spends"),
+            Err(WireError::Invalid(head)) if head == "spends"
+        ));
+
+        for mis_shaped in [
+            json!({ "spends": { "type": "choice", "choice": "yes" } }),
+            json!({ "spends": { "type": "noul", "noul": "0.9" } }),
+            json!({ "spends": { "type": "noul", "noul": 1.4 } }),
+            json!({ "spends": { "type": "noul" } }),
+            json!({ "spends": true }),
+        ] {
+            assert!(
+                evaluation(mis_shaped).noul("spends").is_err(),
+                "a probability was read out of a shape that does not carry one"
+            );
+        }
     }
 }

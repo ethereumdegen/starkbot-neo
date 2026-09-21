@@ -18,8 +18,8 @@ pub use keys::{Action, KeyMap};
 pub use run::{TuiError, run};
 pub use runs::{Run, RunKind, RunState, TraceKind, TraceLine};
 pub use state::{
-    Activity, Card, Command, CommandSpec, FieldKind, Login, LoginPhase, Mode, NavSpec, Pane,
-    Prompt, Row, RowAction, Section, SessionRow, Sessions, State, StepCard, ThreadRow,
-    TurnProgress, View,
+    Activity, CARD_ARM_MS, Card, CardKind, Command, CommandSpec, FieldKind, Login, LoginPhase,
+    Mode, NavSpec, Pane, Prompt, PromptKind, Row, RowAction, Section, SessionRow, Sessions, State,
+    StepCard, ThreadRow, TurnProgress, View,
 };
-pub use ui::draw;
+pub use ui::{Painted, draw};

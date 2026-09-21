@@ -40,7 +40,7 @@ use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
 /// 2: a turn streams. The bridge gained `steer_run`, and the event stream
 /// gained `turn_delta`, `turn_steered` and `turn_cost` — a front end built
 /// against version 1 would call a command this binary did not have.
-pub const BRIDGE_VERSION: u32 = 2;
+pub const BRIDGE_VERSION: u32 = 3;
 
 /// How long a lease survives without a heartbeat. Long enough to cover a slow
 /// navigator step, short enough that a crashed process does not block the
@@ -122,6 +122,11 @@ pub enum RuntimeError {
     /// The user selected an inference runtime this build cannot drive yet.
     #[error("the `{0}` inference runtime is not wired up yet; the Claude subscription path is")]
     RuntimeUnavailable(String),
+    /// An answer arrived for a card no run is waiting on: it was already
+    /// answered, it timed out, or the run ended. Said out loud, because a
+    /// front end that thinks it approved something must not believe it did.
+    #[error("confirm card {0} is no longer waiting for an answer")]
+    NoSuchCard(String),
 }
 
 /// Where the store lives and which schema it is on.
@@ -143,6 +148,7 @@ pub struct Bootstrap {
     /// Every subscription row the store holds, so a front end can render all
     /// of them rather than only the selected one (K7, A25).
     pub accounts: Vec<ProviderAccount>,
+    pub projects: Vec<neo_core::Project>,
     pub store: StoreInfo,
     /// The local readiness checks (05 §10), so a front end's first frame can
     /// already say what is missing.
@@ -151,7 +157,7 @@ pub struct Bootstrap {
 
 pub struct Runtime {
     data_dir: PathBuf,
-    store: Store,
+    pub(crate) store: Store,
     keychain: Keychain,
     /// Secrets already read from the Keychain this process.
     ///
@@ -226,6 +232,12 @@ pub struct Runtime {
     /// absent, which is the difference between "queued" and "send it as a new
     /// turn".
     runs: std::sync::Mutex<std::collections::HashMap<RunId, Arc<crate::agent::metal::Steering>>>,
+    /// The cards on screen right now, and the runs waiting on them.
+    ///
+    /// Parallel to `runs` and for the same reason: a paused run is otherwise
+    /// unreachable. See [`crate::confirm`].
+    broker: crate::confirm::Broker,
+    pub(crate) heartbeat_running: std::sync::atomic::AtomicBool,
 }
 
 /// Where one runtime keeps its secrets.
@@ -273,6 +285,8 @@ impl Runtime {
             seq: std::sync::atomic::AtomicU64::new(1),
             screen: crate::screen::ScreenLease::new(data_dir, neo_otel::surface()),
             runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            broker: crate::confirm::Broker::default(),
+            heartbeat_running: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -287,6 +301,11 @@ impl Runtime {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The confirm-card table, for [`crate::confirm`]'s methods.
+    pub(crate) fn broker(&self) -> &crate::confirm::Broker {
+        &self.broker
     }
 
     /// Take the screen for `run`, or find out who has it.
@@ -903,6 +922,7 @@ impl Runtime {
             inference,
             account,
             accounts,
+            projects: self.store.projects().list()?,
             store: self.store_info(),
             doctor: self.doctor()?,
         })

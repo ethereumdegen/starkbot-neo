@@ -3,7 +3,7 @@ source: crates/neo-tui/tests/render.rs
 expression: "common::render(&state, 120, 40)"
 ---
 Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
-1  Conversation    2  Runs (0/0 live)    3  Activity (3)
+1  Conversation    2  Runs (0/0 live)    3  Activity (3)    4  Projects (0)
 ┌ Activity (3) ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │notice    Info store.opened · store ready                                                                             │
 │latency   step 41ms · jev 168ms                                                                                       │
@@ -50,6 +50,7 @@ fg=Cyan bg=Reset mod=BOLD  Activity (3)
 fg=Cyan bg=Reset mod=BOLD  chat
 fg=Cyan bg=Reset mod=NONE  >
 fg=DarkGray bg=Reset mod=NONE  1  Conversation    2  Runs (0/0 live)    3
+fg=DarkGray bg=Reset mod=NONE  4  Projects (0)
 fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
 fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
 fg=DarkGray bg=Reset mod=NONE  │

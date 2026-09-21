@@ -16,7 +16,18 @@
     for (let n=node;n;n=parent(n)) if (n===ancestor) return true;
     return false;
   };
-  const safe=e=>!['password','hidden'].includes(e.type);
+  // Card and bank fields are dropped the way password fields are: never a
+  // candidate, never in the page key, so their digits cannot reach the model,
+  // the history or a trace. A human types these (10 §7).
+  const paymentNames=/card.?num|cardno|cc.?num|cvc|cvv|csc|security.?code|iban|sort.?code|routing|account.?num/i;
+  const payment=e=>{
+    if (!['INPUT','TEXTAREA'].includes(e.tagName)) return false;
+    const hint=(e.getAttribute('autocomplete')||'').toLowerCase();
+    if (hint.split(/\s+/).some(token=>token.startsWith('cc-'))) return true;
+    return paymentNames.test([e.name,e.id,e.getAttribute('placeholder'),
+      e.getAttribute('aria-label')].filter(Boolean).join(' '));
+  };
+  const safe=e=>!['password','hidden'].includes(e.type) && !payment(e);
   const visible=e=>!closest(e,'[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   const byId=(e,id)=>{
@@ -56,7 +67,10 @@
     }
     return null;
   };
-  const elements=[],textRoots=[]; let crossOriginFrames=0;
+  // Well-known challenge widgets. A captcha is not something to solve or
+  // click at: the run hands the page back to the user (10 §7).
+  const captchaSrc=/recaptcha|hcaptcha|turnstile|arkoselabs|funcaptcha|geetest|px-captcha/i;
+  const elements=[],textRoots=[]; let crossOriginFrames=0,captchaFrames=0;
   const collectRoot=(root,doc,ox,oy)=>{
     textRoots.push({root,ox,oy});
     const found=[...root.querySelectorAll('*')];
@@ -64,7 +78,10 @@
       cache.meta.set(e,{doc,ox,oy});
       elements.push(e);
       if (e.shadowRoot) collectRoot(e.shadowRoot,doc,ox,oy);
-      if (e.tagName==='IFRAME' && visible(e)) crossOriginFrames++;
+      if (e.tagName==='IFRAME' && visible(e)) {
+        crossOriginFrames++;
+        if (captchaSrc.test(e.getAttribute('src')||'')) captchaFrames++;
+      }
     }
   };
   cache.meta.set(document.documentElement,{doc:document,ox:0,oy:0});
@@ -121,8 +138,12 @@
     const r=rect(e),x=r.x+r.w/2,y=r.y+r.h/2;
     if (!isFile && (r.w<=0 || r.h<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight)) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    // `href` is what the deterministic layer checks a click against: a denied
+    // host, or a destination that is not a web page at all. Resolved
+    // absolute, because a relative one says nothing about origin.
     const base={node:identity(e),role:rname,label:name(e)||rname,
-      rect:{x:r.x,y:r.y,w:r.w,h:r.h},frame:e.ownerDocument===document?null:e.ownerDocument.URL};
+      rect:{x:r.x,y:r.y,w:r.w,h:r.h},frame:e.ownerDocument===document?null:e.ownerDocument.URL,
+      ...(e.tagName==='A' && e.getAttribute('href')!==null ? {href:e.href} : {})};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
@@ -197,7 +218,14 @@
   const semantics=finalActions.map(({rect,...action})=>action);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
     document.title,text,semantics,page_key[6],nested];
+  // Signals are counts, never content: what kind of page this is, so the
+  // deterministic layer can stop before Jev is asked to guess at a login
+  // wall, a challenge or a card form.
+  const captchaWidgets=captchaFrames+elements.filter(e=>visible(e) &&
+    e.matches?.('.g-recaptcha,.h-captcha,.cf-turnstile,[data-sitekey],#px-captcha')).length;
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
     scroll:{y:scrollY,height,nested},actions:finalActions,marker,page_key,guards,omitted_actions,
-    signals:{cross_origin_frames:crossOriginFrames}};
+    signals:{cross_origin_frames:crossOriginFrames,captcha:captchaWidgets,
+      password_fields:elements.filter(e=>e.type==='password' && visible(e)).length,
+      payment_fields:elements.filter(e=>payment(e) && visible(e)).length}};
 })()

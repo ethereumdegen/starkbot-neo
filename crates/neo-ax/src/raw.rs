@@ -7,6 +7,13 @@
 //!
 //! `id` is a dense index into the actor's element store. Nothing outside the
 //! actor thread ever resolves it.
+//!
+//! Off macOS only the walker that fills these nodes is gated away
+//! (`cfg(target_os = "macos")`), so the type and its text helpers look unused
+//! there. They stay compiled with `mapping.rs` and `table.rs`, whose tests
+//! build `RawNode`s by hand: that spec is worth running on the Linux lane,
+//! and the lane denies warnings.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::types::Rect;
 
