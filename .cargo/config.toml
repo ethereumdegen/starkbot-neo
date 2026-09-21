@@ -1,27 +1,34 @@
 # Development defaults for anything run through cargo.
 #
-# `NEO_KEYCHAIN_FILE` moves credential storage out of the login Keychain and
-# into a file under `target/`. This exists because a Keychain read from an
-# unsigned binary raises a **modal** authorization prompt, and a `cargo`
-# binary's code-signing identity changes on every rebuild — so `cargo test`
-# and `cargo run` asked for the login password once per credential per run,
-# and because the dialog is modal, an agent turn blocked behind it looked like
-# a hang.
+# There used to be an `[env]` block here setting `NEO_KEYCHAIN_BACKEND = "file"`.
+# It is gone, because it was redundant and unsafe at the same time:
 #
-# The file holds secrets in clear text, readable only by the owner (0600). It
-# is confined to `target/`, which is git-ignored. A shipped Starkbot is not
-# launched through cargo, does not see this variable, and uses the login
-# Keychain (K7, 05 §Keychain).
+# - Redundant, because `neo_keys::wanted_file_backend()` already selects the
+#   file backend when neither variable is set and `cfg!(debug_assertions)` is
+#   on. That is the whole reason the build profile decides.
+# - Unsafe, because a cargo `[env]` entry applies to *every* cargo invocation in
+#   this directory, including `cargo run --release`, which overrode the profile
+#   check and wrote secrets in clear text from a build that should have been on
+#   the login Keychain.
 #
-# To use the real login Keychain from a cargo build — to check the shipped
-# path, or after `scripts/sign-dev.sh` — clear it for the one command:
-#   NEO_KEYCHAIN_FILE= cargo run -p neo-cli -- doctor
+# Why the file backend exists at all: a Keychain read from an unsigned binary
+# raises a **modal** authorization prompt, and a `cargo` binary's code-signing
+# identity changes on every rebuild — so `cargo test` and `cargo run` asked for
+# the login password once per credential per run, and because the dialog is
+# modal, an agent turn blocked behind it looked like a hang.
 #
-# The credentials the signed app already stored can be copied in once with
+# The file holds secrets in clear text, readable only by the owner (0600), and
+# each `Runtime` keeps `keys.json` beside its own store, so two data directories
+# — and parallel tests, which each get a temporary one — never share a file.
+# Naming one global path was a bug: concurrent read-modify-write from parallel
+# tests corrupted it.
+#
+# To use the real login Keychain from a debug build — to check the shipped path,
+# or after `scripts/sign-dev.sh`:
+#   NEO_KEYCHAIN_BACKEND=login cargo run -p neo-cli -- doctor
+#
+# To put any build on a file anywhere:
+#   NEO_KEYCHAIN_FILE=/path/to/keys.json cargo run …
+#
+# The credentials a signed app already stored can be copied in once with
 # `neo keys import-login`, which prompts once per item and never again.
-# `file` selects the backend; each `Runtime` then keeps `keys.json` beside its
-# own store, so two data directories — and parallel tests, which each get a
-# temporary one — never share a file. Naming one global path here instead was a
-# bug: concurrent read-modify-write from parallel tests corrupted it.
-[env]
-NEO_KEYCHAIN_BACKEND = "file"

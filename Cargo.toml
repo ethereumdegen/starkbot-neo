@@ -1,9 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "src-tauri", "spikes/s1-nav", "spikes/s4-voice", "spikes/s5-sol", "spikes/s6-panel", "spikes/s7-render", "spikes/s7-webview"]
-# `cargo run` with no arguments starts `neo`. The workspace has several
-# binaries — the desktop shell and six spikes — so cargo refuses to pick one
-# without this.
+members = ["crates/*", "src-tauri"]
+# The M0 spikes are a nested workspace under `spikes/` (see `spikes/README.md`).
+# They were members until they had answered their questions; keeping them made
+# CI compile two extra Tauri apps, and — because none of them opted into
+# `[lints] workspace = true` — did so with `unsafe_code = "deny"` never applied
+# to a third of the workspace. Their conclusions are in `plans/spikes.md`.
+exclude = ["spikes"]
+# `cargo run` with no arguments starts `neo`. The workspace has more than one
+# binary — `neo` and the desktop shell — so cargo refuses to pick one without
+# this.
 #
 # It also narrows a bare `cargo build`, `cargo test` and `cargo clippy` to this
 # one package and its dependencies. Whole-workspace commands therefore need
@@ -74,8 +80,6 @@ spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
-s7-render = { path = "spikes/s7-render" }
 command-fds = "0.3.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 block2 = "0.6"

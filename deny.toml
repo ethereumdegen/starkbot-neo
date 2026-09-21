@@ -37,6 +37,7 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = [
-  "https://github.com/ahkohd/tauri-nspanel",
-]
+# No git dependency at present. `tauri-nspanel` was the only one; it moved out
+# with the spikes (`spikes/README.md`) and comes back when the non-activating
+# panel lands in `src-tauri` (04 §windows + panels).
+allow-git = []

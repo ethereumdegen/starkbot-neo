@@ -7,13 +7,18 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  rust:
+  # The full workspace, on the only platform that can build all of it.
+  macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup show
+      - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -22,7 +27,103 @@ jobs:
         run: cargo test --workspace
       - name: Dependency policy
         uses: EmbarkStudios/cargo-deny-action@v2
-      - name: Architecture rules
+
+  # The portable half, on a runner that is ~10x cheaper and ~5x faster.
+  #
+  # Everything here is reachable without the macOS frameworks: the navigator
+  # step loop and its safety gate (`jev-nav` minus its `ax` feature), the CDP
+  # client, the store, the settings and event protocol, and the OTLP exporter.
+  # That is where most of the logic — and most of the tests — actually live, so
+  # a broken gate is caught in a minute rather than behind a macOS queue.
+  #
+  # `neo-keys` builds here because the login-Keychain backend is
+  # `cfg(target_os = "macos")` and the file backend is pure Rust; `neo-core`
+  # and `neo-store` follow from that.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: >
+          cargo clippy --all-targets
+          -p jev-nav --no-default-features
+          -p neo-cdp -p neo-otel -p neo-keys -p neo-core -p neo-store
+          -- -D warnings
+      - name: Test
+        run: >
+          cargo test
+          -p jev-nav --no-default-features
+          -p neo-cdp -p neo-otel -p neo-keys -p neo-core -p neo-store
+
+  # The webview half. `cargo test --workspace` runs the ts-rs
+  # bindings-are-committed test, so *type* drift across the bridge is already
+  # caught — but nothing type-checked or ran the TypeScript that consumes those
+  # types until this job existed.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - name: Types
+        run: npx tsc --noEmit
+      - name: Test
+        run: npx vitest run
+
+  # The rules `plans/05-platform.md` §1 says CI enforces. It previously claimed
+  # to enforce 1, 3 and 4 and enforced none of them: the vendor-host grep
+  # matched the provider modules themselves and so failed on every push.
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rule 4 — no Python, no shell agent surface (P3).
+      - name: No Python
         run: |
           test -z "$(git ls-files '*.py')"
-          ! git grep -nE 'api\.openai\.com|typesafe\.ai|fal\.run|quiver\.ai' -- ':!plans/**' ':!spikes/**'
+          ! git grep -nE '\bpython3?\b' -- ':!plans/**' ':!spikes/**' ':!**/*.md'
+
+      # Rule 3, absolute half — a front end never names a vendor host (P12).
+      - name: No vendor host in a front end
+        run: |
+          ! git grep -nE 'api\.openai\.com|api\.anthropic\.com|typesafe\.ai|fal\.run|quiver\.ai' \
+            -- crates/neo-tui crates/neo-cli ui
+
+      # Rule 3, allow-listed half — elsewhere, only the modules that hold a
+      # credential may name the host it is sent to. `neo-agent/src/nav.rs` is
+      # on this list because it holds the Jev endpoint constant; that constant
+      # belongs in a provider module and the carve-out goes away when it moves.
+      - name: No vendor host outside a provider module
+        run: |
+          ! git grep -nE 'api\.openai\.com|api\.anthropic\.com|typesafe\.ai|fal\.run|quiver\.ai' \
+            -- ':!plans/**' ':!spikes/**' ':!**/*.md' \
+               ':!crates/*/src/providers/**' \
+               ':!crates/neo-agent/src/oauth/**' \
+               ':!crates/neo-voice/src/stt/**' \
+               ':!crates/neo-agent/src/nav.rs' \
+               ':!crates/neo-agent/tests/live_*.rs'
+
+      # Rule 1 — nothing below `src-tauri` depends on Tauri. The whole product
+      # runs headless in `neo`. `cargo tree -i` exits non-zero when the package
+      # is absent from that crate's graph, which is the passing case.
+      - name: Nothing below src-tauri depends on Tauri
+        run: |
+          rustup show
+          for manifest in crates/*/Cargo.toml; do
+            crate="$(basename "$(dirname "$manifest")")"
+            if cargo tree -p "$crate" -i tauri >/dev/null 2>&1; then
+              echo "$crate depends on tauri; only src-tauri may (05 §1 rule 1)"
+              exit 1
+            fi
+          done
