@@ -8,7 +8,7 @@ use neo_keys::Secret;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{ProviderError, Utterance};
+use crate::{ProviderError, Settings, TimestampMs, Utterance};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -134,6 +134,130 @@ pub struct KeyInfo {
     pub remaining_usd: Option<f64>,
 }
 
+/// Presence of one Starkbot-owned credential, the account it lives under, and
+/// where it was read from.
+///
+/// Defined in `neo-keys` (the crate that owns the Keychain and the env
+/// fallback) and re-exported here so the whole workspace — including the
+/// front ends, which never link `neo-keys` — speaks a single vocabulary.
+pub use neo_keys::{KeySource, KeyState, KeyStatus};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountStatus {
+    SignedOut,
+    Connected,
+    RateLimited,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitKind {
+    Primary,
+    Secondary,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitWindow {
+    pub limit_id: String,
+    pub limit_name: Option<String>,
+    pub used_percent: f64,
+    pub kind: RateLimitKind,
+    pub window_duration_minutes: Option<u64>,
+    pub resets_at: Option<TimestampMs>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Allowance {
+    pub limits: Vec<RateLimitWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderAccount {
+    pub provider: ProviderId,
+    pub status: ProviderAccountStatus,
+    pub email: Option<String>,
+    pub plan_type: Option<String>,
+    pub workspace: Option<String>,
+    pub allowance: Option<Allowance>,
+    pub updated_at: TimestampMs,
+}
+
+/// Provider id of the OpenAI API-key inference runtime (K6 path a).
+pub const PROVIDER_OPENAI: &str = "openai";
+/// Provider id of the ChatGPT plan runtime driven through the Codex app-server (K6 path b).
+pub const PROVIDER_CHATGPT_CODEX: &str = "chatgpt-codex";
+/// Provider id of the Anthropic API-key inference runtime (K6 path c).
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+/// Provider id of the Claude subscription runtime driven through the Claude Code CLI (K6 path d).
+pub const PROVIDER_CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
+/// Provider id of the Claude Pro/Max runtime Starkbot drives itself, over an
+/// OAuth token it owns (K7, A25 runtime 5). Preferred over
+/// [`PROVIDER_CLAUDE_SUBSCRIPTION`], which needs the vendor's CLI installed.
+pub const PROVIDER_ANTHROPIC_OAUTH: &str = "anthropic-oauth";
+/// Provider id of the ChatGPT Plus/Pro runtime Starkbot drives itself, over an
+/// OAuth token it owns (K7, A25 runtime 6). Preferred over
+/// [`PROVIDER_CHATGPT_CODEX`], which needs the Codex app-server.
+pub const PROVIDER_OPENAI_CODEX: &str = "openai-codex";
+
+/// Which K6 inference connection is configured and usable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceConnection {
+    None,
+    OpenAiKey,
+    ChatGptCodex,
+    AnthropicKey,
+    ClaudeSubscription,
+    /// Claude Pro/Max over an OAuth token Starkbot holds (K7).
+    AnthropicOauth,
+    /// ChatGPT Plus/Pro over an OAuth token Starkbot holds (K7).
+    OpenAiCodexOauth,
+}
+
+impl InferenceConnection {
+    /// Resolve the selected inference runtime against the credentials that
+    /// actually exist: an API-key path needs its key present, a subscription
+    /// path needs that provider's account connected. Anything else is `None`.
+    pub fn detect(
+        settings: &Settings,
+        keys: &[KeyStatus],
+        account: Option<&ProviderAccount>,
+    ) -> Self {
+        match settings.models.inference.provider.as_str() {
+            PROVIDER_OPENAI if key_present(keys, neo_keys::ACCOUNT_OPENAI) => Self::OpenAiKey,
+            PROVIDER_ANTHROPIC if key_present(keys, neo_keys::ACCOUNT_ANTHROPIC) => {
+                Self::AnthropicKey
+            }
+            PROVIDER_CHATGPT_CODEX if connected(account, PROVIDER_CHATGPT_CODEX) => {
+                Self::ChatGptCodex
+            }
+            PROVIDER_CLAUDE_SUBSCRIPTION if connected(account, PROVIDER_CLAUDE_SUBSCRIPTION) => {
+                Self::ClaudeSubscription
+            }
+            PROVIDER_ANTHROPIC_OAUTH if connected(account, PROVIDER_ANTHROPIC_OAUTH) => {
+                Self::AnthropicOauth
+            }
+            PROVIDER_OPENAI_CODEX if connected(account, PROVIDER_OPENAI_CODEX) => {
+                Self::OpenAiCodexOauth
+            }
+            _ => Self::None,
+        }
+    }
+}
+
+fn key_present(keys: &[KeyStatus], account: &str) -> bool {
+    keys.iter()
+        .any(|key| key.account == account && key.state == KeyState::Present)
+}
+
+fn connected(account: Option<&ProviderAccount>, provider: &str) -> bool {
+    account.is_some_and(|account| {
+        account.provider.as_str() == provider && account.status == ProviderAccountStatus::Connected
+    })
+}
+
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
     fn id(&self) -> &ProviderId;
@@ -215,4 +339,137 @@ pub trait SpeechProvider: Send + Sync {
         model: &ResolvedModel,
         voice: &VoiceRef,
     ) -> Result<Box<dyn Speaker>, ProviderError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_for(provider: &str) -> Settings {
+        let mut settings = Settings::default();
+        settings.models.inference = ModelRef::new(ProviderId::new(provider), "sol-latest");
+        settings
+    }
+
+    fn key(account: &str, state: KeyState) -> Vec<KeyStatus> {
+        vec![KeyStatus::new(account, state)]
+    }
+
+    fn account(provider: &str, status: ProviderAccountStatus) -> ProviderAccount {
+        ProviderAccount {
+            provider: ProviderId::new(provider),
+            status,
+            email: None,
+            plan_type: None,
+            workspace: None,
+            allowance: None,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn each_path_needs_its_own_credential() {
+        assert_eq!(
+            InferenceConnection::detect(
+                &settings_for(PROVIDER_OPENAI),
+                &key(neo_keys::ACCOUNT_OPENAI, KeyState::Present),
+                None
+            ),
+            InferenceConnection::OpenAiKey
+        );
+        assert_eq!(
+            InferenceConnection::detect(
+                &settings_for(PROVIDER_ANTHROPIC),
+                &key(neo_keys::ACCOUNT_ANTHROPIC, KeyState::Present),
+                None
+            ),
+            InferenceConnection::AnthropicKey
+        );
+        assert_eq!(
+            InferenceConnection::detect(
+                &settings_for(PROVIDER_CHATGPT_CODEX),
+                &[],
+                Some(&account(
+                    PROVIDER_CHATGPT_CODEX,
+                    ProviderAccountStatus::Connected
+                ))
+            ),
+            InferenceConnection::ChatGptCodex
+        );
+        assert_eq!(
+            InferenceConnection::detect(
+                &settings_for(PROVIDER_CLAUDE_SUBSCRIPTION),
+                &[],
+                Some(&account(
+                    PROVIDER_CLAUDE_SUBSCRIPTION,
+                    ProviderAccountStatus::Connected
+                ))
+            ),
+            InferenceConnection::ClaudeSubscription
+        );
+    }
+
+    #[test]
+    fn a_selected_path_without_its_credential_is_not_connected() {
+        for (provider, keys, account) in [
+            (
+                PROVIDER_OPENAI,
+                key(neo_keys::ACCOUNT_OPENAI, KeyState::Missing),
+                None,
+            ),
+            (
+                PROVIDER_OPENAI,
+                key(neo_keys::ACCOUNT_OPENAI, KeyState::Invalid),
+                None,
+            ),
+            (
+                PROVIDER_ANTHROPIC,
+                key(neo_keys::ACCOUNT_OPENAI, KeyState::Present),
+                None,
+            ),
+            (
+                PROVIDER_CHATGPT_CODEX,
+                key(neo_keys::ACCOUNT_OPENAI, KeyState::Present),
+                None,
+            ),
+            (
+                PROVIDER_CHATGPT_CODEX,
+                Vec::new(),
+                Some(account(
+                    PROVIDER_CHATGPT_CODEX,
+                    ProviderAccountStatus::SignedOut,
+                )),
+            ),
+            (
+                PROVIDER_CLAUDE_SUBSCRIPTION,
+                Vec::new(),
+                Some(account(
+                    PROVIDER_CHATGPT_CODEX,
+                    ProviderAccountStatus::Connected,
+                )),
+            ),
+            (PROVIDER_CLAUDE_SUBSCRIPTION, Vec::new(), None),
+        ] {
+            assert_eq!(
+                InferenceConnection::detect(&settings_for(provider), &keys, account.as_ref()),
+                InferenceConnection::None,
+                "provider {provider} should not be connected"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_runtime_is_never_connected() {
+        assert_eq!(
+            InferenceConnection::detect(
+                &settings_for("starkrouter"),
+                &key(neo_keys::ACCOUNT_OPENAI, KeyState::Present),
+                Some(&account(
+                    PROVIDER_CHATGPT_CODEX,
+                    ProviderAccountStatus::Connected
+                ))
+            ),
+            InferenceConnection::None
+        );
+    }
 }

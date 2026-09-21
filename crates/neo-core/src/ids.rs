@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 macro_rules! id_type {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ts_rs::TS)]
         #[serde(transparent)]
         pub struct $name(Uuid);
 
@@ -49,6 +49,12 @@ macro_rules! id_type {
 id_type!(TaskId);
 id_type!(MessageId);
 id_type!(ConversationId);
+id_type!(TurnId);
+// `RunId` is one agent run: a user message, the steps it took, and how it
+// ended. It is minted by the caller before the run starts, so a front end can
+// subscribe and filter by it without a handshake. Not a `TurnId`: a run makes
+// several model round trips, and each of those is a `Turn` row.
+id_type!(RunId);
 id_type!(ConfirmId);
 id_type!(AskId);
 id_type!(VerdictId);

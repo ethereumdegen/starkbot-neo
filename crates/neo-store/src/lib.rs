@@ -1,13 +1,21 @@
 #![forbid(unsafe_code)]
 
+mod accounts;
 mod actor;
 mod connection;
+mod conversations;
+mod presence;
+mod models;
 mod settings;
 
 use std::path::{Path, PathBuf};
 
+pub use accounts::ProviderAccountRepository;
 pub use actor::{ReadPool, Writer};
 pub use connection::{APPLICATION_ID, SCHEMA_VERSION, migrations, open_read_only};
+pub use conversations::{ConversationRepository, NewMessage, NewTurn};
+pub use presence::{Lease, PresenceRepository, Resource, Session, SessionKind};
+pub use models::{CachedModel, GLOBAL_SCOPE, ModelRepository};
 pub use settings::SettingsRepository;
 
 use actor::{ReadPool as Pool, Writer as Actor};
@@ -38,6 +46,16 @@ pub enum StoreError {
     InvalidSettings(neo_core::CoreError),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("registry cache row is unreadable: {0}")]
+    InvalidModelRow(String),
+    #[error("conversation row is unreadable: column `{0}`")]
+    InvalidConversationRow(String),
+    #[error("conversation `{0}` does not exist")]
+    UnknownConversation(String),
+    #[error("value for `{0}` does not fit in a SQLite integer")]
+    ValueOverflow(&'static str),
+    #[error("invalid provider account status `{0}`")]
+    InvalidProviderAccountStatus(String),
     #[error("system clock error: {0}")]
     Clock(#[from] std::time::SystemTimeError),
     #[error("system clock cannot fit in a SQLite integer")]
@@ -77,6 +95,21 @@ impl Store {
     }
     pub fn settings(&self) -> SettingsRepository {
         SettingsRepository::new(self.writer.clone(), self.readers.clone())
+    }
+    pub fn provider_accounts(&self) -> ProviderAccountRepository {
+        ProviderAccountRepository::new(self.writer.clone(), self.readers.clone())
+    }
+    pub fn models(&self) -> ModelRepository {
+        ModelRepository::new(self.writer.clone(), self.readers.clone())
+    }
+    /// Presence and leases: who else is running, and who may drive the
+    /// keyboard (cross-process coordination).
+    pub fn presence(&self) -> PresenceRepository {
+        PresenceRepository::new(self.writer.clone(), self.readers.clone())
+    }
+
+    pub fn conversations(&self) -> ConversationRepository {
+        ConversationRepository::new(self.writer.clone(), self.readers.clone())
     }
 }
 

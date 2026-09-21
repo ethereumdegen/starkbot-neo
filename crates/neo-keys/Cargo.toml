@@ -10,5 +10,13 @@ description = "Secret and credential vocabulary for Starkbot Neo."
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+security-framework.workspace = true
 thiserror.workspace = true
+ts-rs.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

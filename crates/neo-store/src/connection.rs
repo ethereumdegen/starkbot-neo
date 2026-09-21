@@ -8,10 +8,16 @@ use rusqlite_migration::{M, Migrations};
 use crate::{Result, StoreError};
 
 pub const APPLICATION_ID: i64 = 0x4E45_4F31;
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("../migrations/0001_init.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("../migrations/0001_init.sql")),
+        M::up(include_str!("../migrations/0002_provider_accounts.sql")),
+        M::up(include_str!("../migrations/0003_runtime_scoped_usage.sql")),
+        M::up(include_str!("../migrations/0004_conversation_threads.sql")),
+        M::up(include_str!("../migrations/0005_presence_and_leases.sql")),
+    ])
 }
 
 pub(crate) fn prepare_database(path: &Path, backups: &Path) -> Result<()> {
@@ -68,6 +74,10 @@ pub(crate) fn prepare_database(path: &Path, backups: &Path) -> Result<()> {
 }
 
 pub(crate) fn configure_connection(connection: &Connection, query_only: bool) -> Result<()> {
+    // First, always: switching to WAL takes an exclusive lock, and the writer
+    // and the four readers open concurrently. Without a busy timeout already
+    // in force, one of them loses that race with SQLITE_BUSY.
+    connection.pragma_update(None, "busy_timeout", 5_000_i64)?;
     if !query_only {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "wal_autocheckpoint", 1_000_i64)?;
@@ -75,7 +85,6 @@ pub(crate) fn configure_connection(connection: &Connection, query_only: bool) ->
     }
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "busy_timeout", 5_000_i64)?;
     connection.pragma_update(None, "temp_store", "MEMORY")?;
     if query_only {
         connection.pragma_update(None, "query_only", "ON")?;
