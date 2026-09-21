@@ -10,7 +10,7 @@
 import type { AxAppView, AxTableView, Json, SettingsRecord } from "./foreign";
 
 /** The protocol version this bundle was built against; `handshake` refuses a core that speaks another. */
-export const BRIDGE_VERSION = 2;
+export const BRIDGE_VERSION = 3;
 
 export type RunId = string;
 
@@ -19,6 +19,8 @@ export type ConversationId = string;
 export type MessageId = string;
 
 export type Health = "ok" | "warn" | "fail" | "unknown";
+
+export type TaskId = string;
 
 export type ProviderAccountStatus = "signed_out" | "connected" | "rate_limited" | "unavailable";
 
@@ -54,6 +56,20 @@ export type MessageRole = "user" | "assistant" | "tool" | "system";
  * constructs yet lives in neither.
  */
 export type MessageKind = "text" | "ask" | "result" | "answer";
+
+export type HeartbeatGate = "hold" | "skip";
+
+export type HeartbeatOutcome = "done" | "skipped" | "held" | "failed" | "dropped";
+
+/**
+ * One heartbeat attempt. The goal itself is deliberately absent.
+ */
+export type HeartbeatTick = { id: number, project: string, started_at: number, finished_at: number, outcome: HeartbeatOutcome, reason: string | null, task_id: TaskId | null, goal_bytes: number, };
+
+/**
+ * A named folder of standing work and its own heartbeat clock.
+ */
+export type Project = { slug: string, name: string, root: string, heartbeat_enabled: boolean, heartbeat_every_seconds: number, on_gate: HeartbeatGate, last_tick_at: number | null, next_due_at: number | null, consecutive_failures: number, created_at: number, updated_at: number, };
 
 /**
  * Whether this binary may read and drive other applications, and where the
@@ -219,7 +235,9 @@ models: Array<ModelRow>, eval_cases: Array<CaseListingView>,
  * Runs still going. A webview that reloaded mid-turn needs these, or it
  * shows a finished screen over work that is still driving an app.
  */
-runs: Array<RunView>, };
+runs: Array<RunView>, projects: Array<Project>, };
+
+export type ProjectDetailView = { project: Project, soul: string, heartbeat: string, ticks: Array<HeartbeatTick>, };
 
 /**
  * One accessibility request, as the webview spells it.

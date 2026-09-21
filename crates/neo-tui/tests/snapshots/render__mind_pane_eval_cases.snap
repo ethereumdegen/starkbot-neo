@@ -3,7 +3,7 @@ source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
 Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
-1  Conversation    2  Runs (1/1 live)    3  Mind · eval · running
+1  Conversation    2  Runs (1/1 live)    3  Mind · eval · running    4  Projects (0)
 ┌ Mind · eval · running ───────────────────────────────────────────────────────────────────────────────────────────────┐
 │case    3/3 keynote-slide · skipped — Keynote is not installed                                                        │
 │case    2/3 pages-heading · FAILED (1 run(s)) — the heading still read “Untitled”                                     │
@@ -48,6 +48,7 @@ fg=Cyan bg=Reset mod=BOLD  chat
 fg=Cyan bg=Reset mod=NONE  >
 fg=Cyan bg=Reset mod=NONE  case
 fg=DarkGray bg=Reset mod=NONE  1  Conversation    2  Runs (1/1 live)    3
+fg=DarkGray bg=Reset mod=NONE  4  Projects (0)
 fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
 fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
 fg=DarkGray bg=Reset mod=NONE  │

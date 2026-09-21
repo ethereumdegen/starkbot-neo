@@ -9,13 +9,14 @@ use std::collections::VecDeque;
 use neo_agent::agent::STOPPED;
 use neo_agent::ax::AxRequest;
 use neo_agent::doctor::{DoctorReport, Health};
+use neo_agent::projects::ProjectDocuments;
 use neo_agent::runtime::{Bootstrap, StoreInfo};
 use neo_core::{
     AppEvent, AskId, AskView, ConfirmId, ConfirmView, ConversationId, GateOutcome,
     InferenceConnection, KeyState, KeyStatus, ListenState, MessageId, MessageKind, ModelRef,
     PROVIDER_ANTHROPIC, PROVIDER_CHATGPT_CODEX, PROVIDER_CLAUDE_SUBSCRIPTION, PROVIDER_OPENAI,
-    ProviderAccount, ProviderAccountStatus, ProviderId, ReasoningEffort, ResolutionVia, RunId,
-    Settings, TaskId, TimestampMs, TurnUsage, Usd,
+    Project, ProviderAccount, ProviderAccountStatus, ProviderId, ReasoningEffort, ResolutionVia,
+    RunId, Settings, TaskId, TimestampMs, TurnUsage, Usd,
 };
 use neo_eval::Selection;
 use serde_json::{Value, json};
@@ -69,16 +70,18 @@ pub enum Pane {
     Conversation,
     Runs,
     Mind,
+    Projects,
 }
 
 impl Pane {
-    pub const ALL: [Self; 3] = [Self::Conversation, Self::Runs, Self::Mind];
+    pub const ALL: [Self; 4] = [Self::Conversation, Self::Runs, Self::Mind, Self::Projects];
 
     pub const fn index(self) -> usize {
         match self {
             Self::Conversation => 0,
             Self::Runs => 1,
             Self::Mind => 2,
+            Self::Projects => 3,
         }
     }
 
@@ -87,6 +90,7 @@ impl Pane {
             Self::Conversation => "Conversation",
             Self::Runs => "Runs",
             Self::Mind => "Mind",
+            Self::Projects => "Projects",
         }
     }
 
@@ -636,6 +640,22 @@ pub enum Command {
     RenameConversation {
         title: String,
     },
+    OpenProject {
+        slug: String,
+    },
+    RunProjectHeartbeat {
+        slug: String,
+    },
+    ToggleProjectHeartbeat {
+        slug: String,
+        enabled: bool,
+        every_seconds: u64,
+        on_gate: neo_core::HeartbeatGate,
+    },
+    EditProjectDocument {
+        slug: String,
+        document: &'static str,
+    },
     PatchSettings {
         section: &'static str,
         patch: Value,
@@ -773,6 +793,24 @@ impl std::fmt::Debug for Command {
             Self::RenameConversation { title } => formatter
                 .debug_struct("RenameConversation")
                 .field("title", title)
+                .finish(),
+            Self::OpenProject { slug } => formatter
+                .debug_struct("OpenProject")
+                .field("slug", slug)
+                .finish(),
+            Self::RunProjectHeartbeat { slug } => formatter
+                .debug_struct("RunProjectHeartbeat")
+                .field("slug", slug)
+                .finish(),
+            Self::ToggleProjectHeartbeat { slug, enabled, .. } => formatter
+                .debug_struct("ToggleProjectHeartbeat")
+                .field("slug", slug)
+                .field("enabled", enabled)
+                .finish(),
+            Self::EditProjectDocument { slug, document } => formatter
+                .debug_struct("EditProjectDocument")
+                .field("slug", slug)
+                .field("document", document)
                 .finish(),
             Self::PatchSettings { section, patch } => formatter
                 .debug_struct("PatchSettings")
@@ -1252,6 +1290,9 @@ pub struct State {
     pub store: StoreInfo,
     /// The readiness checks the core computed for this frame (05 §10).
     pub doctor: DoctorReport,
+    pub projects: Vec<Project>,
+    pub project_row: usize,
+    pub project_detail: Option<(ProjectDocuments, Vec<neo_core::HeartbeatTick>)>,
 
     pub listen: Option<ListenState>,
     pub mic_device: Option<String>,
@@ -1259,8 +1300,8 @@ pub struct State {
     pub view: View,
     pub mode: Mode,
     pub focus: Pane,
-    pub scroll: [u16; 3],
-    pub follow: [bool; 3],
+    pub scroll: [u16; 4],
+    pub follow: [bool; 4],
     pub tab_only: bool,
 
     /// The conversation, oldest first.
@@ -1346,6 +1387,7 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
         } = bootstrap;
         Self {
             bridge_version,
@@ -1356,13 +1398,16 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
+            project_row: 0,
+            project_detail: None,
             listen: None,
             mic_device: None,
             view: View::Panes,
             mode: Mode::Normal,
             focus: Pane::Conversation,
-            scroll: [0; 3],
-            follow: [true; 3],
+            scroll: [0; 4],
+            follow: [true; 4],
             tab_only: false,
             thread: Vec::new(),
             conversation: None,
@@ -1404,6 +1449,7 @@ impl State {
             accounts,
             store,
             doctor,
+            projects,
         } = bootstrap;
         self.bridge_version = bridge_version;
         self.settings = settings;
@@ -1412,6 +1458,9 @@ impl State {
         self.account = account;
         self.accounts = accounts;
         self.store = store;
+        self.projects = projects;
+        self.project_row = self.project_row.min(self.projects.len().saturating_sub(1));
+        self.project_detail = None;
         self.doctor = doctor;
         self.row = self.row.min(self.rows().len().saturating_sub(1));
         self.dirty = true;
@@ -2226,6 +2275,11 @@ impl State {
                 self.status = Some("kill switch: nothing is running".into());
             }
             Action::StopRun => return self.stop_selected(),
+            Action::OpenProject => return self.open_project(),
+            Action::RunProjectHeartbeat => return self.run_project_heartbeat(),
+            Action::ToggleProjectHeartbeat => return self.toggle_project_heartbeat(),
+            Action::EditProjectHeartbeat => return self.edit_project_document("heartbeat.md"),
+            Action::EditProjectSoul => return self.edit_project_document("soul.md"),
             Action::FocusPane(pane) => self.focus = pane,
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrevious => self.focus = self.focus.previous(),
@@ -2542,6 +2596,56 @@ impl State {
         });
     }
 
+    fn selected_project(&self) -> Option<&Project> {
+        self.projects.get(self.project_row)
+    }
+
+    fn open_project(&mut self) -> Option<Command> {
+        if self.project_detail.take().is_some() {
+            return None;
+        }
+        self.selected_project().map(|project| Command::OpenProject {
+            slug: project.slug.clone(),
+        })
+    }
+
+    fn run_project_heartbeat(&self) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::RunProjectHeartbeat {
+                slug: project.slug.clone(),
+            })
+    }
+
+    fn toggle_project_heartbeat(&self) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::ToggleProjectHeartbeat {
+                slug: project.slug.clone(),
+                enabled: !project.heartbeat_enabled,
+                every_seconds: project.heartbeat_every_seconds,
+                on_gate: project.on_gate,
+            })
+    }
+
+    fn edit_project_document(&self, document: &'static str) -> Option<Command> {
+        self.selected_project()
+            .map(|project| Command::EditProjectDocument {
+                slug: project.slug.clone(),
+                document,
+            })
+    }
+
+    pub fn show_project(
+        &mut self,
+        projects: Vec<Project>,
+        documents: ProjectDocuments,
+        ticks: Vec<neo_core::HeartbeatTick>,
+    ) {
+        self.projects = projects;
+        self.project_row = self.project_row.min(self.projects.len().saturating_sub(1));
+        self.project_detail = Some((documents, ticks));
+        self.dirty = true;
+    }
+
     /// `x` and `:stop`: cancel the run being traced.
     ///
     /// The row goes to `stopping`, not `cancelled`: the token still has to
@@ -2593,6 +2697,7 @@ impl State {
                 self.selected_run = self.runs.last().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = true;
             }
+            (_, Pane::Projects) => self.project_row = 0,
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, u16::MAX),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, 0),
         }
@@ -2606,6 +2711,7 @@ impl State {
                 self.selected_run = self.runs.first().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = self.runs.len() <= 1;
             }
+            (_, Pane::Projects) => self.project_row = self.projects.len().saturating_sub(1),
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, 0),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, u16::MAX),
         }
@@ -2643,6 +2749,7 @@ impl State {
             Pane::Mind => self
                 .selected_run()
                 .map_or(self.activity.len(), |run| run.trace.len()),
+            Pane::Projects => self.projects.len().saturating_mul(3),
         }
     }
 
@@ -2668,6 +2775,14 @@ impl State {
         // wants and selecting a run is.
         if self.focus == Pane::Runs {
             self.move_run_selection(delta.signum());
+            return;
+        }
+        if self.focus == Pane::Projects {
+            let last = self.projects.len().saturating_sub(1);
+            let next = i64::from(i32::try_from(self.project_row).unwrap_or(0) + delta.signum())
+                .clamp(0, i64::try_from(last).unwrap_or(0));
+            self.project_row = usize::try_from(next).unwrap_or(0);
+            self.project_detail = None;
             return;
         }
         let scroll = i32::from(self.scroll[self.focus.index()]) + delta;

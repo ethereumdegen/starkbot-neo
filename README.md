@@ -22,10 +22,9 @@ Status, as observed in this tree rather than as planned:
 - M3's web navigator runs, the accessibility path with it (`neo nav`,
   `neo app`), together with a slice of M5: a streaming ReAct agent loop over
   the `browse`, `app` and `ax` tools.
-- M4 — judge, queue, deterministic rules, confirm cards — is **not started**.
-  The queue and confirm tables exist in the schema with no Rust reader or
-  writer, and a tripped safety head ends the run with a message instead of
-  asking you to approve it.
+- M4's deterministic rules, Jev safety heads, confirmation queue and
+  user-question cards are live in both interactive front ends. A tripped action
+  pauses for approval instead of silently proceeding or ending the run.
 - Voice is push-to-talk capture plus speech-to-text; there is no speech out.
 - Media through apps, packs and the GTM workflows are unbuilt.
 
@@ -77,6 +76,20 @@ cargo run -- gui                      # desktop app, Vite dev server on :1420
 cargo run -- nav https://example.com "click the More information link"
 cargo run -- app com.apple.Numbers "pick the Blank template"
 ```
+
+Projects keep standing context in `soul.md`, recurring work in
+`heartbeat.md`, and an independent heartbeat clock (four hours by default):
+
+```sh
+cargo run -- projects add "Q4 launch"
+cargo run -- projects edit q4-launch --soul
+cargo run -- projects edit q4-launch --heartbeat
+cargo run -- projects heartbeat q4-launch --on --every 4h
+cargo run -- heartbeat run q4-launch
+```
+
+Managed projects live under the data directory. `--root /existing/folder`
+attaches an existing folder without creating or scanning unrelated files.
 
 `cargo run` is `neo`: the workspace's `default-members` names `crates/neo-cli`,
 which is also why a bare `cargo build`, `cargo test` or `cargo clippy` covers

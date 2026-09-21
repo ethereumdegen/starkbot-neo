@@ -4,6 +4,7 @@ import { Chat } from "./screens/Chat";
 import { Connections } from "./screens/Connections";
 import { Eval } from "./screens/Eval";
 import { Inspect } from "./screens/Inspect";
+import { Projects } from "./screens/Projects";
 import { Runs } from "./screens/Runs";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { missingRequiredKey } from "./store/health";
@@ -13,6 +14,7 @@ import shell from "./styles/shell.module.css";
 const TABS: { id: Screen; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "runs", label: "Runs" },
+  { id: "projects", label: "Projects" },
   { id: "automate", label: "Automate" },
   { id: "eval", label: "Eval" },
   { id: "inspect", label: "Inspect" },
@@ -29,6 +31,8 @@ function Screens({ screen }: { screen: Screen }) {
       return <Chat />;
     case "runs":
       return <Runs />;
+    case "projects":
+      return <Projects />;
     case "automate":
       return <Automate />;
     case "eval":

@@ -73,6 +73,9 @@ impl Runtime {
         sentence: String,
         context: Option<String>,
     ) -> Result<GateOutcome, RuntimeError> {
+        if crate::projects::skipped_gate() {
+            return Ok(GateOutcome::Denied);
+        }
         let id = ConfirmId::new();
         let (answer, wait) = oneshot::channel();
         self.broker().park(id.to_string(), Waiting::Confirm(answer));
@@ -118,6 +121,9 @@ impl Runtime {
         question: String,
         options: Vec<String>,
     ) -> Result<Option<String>, RuntimeError> {
+        if crate::projects::skipped_gate() {
+            return Ok(None);
+        }
         let id = AskId::new();
         let (answer, wait) = oneshot::channel();
         self.broker().park(id.to_string(), Waiting::Ask(answer));

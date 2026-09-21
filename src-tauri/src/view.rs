@@ -10,8 +10,9 @@ use neo_agent::ax::{ActReport, AxRequest, AxResponse, TrustReport};
 use neo_agent::doctor::{Check, DoctorReport, Health};
 use neo_agent::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthProvider};
 use neo_core::{
-    InferenceConnection, KeyState, KeyStatus, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_OAUTH,
-    PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, ProviderAccount, ProviderAccountStatus, Settings,
+    HeartbeatTick, InferenceConnection, KeyState, KeyStatus, PROVIDER_ANTHROPIC,
+    PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, Project, ProviderAccount,
+    ProviderAccountStatus, Settings,
 };
 use neo_eval::CaseListing;
 use serde::{Deserialize, Serialize};
@@ -328,6 +329,14 @@ pub struct Session {
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
+pub struct ProjectDetailView {
+    pub project: Project,
+    pub soul: String,
+    pub heartbeat: String,
+    pub ticks: Vec<HeartbeatTick>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
 pub struct BootstrapView {
     pub bridge_version: u32,
     pub data_dir: String,
@@ -348,6 +357,7 @@ pub struct BootstrapView {
     /// Runs still going. A webview that reloaded mid-turn needs these, or it
     /// shows a finished screen over work that is still driving an app.
     pub runs: Vec<RunView>,
+    pub projects: Vec<Project>,
 }
 
 impl BootstrapView {
@@ -367,6 +377,7 @@ impl BootstrapView {
                 .iter()
                 .map(|account| ConnectionRow::new(account, selected))
                 .collect(),
+            projects: bootstrap.projects.clone(),
             keys: bootstrap.keys.iter().map(KeyRow::new).collect(),
             inference: InferenceView::new(
                 &bootstrap.settings,

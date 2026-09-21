@@ -24,6 +24,7 @@ import { currentChatRun, registerRun } from "./runs";
 export type Screen =
   | "chat"
   | "runs"
+  | "projects"
   | "automate"
   | "eval"
   | "inspect"

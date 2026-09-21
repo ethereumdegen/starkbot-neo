@@ -15,8 +15,8 @@ use neo_agent::agent::{
 use neo_agent::oauth::OauthProvider;
 use neo_agent::{Runtime, RuntimeError};
 use neo_core::{
-    AppEvent, AskId, ConfirmId, ConversationId, GateOutcome, PROVIDER_ANTHROPIC,
-    PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, ProviderAccount,
+    AppEvent, AskId, ConfirmId, ConversationId, GateOutcome, HeartbeatGate, PROVIDER_ANTHROPIC,
+    PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, Project, ProviderAccount,
     ResolutionVia, RunId,
 };
 use neo_eval::Selection;
@@ -28,7 +28,7 @@ use crate::state::{Desktop, Runs, provider_by_id};
 use crate::view::{
     AxRequestView, AxResponseView, BootstrapView, CaseListingView, CheckView, ConnectionRow,
     ConversationView, Fix, InferenceView, KeyRow, LoginFailed, LoginStart, MessageView, ModelRow,
-    RunKind, SUBSCRIPTIONS, Session, SettingsView,
+    ProjectDetailView, RunKind, SUBSCRIPTIONS, Session, SettingsView,
 };
 
 /// How much of a thread the window paints, and how many threads the switcher
@@ -61,6 +61,32 @@ where
         .await
         .map_err(UiError::from)?
         .map_err(UiError::from)
+}
+
+async fn project_blocking<T, F>(task: F) -> Result<T, UiError>
+where
+    F: FnOnce() -> Result<T, neo_agent::ProjectError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(UiError::from)?
+        .map_err(UiError::from)
+}
+
+fn project_detail(
+    runtime: &Runtime,
+    slug: &str,
+) -> Result<ProjectDetailView, neo_agent::ProjectError> {
+    let project = runtime.project(slug)?;
+    let documents = runtime.project_documents(slug)?;
+    let ticks = runtime.project_ticks(slug, 20)?;
+    Ok(ProjectDetailView {
+        project,
+        soul: documents.soul,
+        heartbeat: documents.heartbeat,
+        ticks,
+    })
 }
 
 /// Both subscription rows as the *store* last recorded them: no Keychain
@@ -170,6 +196,62 @@ pub async fn get_bootstrap(state: State<'_, Desktop>) -> Result<BootstrapView, U
         runs,
     };
     Ok(BootstrapView::new(&runtime, &boot, &accounts, session))
+}
+
+#[tauri::command]
+pub async fn list_projects(state: State<'_, Desktop>) -> Result<Vec<Project>, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || runtime.projects()).await
+}
+
+#[tauri::command]
+pub async fn show_project(
+    state: State<'_, Desktop>,
+    slug: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || project_detail(&runtime, &slug)).await
+}
+
+#[tauri::command]
+pub async fn save_project_document(
+    state: State<'_, Desktop>,
+    slug: String,
+    document: String,
+    content: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        runtime.write_project_document(&slug, &document, &content)?;
+        project_detail(&runtime, &slug)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn configure_project_heartbeat(
+    state: State<'_, Desktop>,
+    slug: String,
+    enabled: bool,
+    every_seconds: u64,
+    on_gate: HeartbeatGate,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        runtime.configure_project_heartbeat(&slug, enabled, every_seconds, on_gate)?;
+        project_detail(&runtime, &slug)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_project_heartbeat(
+    state: State<'_, Desktop>,
+    slug: String,
+) -> Result<ProjectDetailView, UiError> {
+    let runtime = state.runtime();
+    runtime.run_project_heartbeat(&slug).await?;
+    project_detail(&runtime, &slug).map_err(UiError::from)
 }
 
 /// The two subscription rows, verified: this is the call that reads the

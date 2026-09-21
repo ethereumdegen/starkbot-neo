@@ -40,7 +40,7 @@ use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
 /// 2: a turn streams. The bridge gained `steer_run`, and the event stream
 /// gained `turn_delta`, `turn_steered` and `turn_cost` — a front end built
 /// against version 1 would call a command this binary did not have.
-pub const BRIDGE_VERSION: u32 = 2;
+pub const BRIDGE_VERSION: u32 = 3;
 
 /// How long a lease survives without a heartbeat. Long enough to cover a slow
 /// navigator step, short enough that a crashed process does not block the
@@ -148,6 +148,7 @@ pub struct Bootstrap {
     /// Every subscription row the store holds, so a front end can render all
     /// of them rather than only the selected one (K7, A25).
     pub accounts: Vec<ProviderAccount>,
+    pub projects: Vec<neo_core::Project>,
     pub store: StoreInfo,
     /// The local readiness checks (05 §10), so a front end's first frame can
     /// already say what is missing.
@@ -156,7 +157,7 @@ pub struct Bootstrap {
 
 pub struct Runtime {
     data_dir: PathBuf,
-    store: Store,
+    pub(crate) store: Store,
     keychain: Keychain,
     /// Secrets already read from the Keychain this process.
     ///
@@ -236,6 +237,7 @@ pub struct Runtime {
     /// Parallel to `runs` and for the same reason: a paused run is otherwise
     /// unreachable. See [`crate::confirm`].
     broker: crate::confirm::Broker,
+    pub(crate) heartbeat_running: std::sync::atomic::AtomicBool,
 }
 
 /// Where one runtime keeps its secrets.
@@ -284,6 +286,7 @@ impl Runtime {
             screen: crate::screen::ScreenLease::new(data_dir, neo_otel::surface()),
             runs: std::sync::Mutex::new(std::collections::HashMap::new()),
             broker: crate::confirm::Broker::default(),
+            heartbeat_running: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -919,6 +922,7 @@ impl Runtime {
             inference,
             account,
             accounts,
+            projects: self.store.projects().list()?,
             store: self.store_info(),
             doctor: self.doctor()?,
         })

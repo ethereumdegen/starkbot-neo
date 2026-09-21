@@ -299,6 +299,11 @@ enum Chore {
     /// (measured: ~4.6 s), which is a frame loop's whole budget ninety times
     /// over.
     Doctored(String, Box<DoctorReport>),
+    ProjectLoaded {
+        projects: Vec<neo_core::Project>,
+        documents: neo_agent::ProjectDocuments,
+        ticks: Vec<neo_core::HeartbeatTick>,
+    },
 }
 
 /// Work started from a keystroke and answered later.
@@ -447,6 +452,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
     // so this one's app runs can take the keyboard lease. Dropping the guard
     // on any exit path leaves the roster and releases the leases.
     let mut session = Presence::join(runtime);
+    let heartbeat_scheduler = runtime.start_heartbeat_scheduler();
     let mut receiver = runtime.subscribe();
     let mut state = State::new(runtime.bootstrap()?);
     // The thread is loaded from the store, so closing the TUI does not throw
@@ -480,6 +486,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
     // exit comes through here, including an error one, because a run holding
     // Chrome does not care why the front end is leaving.
     context.jobs.settle(SHUTDOWN_BUDGET);
+    heartbeat_scheduler.abort();
     outcome
 }
 
@@ -724,6 +731,30 @@ fn spawn_reload(
     });
 }
 
+fn spawn_project_load(runtime: &Arc<Runtime>, state: &mut State, chores: &Chores, slug: String) {
+    let handle = Arc::clone(runtime);
+    let pending = format!("project {slug} — loading");
+    spawn_chore(chores, state, pending, async move {
+        let loaded = tokio::task::spawn_blocking(move || {
+            Ok::<_, neo_agent::ProjectError>((
+                handle.projects()?,
+                handle.project_documents(&slug)?,
+                handle.project_ticks(&slug, 20)?,
+            ))
+        })
+        .await;
+        match loaded {
+            Ok(Ok((projects, documents, ticks))) => Chore::ProjectLoaded {
+                projects,
+                documents,
+                ticks,
+            },
+            Ok(Err(error)) => Chore::Said(format!("project could not be loaded: {error}")),
+            Err(error) => Chore::Said(format!("project load stopped: {error}")),
+        }
+    });
+}
+
 /// Pick up whatever finished since the last frame.
 fn poll_chores(state: &mut State, chores: &mut Chores) {
     loop {
@@ -745,6 +776,11 @@ fn poll_chores(state: &mut State, chores: &mut Chores) {
                 state.doctor = *report;
                 state.note(line);
             }
+            Chore::ProjectLoaded {
+                projects,
+                documents,
+                ticks,
+            } => state.show_project(projects, documents, ticks),
         }
     }
 }
@@ -926,7 +962,10 @@ fn execute<B: Backend>(
     // The one command that is *meant* to own the terminal: `claude auth
     // login` is an interactive CLI this process hands the tty to, so waiting
     // for it is the feature, not the bug.
-    let hands_over_the_terminal = matches!(command, Command::ConnectSubscription { .. });
+    let hands_over_the_terminal = matches!(
+        command,
+        Command::ConnectSubscription { .. } | Command::EditProjectDocument { .. }
+    );
     let started = Instant::now();
     let outcome = dispatch(runtime, terminal, state, context, command);
     debug_assert!(
@@ -998,6 +1037,93 @@ fn dispatch<B: Backend>(
             }
             Err(error) => state.note(format!("the conversation was not created: {error}")),
         },
+        Command::OpenProject { slug } => {
+            spawn_project_load(runtime, state, &context.chores, slug);
+        }
+        Command::RunProjectHeartbeat { slug } => {
+            let handle = Arc::clone(runtime);
+            let label = slug.clone();
+            spawn_chore(
+                &context.chores,
+                state,
+                format!("project {slug} — heartbeat running"),
+                async move {
+                    match handle.run_project_heartbeat(&slug).await {
+                        Ok(run) => {
+                            match tokio::task::spawn_blocking(move || handle.bootstrap()).await {
+                                Ok(Ok(bootstrap)) => Chore::Reloaded(
+                                    Some(format!("project {label} — {:?}", run.tick.outcome)),
+                                    Box::new(bootstrap),
+                                ),
+                                Ok(Err(error)) => Chore::Said(format!(
+                                    "project {label} ran, but the index could not reload: {error}"
+                                )),
+                                Err(error) => Chore::Said(format!(
+                                    "project {label} ran, but the index reload stopped: {error}"
+                                )),
+                            }
+                        }
+                        Err(error) => Chore::Said(format!("project {label}: {error}")),
+                    }
+                },
+            );
+        }
+        Command::ToggleProjectHeartbeat {
+            slug,
+            enabled,
+            every_seconds,
+            on_gate,
+        } => {
+            let handle = Arc::clone(runtime);
+            let label = slug.clone();
+            spawn_chore(
+                &context.chores,
+                state,
+                format!("project {slug} — updating heartbeat"),
+                async move {
+                    let changed = tokio::task::spawn_blocking(move || {
+                        handle
+                            .configure_project_heartbeat(&slug, enabled, every_seconds, on_gate)
+                            .map_err(|error| error.to_string())?;
+                        handle.bootstrap().map_err(|error| error.to_string())
+                    })
+                    .await;
+                    match changed {
+                        Ok(Ok(bootstrap)) => Chore::Reloaded(
+                            Some(format!(
+                                "project {label} heartbeat {}",
+                                if enabled { "on" } else { "off" }
+                            )),
+                            Box::new(bootstrap),
+                        ),
+                        Ok(Err(error)) => Chore::Said(format!("project {label}: {error}")),
+                        Err(error) => Chore::Said(format!("project {label}: {error}")),
+                    }
+                },
+            );
+        }
+        Command::EditProjectDocument { slug, document } => {
+            let project = runtime.project(&slug);
+            match project {
+                Ok(project) => {
+                    let path = std::path::Path::new(&project.root).join(document);
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_owned());
+                    let status = with_terminal_released(terminal, || {
+                        std::process::Command::new(&editor).arg(&path).status()
+                    });
+                    match status {
+                        Ok(status) if status.success() => {
+                            spawn_project_load(runtime, state, &context.chores, slug);
+                        }
+                        Ok(_) => state.note(format!("editor `{editor}` exited unsuccessfully")),
+                        Err(error) => {
+                            state.note(format!("could not start editor `{editor}`: {error}"))
+                        }
+                    }
+                }
+                Err(error) => state.note(format!("project {slug}: {error}")),
+            }
+        }
         Command::ListConversations => match runtime.conversations(SESSION_LIMIT) {
             Ok(conversations) => {
                 let rows = conversations
@@ -1870,6 +1996,7 @@ mod tests {
             inference: neo_core::InferenceConnection::None,
             account: None,
             accounts: Vec::new(),
+            projects: Vec::new(),
             store: neo_agent::runtime::StoreInfo {
                 path: PathBuf::from("/fixtures/neo/neo.db"),
                 schema_version: 3,

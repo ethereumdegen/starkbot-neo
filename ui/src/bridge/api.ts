@@ -48,6 +48,9 @@ import {
   type RunId,
   type SettingsView,
   type UiError,
+  type HeartbeatGate,
+  type Project,
+  type ProjectDetailView,
 } from "./generated";
 
 // One import for every consumer: `from "../bridge/api"` reaches the generated
@@ -284,6 +287,24 @@ export const api = {
   handshake: () => invoke<number>("handshake", { uiVersion: BRIDGE_VERSION }),
 
   getBootstrap: () => invoke<BootstrapView>("get_bootstrap"),
+  listProjects: () => invoke<Project[]>("list_projects"),
+  showProject: (slug: string) => invoke<ProjectDetailView>("show_project", { slug }),
+  saveProjectDocument: (slug: string, document: "soul.md" | "heartbeat.md", content: string) =>
+    invoke<ProjectDetailView>("save_project_document", { slug, document, content }),
+  configureProjectHeartbeat: (
+    slug: string,
+    enabled: boolean,
+    everySeconds: number,
+    onGate: HeartbeatGate,
+  ) =>
+    invoke<ProjectDetailView>("configure_project_heartbeat", {
+      slug,
+      enabled,
+      everySeconds,
+      onGate,
+    }),
+  runProjectHeartbeat: (slug: string) =>
+    invoke<ProjectDetailView>("run_project_heartbeat", { slug }),
 
   // Chat.
   sendMessage: (conversation: ConversationId, text: string) =>

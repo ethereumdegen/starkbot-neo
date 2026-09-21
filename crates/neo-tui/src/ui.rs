@@ -239,6 +239,12 @@ fn pane_title(state: &State, pane: Pane) -> String {
             Some(run) => format!(" Mind · {} · {} ", run.kind.label(), run.state.word()),
             None => format!(" Activity ({}) ", state.activity.len()),
         },
+        Pane::Projects => match state.projects.get(state.project_row) {
+            Some(project) if state.project_detail.is_some() => {
+                format!(" Project · {} ", project.name)
+            }
+            _ => format!(" Projects ({}) ", state.projects.len()),
+        },
     }
 }
 
@@ -281,7 +287,9 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
     } else {
         let body = match pane {
             Pane::Runs => runs_lines(state),
-            _ => mind_lines(state),
+            Pane::Mind => mind_lines(state),
+            Pane::Projects => project_lines(state),
+            Pane::Conversation => Vec::new(),
         };
         frame.render_widget(
             Paragraph::new(body)
@@ -297,6 +305,78 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
             marker,
         );
     }
+}
+
+fn project_lines(state: &State) -> Vec<Line<'static>> {
+    let Some(selected) = state.projects.get(state.project_row) else {
+        return vec![Line::styled(
+            "No projects yet. Use `neo projects add \"Name\"`.",
+            Style::new().fg(GREY),
+        )];
+    };
+    if let Some((documents, ticks)) = &state.project_detail {
+        let clock = if selected.heartbeat_enabled {
+            format!(
+                "every {}s · next {:?}",
+                selected.heartbeat_every_seconds, selected.next_due_at
+            )
+        } else {
+            "off".to_owned()
+        };
+        let mut lines = vec![
+            Line::styled(selected.name.clone(), Style::new().fg(Color::Cyan).bold()),
+            Line::raw(selected.root.clone()),
+            Line::raw(format!("heartbeat: {clock}")),
+            Line::raw(""),
+            Line::styled("soul.md", Style::new().bold()),
+            Line::raw(documents.soul.clone()),
+            Line::raw(""),
+            Line::styled("heartbeat.md", Style::new().bold()),
+            Line::raw(documents.heartbeat.clone()),
+            Line::raw(""),
+            Line::styled("recent ticks", Style::new().bold()),
+        ];
+        lines.extend(ticks.iter().map(|tick| {
+            Line::raw(format!(
+                "{}  {:?}  {}",
+                tick.started_at,
+                tick.outcome,
+                tick.reason.as_deref().unwrap_or("")
+            ))
+        }));
+        lines.push(Line::styled(
+            "Enter back · e heartbeat · E soul · r run · t toggle",
+            Style::new().fg(GREY),
+        ));
+        return lines;
+    }
+    let mut lines = Vec::new();
+    for (index, project) in state.projects.iter().enumerate() {
+        let cursor = if index == state.project_row {
+            "›"
+        } else {
+            " "
+        };
+        let clock = if project.heartbeat_enabled {
+            format!("every {}s", project.heartbeat_every_seconds)
+        } else {
+            "off".to_owned()
+        };
+        lines.push(Line::styled(
+            format!("{cursor} {}", project.name),
+            if index == state.project_row {
+                Style::new().fg(Color::Cyan).bold()
+            } else {
+                Style::new()
+            },
+        ));
+        lines.push(Line::raw(format!("  {} · {clock}", project.slug)));
+        lines.push(Line::styled(
+            format!("  last {:?}", project.last_tick_at),
+            Style::new().fg(GREY),
+        ));
+    }
+    lines
 }
 
 /// The conversation, wrapped to `width`: the thread, then whatever the

@@ -47,12 +47,16 @@ fn tab_cycles_the_panes_and_digits_jump_to_them() {
     feed(&mut state, press(KeyCode::Tab));
     assert_eq!(state.focus, Pane::Mind);
     feed(&mut state, press(KeyCode::Tab));
+    assert_eq!(state.focus, Pane::Projects);
+    feed(&mut state, press(KeyCode::Tab));
     assert_eq!(state.focus, Pane::Conversation);
 
     feed(&mut state, press(KeyCode::BackTab));
-    assert_eq!(state.focus, Pane::Mind);
+    assert_eq!(state.focus, Pane::Projects);
     feed(&mut state, press(KeyCode::Char('2')));
     assert_eq!(state.focus, Pane::Runs);
+    feed(&mut state, press(KeyCode::Char('4')));
+    assert_eq!(state.focus, Pane::Projects);
 }
 
 #[test]

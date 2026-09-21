@@ -8,7 +8,7 @@ use rusqlite_migration::{M, Migrations};
 use crate::{Result, StoreError};
 
 pub const APPLICATION_ID: i64 = 0x4E45_4F31;
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -17,6 +17,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/0003_runtime_scoped_usage.sql")),
         M::up(include_str!("../migrations/0004_conversation_threads.sql")),
         M::up(include_str!("../migrations/0005_presence_and_leases.sql")),
+        M::up(include_str!("../migrations/0006_projects.sql")),
     ])
 }
 

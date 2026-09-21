@@ -5,10 +5,10 @@
 //! name the account or the failure, never the value. Nothing here formats a
 //! source with `{:?}`, and nothing here reads a secret.
 
-use neo_agent::RuntimeError;
 use neo_agent::agent::{AgentError, ToolError};
 use neo_agent::ax::AxError;
 use neo_agent::screen::ScreenBusy;
+use neo_agent::{ProjectError, RuntimeError};
 use neo_core::CoreError;
 use neo_eval::EvalError;
 use neo_store::StoreError;
@@ -90,6 +90,24 @@ impl From<RuntimeError> for UiError {
             message: error.to_string(),
             fix,
         }
+    }
+}
+impl From<ProjectError> for UiError {
+    fn from(error: ProjectError) -> Self {
+        if let ProjectError::Runtime(inner) = error {
+            return Self::from(inner);
+        }
+        let code = match &error {
+            ProjectError::Busy => "heartbeat_busy",
+            ProjectError::InvalidName
+            | ProjectError::InvalidRoot(_)
+            | ProjectError::InvalidDocument => "validation",
+            ProjectError::Store(_) => "store",
+            ProjectError::Agent(_) => "agent",
+            ProjectError::Io { .. } => "io",
+            ProjectError::Runtime(_) => unreachable!("handled above"),
+        };
+        Self::new(code, error.to_string())
     }
 }
 

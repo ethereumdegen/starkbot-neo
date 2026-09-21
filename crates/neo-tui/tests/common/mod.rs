@@ -91,6 +91,7 @@ pub fn bootstrap() -> Bootstrap {
         inference: InferenceConnection::OpenAiKey,
         account: None,
         accounts: Vec::new(),
+        projects: Vec::new(),
         store: store_info(),
     }
 }

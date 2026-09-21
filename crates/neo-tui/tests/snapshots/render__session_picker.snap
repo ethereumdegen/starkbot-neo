@@ -3,7 +3,7 @@ source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
 Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
-1  Conversation · launch week    2  Runs (0/0 live)    3  Activity (0)
+1  Conversation · launch week    2  Runs (0/0 live)    3  Activity (0)    4  Projects (0)
 Ask Starkbot to do something in an app or on the web.
 i or a starts typing · Enter sends · : runs a command
 
@@ -51,7 +51,7 @@ fg=Cyan bg=Reset mod=NONE  │▸
 fg=Cyan bg=Reset mod=NONE  ┌ Conversations ───────────────────────────────────────────────────────────────┐
 fg=Cyan bg=Reset mod=NONE  └ j k moves · Enter opens · Ctrl-N new · :rename retitles · Esc closes ────────┘
 fg=DarkGray bg=Reset mod=NONE  1
-fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (0)
+fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (0)    4  Projects (0)
 fg=DarkGray bg=Reset mod=NONE  2026-09-18 09:41 UTC
 fg=DarkGray bg=Reset mod=NONE  2026-09-18 17:02 UTC
 fg=DarkGray bg=Reset mod=NONE  2026-09-19 08:14 UTC

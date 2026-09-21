@@ -122,3 +122,49 @@ pub struct Utterance {
     #[serde(default)]
     pub metadata: Value,
 }
+
+/// A named folder of standing work and its own heartbeat clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct Project {
+    pub slug: String,
+    pub name: String,
+    pub root: String,
+    pub heartbeat_enabled: bool,
+    pub heartbeat_every_seconds: u64,
+    pub on_gate: HeartbeatGate,
+    pub last_tick_at: Option<TimestampMs>,
+    pub next_due_at: Option<TimestampMs>,
+    pub consecutive_failures: u32,
+    pub created_at: TimestampMs,
+    pub updated_at: TimestampMs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatGate {
+    Hold,
+    Skip,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatOutcome {
+    Done,
+    Skipped,
+    Held,
+    Failed,
+    Dropped,
+}
+
+/// One heartbeat attempt. The goal itself is deliberately absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct HeartbeatTick {
+    pub id: i64,
+    pub project: String,
+    pub started_at: TimestampMs,
+    pub finished_at: TimestampMs,
+    pub outcome: HeartbeatOutcome,
+    pub reason: Option<String>,
+    pub task_id: Option<TaskId>,
+    pub goal_bytes: u64,
+}
