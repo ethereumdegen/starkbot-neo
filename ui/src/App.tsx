@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { useAppEvents } from "./bridge/events";
 import { Chat } from "./screens/Chat";
 import { Connections } from "./screens/Connections";
@@ -21,14 +23,14 @@ const TABS: { id: Screen; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-function Screens({ screen }: { screen: Screen }) {
+function Screens({ screen, projectsEpoch }: { screen: Screen; projectsEpoch: number }) {
   switch (screen) {
     case "chat":
       return <Chat />;
     case "runs":
       return <Runs />;
     case "projects":
-      return <Projects />;
+      return <Projects key={projectsEpoch} />;
     case "inspect":
       return <Inspect />;
     case "connections":
@@ -40,6 +42,7 @@ function Screens({ screen }: { screen: Screen }) {
 
 export function App() {
   useAppEvents();
+  const [projectsEpoch, setProjectsEpoch] = useState(0);
 
   const screen = useStore((state) => state.ui.screen);
   const setScreen = useStore((state) => state.setScreen);
@@ -91,7 +94,12 @@ export function App() {
             key={tab.id}
             className={shell.tab}
             aria-current={screen === tab.id ? "page" : undefined}
-            onClick={() => setScreen(tab.id)}
+            onClick={() => {
+              setScreen(tab.id);
+              if (tab.id === "projects") {
+                setProjectsEpoch((value) => value + 1);
+              }
+            }}
           >
             <span>{tab.label}</span>
             {/* The count is a second reading of the same state the Runs
@@ -130,7 +138,7 @@ export function App() {
         )}
         <div className={shell.screen}>
           {ready ? (
-            <Screens screen={screen} />
+            <Screens screen={screen} projectsEpoch={projectsEpoch} />
           ) : (
             <p className={shell.loading}>opening the store…</p>
           )}
