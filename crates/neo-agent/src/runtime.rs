@@ -194,9 +194,9 @@ pub struct Runtime {
     /// Where the subscription token endpoint is, when it is not the vendor's.
     ///
     /// `None` in every shipped build: the provider constant is used. A test
-    /// points it at `wiremock`, because no test may reach a vendor (08 rule
-    /// 1) and the token endpoint is a provider constant rather than one of
-    /// the injected [`KeyBases`].
+    /// points it at `wiremock`, because no test may reach a vendor (08
+    /// rule 1) and the token endpoint is a provider constant rather than
+    /// one of the injected [`KeyBases`].
     oauth_token_url: Option<Url>,
     key_bases: KeyBases,
     events: broadcast::Sender<Envelope>,
