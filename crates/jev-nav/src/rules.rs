@@ -48,3 +48,13 @@ pub const SAFETY: &[(&str, &str)] = &[
 
 pub const MAX_ACTIONS: usize = 60;
 pub const MAX_DECISIONS: usize = 120;
+
+/// How many decisions in a row may find the surface stale before the run
+/// stops.
+///
+/// A surface that is permanently un-actable — an app whose hit-test never
+/// agrees with its own accessibility tree, a page that re-renders on every
+/// observation — would otherwise spend the whole decision budget asking Jev
+/// the same question and never executing anything. Five is enough to ride out
+/// a genuinely animating window and cheap enough not to burn a quota.
+pub const MAX_CONSECUTIVE_STALE: usize = 5;

@@ -1,0 +1,21 @@
+[package]
+name = "neo-judge"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Intake, routing and gates on jev-nav::wire — and the TypeSafe key validator."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+jev-nav.workspace = true
+neo-keys.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+serde_json.workspace = true
+wiremock.workspace = true

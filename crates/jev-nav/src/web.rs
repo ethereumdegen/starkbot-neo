@@ -7,22 +7,12 @@ use std::time::Duration;
 use neo_cdp::{CdpError, Page};
 use serde_json::{Value, json};
 
+pub use crate::observer::ObserveError;
+use crate::observer::Observer;
 use crate::policy::Action;
 
 /// Runs in the page; the only non-Rust code in this crate.
 pub const SNAPSHOT_JS: &str = include_str!("../js/snapshot.js");
-
-#[derive(Debug, thiserror::Error)]
-pub enum ObserveError {
-    /// The decision no longer refers to the observed page: observe again, decide again.
-    #[error("stale page: {0}")]
-    Stale(&'static str),
-    /// A mutation may already have happened; never retried blindly.
-    #[error("uncertain mutation: {0}")]
-    Uncertain(&'static str),
-    #[error(transparent)]
-    Cdp(#[from] CdpError),
-}
 
 fn context_lost(error: &CdpError) -> bool {
     matches!(
@@ -255,6 +245,32 @@ impl CdpObserver {
 
     /// One atomic snapshot of the page's visible controls, values and text.
     pub async fn observe(&mut self) -> Result<Value, ObserveError> {
+        Observer::observe(self).await
+    }
+
+    /// Is the page still what the decision was made on?
+    pub async fn fresh(
+        &mut self,
+        observation: &Value,
+        action: Option<&Action>,
+    ) -> Result<bool, ObserveError> {
+        Observer::fresh(self, observation, action).await
+    }
+
+    /// Execute one observed action, typing `text` for a fill.
+    pub async fn act(
+        &mut self,
+        action: &Action,
+        observation: &Value,
+        text: Option<&str>,
+    ) -> Result<(), ObserveError> {
+        Observer::act(self, action, observation, text).await
+    }
+}
+
+#[async_trait::async_trait]
+impl Observer for CdpObserver {
+    async fn observe(&mut self) -> Result<Value, ObserveError> {
         if let Some(action) = self.after_input.take() {
             let runtime = runtime_action(&action);
             let _ = self
@@ -285,7 +301,7 @@ impl CdpObserver {
                     .unwrap_or(json!(false));
                 if verified != json!(true) {
                     return Err(ObserveError::Uncertain(
-                        "contenteditable text was not confirmed",
+                        "contenteditable text was not confirmed".into(),
                     ));
                 }
             }
@@ -318,9 +334,9 @@ impl CdpObserver {
         Err(ObserveError::Stale("page did not settle"))
     }
 
-    /// Is the page still what the decision was made on? Click/select compare the target and
-    /// its nearby context; everything else compares the whole semantic marker.
-    pub async fn fresh(
+    /// Click/select compare the target and its nearby context; everything else
+    /// compares the whole semantic marker.
+    async fn fresh(
         &mut self,
         observation: &Value,
         action: Option<&Action>,
@@ -359,13 +375,13 @@ impl CdpObserver {
         Ok(current["marker"] == observation["marker"])
     }
 
-    pub async fn act(
+    async fn act(
         &mut self,
         action: &Action,
         observation: &Value,
         text: Option<&str>,
     ) -> Result<(), ObserveError> {
-        if !self.fresh(observation, Some(action)).await? {
+        if !Observer::fresh(self, observation, Some(action)).await? {
             return Err(ObserveError::Stale("page changed since this decision"));
         }
         let kind = action
@@ -392,12 +408,12 @@ impl CdpObserver {
                 let target = match (kind, target) {
                     ("select", Err(_)) => {
                         return Err(ObserveError::Uncertain(
-                            "dropdown execution was interrupted",
+                            "dropdown execution was interrupted".into(),
                         ));
                     }
                     ("select", Ok(Value::Null)) => {
                         return Err(ObserveError::Uncertain(
-                            "dropdown execution was not confirmed",
+                            "dropdown execution was not confirmed".into(),
                         ));
                     }
                     (_, Ok(Value::Null)) => {

@@ -3,6 +3,9 @@
 //!
 //! Rust port of <https://github.com/browser-use/jev-ultrafast> (MIT).
 
+#[cfg(feature = "ax")]
+pub mod ax;
+pub mod observer;
 pub mod policy;
 pub mod rules;
 pub mod text;
@@ -13,10 +16,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+pub use observer::{ObserveError, Observer};
+
 use policy::{Decision, action_space, build_request, resolve};
-use rules::{MAX_ACTIONS, MAX_DECISIONS};
-use text::{OpenAiTextHelper, TextError, field_context};
-use web::{CdpObserver, ObserveError};
+use rules::{MAX_ACTIONS, MAX_CONSECUTIVE_STALE, MAX_DECISIONS};
+use text::{TextError, TextHelper, field_context};
 use wire::{TypeSafe, WireError};
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +55,9 @@ pub struct StepEvent {
     pub usage: Value,
 }
 
+/// Why a run stops when the surface will not hold still.
+const STALE_LIMIT: &str = "the surface changed under every decision; nothing could be executed";
+
 pub struct RunConfig {
     pub goal: String,
     pub safety_heads: bool,
@@ -58,16 +65,18 @@ pub struct RunConfig {
     pub confirm_at: f64,
 }
 
-pub struct Navigator {
-    pub observer: CdpObserver,
+pub struct Navigator<O: Observer> {
+    pub observer: O,
     pub jev: TypeSafe,
-    pub text: Option<OpenAiTextHelper>,
+    /// Whoever types field values, if anything does. Without one, the run
+    /// stops at the first `TYPE_TEXT` rather than typing something invented.
+    pub text: Option<Box<dyn TextHelper>>,
     history: Vec<Value>,
     pending_text: Option<(Value, String)>,
 }
 
-impl Navigator {
-    pub fn new(observer: CdpObserver, jev: TypeSafe, text: Option<OpenAiTextHelper>) -> Self {
+impl<O: Observer> Navigator<O> {
+    pub fn new(observer: O, jev: TypeSafe, text: Option<Box<dyn TextHelper>>) -> Self {
         Self {
             observer,
             jev,
@@ -88,6 +97,7 @@ impl Navigator {
     ) -> Result<Outcome, NavError> {
         let started = Instant::now();
         let mut decisions = 0usize;
+        let mut consecutive_stale = 0usize;
         let timer = Instant::now();
         let mut observation = self.observer.observe().await?;
         let mut observe_ms = timer.elapsed().as_millis();
@@ -141,6 +151,10 @@ impl Navigator {
                 if !self.observer.fresh(&observation, None).await? {
                     event.stale = true;
                     on_step(&event);
+                    consecutive_stale += 1;
+                    if consecutive_stale >= MAX_CONSECUTIVE_STALE {
+                        return Ok(Outcome::Blocked(STALE_LIMIT.into()));
+                    }
                     (observation, observe_ms) = self.reobserve().await?;
                     continue;
                 }
@@ -192,6 +206,10 @@ impl Navigator {
                 Err(ObserveError::Stale(_)) => {
                     event.stale = true;
                     on_step(&event);
+                    consecutive_stale += 1;
+                    if consecutive_stale >= MAX_CONSECUTIVE_STALE {
+                        return Ok(Outcome::Blocked(STALE_LIMIT.into()));
+                    }
                     (observation, observe_ms) = self.reobserve().await?;
                     continue;
                 }
@@ -199,6 +217,8 @@ impl Navigator {
             }
             event.act_ms = timer.elapsed().as_millis();
             self.pending_text = None;
+            // Something executed, so the surface is holding still enough.
+            consecutive_stale = 0;
             // Record execution before observing: a stale post-action read must not erase the action.
             self.history.push(json!({
                 "action": event.label, "kind": action.get("kind"), "text": typed, "page_changed": Value::Null,

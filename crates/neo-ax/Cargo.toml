@@ -1,0 +1,65 @@
+[package]
+name = "neo-ax"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "macOS Accessibility actor: reads and drives native apps for the Jev navigator."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", default-features = false, features = ["sync", "rt"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "libc",
+    "NSApplication",
+    "NSRunningApplication",
+    "NSWorkspace",
+] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = [
+    "HIServices",
+    "std",
+    "libc",
+    "objc2",
+    "AXError",
+    "AXUIElement",
+    "AXValue",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "CFArray",
+    "CFCGTypes",
+    "CFDictionary",
+    "CFNumber",
+    "CFRunLoop",
+    "CFString",
+    "CFURL",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSEnumerator",
+    "NSString",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "libc",
+    "objc2",
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync"] }

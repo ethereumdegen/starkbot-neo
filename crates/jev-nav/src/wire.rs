@@ -134,4 +134,23 @@ impl TypeSafe {
             latency: started.elapsed(),
         })
     }
+
+    /// The smallest possible authenticated request: one yes/no head over an
+    /// empty state.
+    ///
+    /// This is what a key check is made of (05 §6). It is a real request, so
+    /// it costs one Jev call — there is no unauthenticated health endpoint to
+    /// ask instead. `Ok(())` means the credential works; `Status(401)` /
+    /// `Status(403)` mean it does not; anything else says nothing about the
+    /// key.
+    pub async fn ping(&self) -> Result<(), WireError> {
+        let state = json!({ "page": { "text": "" } });
+        let questions = json!({
+            "reachable": {
+                "type": "noul",
+                "instructions": { "rules": "Answer yes. This request only checks the credential." }
+            }
+        });
+        self.evaluate(&state, &questions).await.map(|_| ())
+    }
 }

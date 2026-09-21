@@ -45,6 +45,18 @@ pub fn field_context(goal: &str, action: &Action, observation: &Value, history: 
     })
 }
 
+/// Whoever writes the one value a `TYPE_TEXT` step types.
+///
+/// A trait rather than a struct because the value may come from any configured
+/// inference runtime (K6): an OpenAI-compatible endpoint, or a subscription
+/// runtime the host drives. `jev-nav` depends on no `neo-*` crate, so the host
+/// supplies the implementation.
+#[async_trait::async_trait]
+pub trait TextHelper: Send + Sync {
+    /// Answer `{"text": …}` for this field context, or refuse.
+    async fn value(&self, context: &Value) -> Result<TextValue, TextError>;
+}
+
 /// Any OpenAI-compatible chat-completions endpoint.
 #[derive(Clone)]
 pub struct OpenAiTextHelper {
@@ -54,6 +66,13 @@ pub struct OpenAiTextHelper {
     pub model: String,
     /// Extra request fields, e.g. `{"reasoning_effort": "none"}`.
     pub extra: Value,
+}
+
+#[async_trait::async_trait]
+impl TextHelper for OpenAiTextHelper {
+    async fn value(&self, context: &Value) -> Result<TextValue, TextError> {
+        self.request(context).await
+    }
 }
 
 impl OpenAiTextHelper {
@@ -72,7 +91,7 @@ impl OpenAiTextHelper {
         }
     }
 
-    pub async fn value(&self, context: &Value) -> Result<TextValue, TextError> {
+    async fn request(&self, context: &Value) -> Result<TextValue, TextError> {
         let mut body = json!({
             "model": self.model,
             "response_format": { "type": "json_object" },

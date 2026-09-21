@@ -9,10 +9,19 @@ description = "Jev-driven navigator: a Rust port of browser-use/jev-ultrafast (M
 [lints]
 workspace = true
 
+[features]
+# Native-app observation through the macOS Accessibility actor (05 §1, A23).
+ax = ["neo-ax"]
+
 [dependencies]
+async-trait.workspace = true
+neo-ax = { workspace = true, optional = true }
 neo-cdp.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
