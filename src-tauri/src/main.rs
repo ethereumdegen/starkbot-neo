@@ -91,7 +91,12 @@ fn main() -> std::process::ExitCode {
             // Subscribed before the window can invoke anything, so the first
             // turn a screen starts cannot outrun the stream that reports it.
             let runtime = tauri::Manager::state::<Desktop>(app).runtime();
-            runtime.start_heartbeat_scheduler();
+            let scheduler = runtime.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = scheduler.start_heartbeat_scheduler().await {
+                    eprintln!("neo-desktop: heartbeat scheduler stopped: {error}");
+                }
+            });
             events::forward(app.handle().clone(), &runtime);
             eprintln!("neo-desktop: window `main` created");
             Ok(())
