@@ -1,0 +1,58 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: "common::render(&state, 120, 40)"
+---
+Stark  ⊘ MUTED  MacBook Pro Microphone   chat · , settings · : commands · ? keys
+1  Conversation    2  Runs (0/0 live)    3  Activity (2)
+Ask Starkbot to do something in an app or on the web.
+i or a starts typing · Enter sends · : runs a command
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                  ▼ live
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys present │ account none
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Conversation
+fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=NONE  >
+fg=DarkGray bg=Reset mod=NONE  1
+fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (2)
+fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+fg=DarkGray bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys present │ account none
+fg=DarkGray bg=Reset mod=NONE  i or a starts typing · Enter sends · : runs a command
+fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  ⊘ MUTED
+fg=DarkGray bg=Reset mod=NONE  ▼ live
+fg=Reset bg=Reset mod=BOLD  Stark

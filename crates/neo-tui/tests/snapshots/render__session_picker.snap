@@ -1,0 +1,67 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: frame
+---
+Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
+1  Conversation · launch week    2  Runs (0/0 live)    3  Activity (0)
+Ask Starkbot to do something in an app or on the web.
+i or a starts typing · Enter sends · : runs a command
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                    ┌ Conversations ───────────────────────────────────────────────────────────────┐
+                    │▸ launch week                             2026-09-19 08:14 UTC  open          │
+                    │  ad spend review                         2026-09-18 17:02 UTC                │
+                    │  untitled · 00000000-0000-7000-9000-0000000000032026-09-18 09:41 UTC         │
+                    └ j k moves · Enter opens · Ctrl-N new · :rename retitles · Esc closes ────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                  ▼ live
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Conversation · launch week
+fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  │▸
+fg=Cyan bg=Reset mod=NONE  ┌ Conversations ───────────────────────────────────────────────────────────────┐
+fg=Cyan bg=Reset mod=NONE  └ j k moves · Enter opens · Ctrl-N new · :rename retitles · Esc closes ────────┘
+fg=DarkGray bg=Reset mod=NONE  1
+fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (0)
+fg=DarkGray bg=Reset mod=NONE  2026-09-18 09:41 UTC
+fg=DarkGray bg=Reset mod=NONE  2026-09-18 17:02 UTC
+fg=DarkGray bg=Reset mod=NONE  2026-09-19 08:14 UTC
+fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+fg=DarkGray bg=Reset mod=NONE  i or a starts typing · Enter sends · : runs a command
+fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  ▼ live
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=Green bg=Reset mod=NONE  open
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Reset bg=Reset mod=BOLD  launch week
+fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none

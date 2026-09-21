@@ -1,0 +1,30 @@
+[package]
+name = "neo-tui"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Terminal front end for Starkbot Neo: renders core state, sends typed commands (P12)."
+
+[lints]
+workspace = true
+
+[dependencies]
+crossterm.workspace = true
+neo-agent.workspace = true
+neo-core.workspace = true
+neo-store.workspace = true
+# The evaluation suite is a capability the front end offers, not a test
+# harness it links: `:eval` calls `run_suite` exactly as `neo eval` does.
+neo-eval.workspace = true
+neo-voice.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

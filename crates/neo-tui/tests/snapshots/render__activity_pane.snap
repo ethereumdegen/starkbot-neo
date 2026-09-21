@@ -1,0 +1,61 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: "common::render(&state, 120, 40)"
+---
+Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
+1  Conversation    2  Runs (0/0 live)    3  Activity (3)
+┌ Activity (3) ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│notice    Info store.opened · store ready                                                                             │
+│latency   step 41ms · jev 168ms                                                                                       │
+│key       anthropic · invalid                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                ▼ live│
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+NORMAL │ store ready │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys invalid: anthropic
+--- styles ---
+fg=Blue bg=Reset mod=NONE  key
+fg=Blue bg=Reset mod=NONE  latency
+fg=Blue bg=Reset mod=NONE  notice
+fg=Cyan bg=Reset mod=BOLD  Activity (3)
+fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=NONE  >
+fg=DarkGray bg=Reset mod=NONE  1  Conversation    2  Runs (0/0 live)    3
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ┌ Activity (3) ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+fg=DarkGray bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  ▼ live│
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Yellow bg=Reset mod=NONE  NORMAL │ store ready │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys invalid: anthropic

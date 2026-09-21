@@ -1,0 +1,34 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: "common::render(&state, 60, 20)"
+---
+1  Conversation    2  Runs (0/0 live)    3  Activity (0)
+Ask Starkbot to do something in an app or on the web.
+i or a starts typing · Enter sends · : runs a command
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                      ▼ live
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves ins
+NORMAL │ ○ NO MIC YET │ /fixtures/neo/neo.db v3
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Conversation
+fg=Cyan bg=Reset mod=NONE  >
+fg=DarkGray bg=Reset mod=NONE  1
+fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (0)
+fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves ins
+fg=DarkGray bg=Reset mod=NONE  i or a starts typing · Enter sends · : runs a command
+fg=DarkGray bg=Reset mod=NONE  ▼ live
+fg=Yellow bg=Reset mod=NONE  NORMAL │ ○ NO MIC YET │ /fixtures/neo/neo.db v3

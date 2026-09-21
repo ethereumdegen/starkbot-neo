@@ -1,0 +1,59 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: frame
+---
+Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
+1  Conversation    2  Runs (1/1 live)    3  Mind · eval · running
+┌ Mind · eval · running ───────────────────────────────────────────────────────────────────────────────────────────────┐
+│case    3/3 keynote-slide · skipped — Keynote is not installed                                                        │
+│case    2/3 pages-heading · FAILED (1 run(s)) — the heading still read “Untitled”                                     │
+│case    1/3 numbers-sum · passed (1 run(s))                                                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                ▼ live│
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Mind · eval · running
+fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=NONE  case
+fg=DarkGray bg=Reset mod=NONE  1  Conversation    2  Runs (1/1 live)    3
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ┌ Mind · eval · running ───────────────────────────────────────────────────────────────────────────────────────────────┐
+fg=DarkGray bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  ▼ live│
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Yellow bg=Reset mod=NONE  NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic

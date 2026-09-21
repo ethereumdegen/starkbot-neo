@@ -1,0 +1,25 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: "common::render(&state, 59, 19)"
+---
+
+
+
+
+
+
+
+
+
+            terminal too small — 60×20 minimum
+
+
+
+
+
+
+
+
+
+--- styles ---
+fg=Yellow bg=Reset mod=NONE  terminal too small — 60×20 minimum

@@ -1,0 +1,93 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: "common::render(&state, 120, 40)"
+---
+Stark  ○┌ Keys ────────────────────────────────────────────────────────────────────────────────────────────────┐
+1  Conve│Esc     stop the live run     q       quit (asks)      Ctrl-Q  quit now                               │
+Ask Star│Ctrl-C  kill switch   Ctrl-L  redraw           x       stop the selected run                          │
+i or a s│1 2 3   focus pane    Tab     next pane        < >     resize split                                   │
+        │i / a   compose       :       command line     /       search thread                                  │
+        │f       follow live   ,       settings         ?       this help                                      │
+        │j k     move          gg / G  first / last     Enter   activate                                       │
+        │Ctrl-N  new conversation      t       sessions                                                        │
+        │v       dictate       Ctrl-V  dictate (insert) m       listen on/off                                  │
+        │Insert: Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert                                 │
+        │While a turn runs: Enter steers it — the message reaches the turn at the                              │
+        │        next step, and is sent as a new turn if that one just ended.                                  │
+        │        Esc leaves insert, Esc again stops the run; what it already did stays.                        │
+        │Prompts: Enter saves · Ctrl-U clears a pre-filled value · Esc cancels                                 │
+        │Settings: s set key · x remove key · K check key · c sign in · d sign out                             │
+        │          r refresh models · Enter toggles a bool or cycles a choice                                  │
+        │                                                                                                      │
+        │the : line                                                                                            │
+        │  :nav      <url> <goal> [--headed] [--profile P] [--no-safety]drive a web page to a goal             │
+        │  :app      <app> <goal>                                  drive a native application to a goal        │
+        │  :ax       trusted|apps|table|press|set|menu|type|key    one direct accessibility call               │
+        │  :eval     [--filter F] [--tag T] [--once] [--list]      run the app-control suite                   │
+        │  :stop                                                   cancel the selected run — Esc, while live   │
+        │  :kill                                                   cancel every live run                       │
+        │  :new      [title]                                       start a conversation                        │
+        │  :sessions                                               switch conversation                         │
+        │  :rename   <title>                                       retitle this conversation                   │
+        │  :settings [section]                                     open Settings                               │
+        │  :keys                                                   open Connections & keys                     │
+        │  :models   [refresh]                                     open Models, or re-read the catalogue       │
+        │  :doctor                                                 re-run the readiness checks                 │
+        │  :help                                                   the keymap                                  │
+        │  :quit                                                   leave — the key is Ctrl-Q                   │
+        │  :packs                                                  capability packs — not built yet            │
+        │  :soul                                                   edit soul.md — not built yet                │
+        │  :pause                                                  pause the queue — not built yet             │
+        │  :resume                                                 resume the queue — not built yet            │
+        │  :listen   on|off                                        microphone — not built yet                  │  ▼ live
+> Enter │                                                                                                      │
+NORMAL │└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Conve
+fg=Cyan bg=Reset mod=BOLD  the : line
+fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  │  :app
+fg=Cyan bg=Reset mod=NONE  │  :ax
+fg=Cyan bg=Reset mod=NONE  │  :doctor
+fg=Cyan bg=Reset mod=NONE  │  :eval
+fg=Cyan bg=Reset mod=NONE  │  :help
+fg=Cyan bg=Reset mod=NONE  │  :keys
+fg=Cyan bg=Reset mod=NONE  │  :kill
+fg=Cyan bg=Reset mod=NONE  │  :listen
+fg=Cyan bg=Reset mod=NONE  │  :models
+fg=Cyan bg=Reset mod=NONE  │  :nav
+fg=Cyan bg=Reset mod=NONE  │  :new
+fg=Cyan bg=Reset mod=NONE  │  :packs
+fg=Cyan bg=Reset mod=NONE  │  :pause
+fg=Cyan bg=Reset mod=NONE  │  :quit
+fg=Cyan bg=Reset mod=NONE  │  :rename
+fg=Cyan bg=Reset mod=NONE  │  :resume
+fg=Cyan bg=Reset mod=NONE  │  :sessions
+fg=Cyan bg=Reset mod=NONE  │  :settings
+fg=Cyan bg=Reset mod=NONE  │  :soul
+fg=Cyan bg=Reset mod=NONE  │  :stop
+fg=Cyan bg=Reset mod=NONE  ┌ Keys ────────────────────────────────────────────────────────────────────────────────────────────────┐
+fg=Cyan bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  1
+fg=DarkGray bg=Reset mod=NONE  <app> <goal>
+fg=DarkGray bg=Reset mod=NONE  <title>
+fg=DarkGray bg=Reset mod=NONE  <url> <goal> [--headed] [--profile P] [--no-safety]
+fg=DarkGray bg=Reset mod=NONE  Ask Star
+fg=DarkGray bg=Reset mod=NONE  Enter
+fg=DarkGray bg=Reset mod=NONE  [--filter F] [--tag T] [--once] [--list]
+fg=DarkGray bg=Reset mod=NONE  [refresh]
+fg=DarkGray bg=Reset mod=NONE  [section]
+fg=DarkGray bg=Reset mod=NONE  [title]
+fg=DarkGray bg=Reset mod=NONE  i or a s
+fg=DarkGray bg=Reset mod=NONE  on|off
+fg=DarkGray bg=Reset mod=NONE  trusted|apps|table|press|set|menu|type|key
+fg=DarkGray bg=Reset mod=NONE  ▼ live
+fg=DarkGray bg=Reset mod=NONE  ○
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Yellow bg=Reset mod=NONE  NORMAL │
+fg=Yellow bg=Reset mod=NONE  capability packs — not built yet
+fg=Yellow bg=Reset mod=NONE  edit soul.md — not built yet
+fg=Yellow bg=Reset mod=NONE  microphone — not built yet
+fg=Yellow bg=Reset mod=NONE  pause the queue — not built yet
+fg=Yellow bg=Reset mod=NONE  resume the queue — not built yet

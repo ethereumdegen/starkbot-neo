@@ -1,0 +1,96 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: frame
+---
+Stark  ○ NO MIC YET  v dictates   Esc chat · , settings · : commands · ? keys
+┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│── Connections & keys                                                                                                 │
+│  active inference          OpenAI API key                                                                            │
+│                            Enter selects · s sets a key · x removes · K checks · c signs in                          │
+│  (a) OpenAI API key        present · selected                                                                        │
+│▸ (b) Claude Pro/Max        signed out                                                                                │
+│  (c) Anthropic API key     missing                                                                                   │
+│  (d) ChatGPT Plus/Pro      signed out                                                                                │
+│                            c signs in · d signs out · fallbacks below need the vendor's own CLI                      │
+│  (e) Claude via CLI        signed out                                                                                │
+│  (f) ChatGPT via Codex     signed out                                                                                │
+│  typesafe key              present                                                                                   │
+│── Models                                                                                                             │
+│  inference                 openai/sol-latest                                                                         │
+│  text_helper               openai/gpt-5.6-luna                                                                       │
+│  stt                ┌ Claude Pro/Max ──────────────────────────────────────────────────────────┐                     │
+│  tts                │Sign in to Claude Pro/Max in your browser.                                │                     │
+│  sol_effort         │                                                                          │                     │
+│  live transcription │https://claude.ai/oauth/authorize?client_id=9d1c250a&state=abc123         │                     │
+│  stt_live.model     │                                                                          │                     │
+│                     │waiting for your browser · 296s left                                      │                     │
+│── Identity          │listening on http://localhost:54545/callback                              │                     │
+│  name               └ o opens the page · p pastes instead · Esc cancels ───────────────────────┘                     │
+│── Listening                                                                                                          │
+│  enabled                   on                                                                                        │
+│  addressing                open                                                                                      │
+│  push to talk              off                                                                                       │
+│  mic device                system default                                                                            │
+│── Voice                                                                                                              │
+│  speak replies             off                                                                                       │
+│  voice                     marin                                                                                     │
+│  speak                     questions_only                                                                            │
+│  duplex                    auto                                                                                      │
+│  keep recordings           off                                                                                       │
+│── Intake                                                                                                             │
+│  enqueue at                0.70                                                                                      │
+│  offer at                  0.40                                                                                      │
+└ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+--- styles ---
+fg=Blue bg=Reset mod=NONE  https://claude.ai/oauth/authorize?client_id=9d1c250a&state=abc123
+fg=Cyan bg=Reset mod=BOLD  , settings
+fg=Cyan bg=Reset mod=BOLD  Claude Pro/Max
+fg=Cyan bg=Reset mod=BOLD  ── Connections & keys
+fg=Cyan bg=Reset mod=BOLD  ── Identity
+fg=Cyan bg=Reset mod=BOLD  ── Intake
+fg=Cyan bg=Reset mod=BOLD  ── Listening
+fg=Cyan bg=Reset mod=BOLD  ── Models
+fg=Cyan bg=Reset mod=BOLD  ── Voice
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  │▸
+fg=Cyan bg=Reset mod=NONE  ┌ Claude Pro/Max ──────────────────────────────────────────────────────────┐
+fg=Cyan bg=Reset mod=NONE  ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+fg=Cyan bg=Reset mod=NONE  └ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
+fg=Cyan bg=Reset mod=NONE  └ o opens the page · p pastes instead · Esc cancels ───────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  (a) OpenAI API key
+fg=DarkGray bg=Reset mod=NONE  (c) Anthropic API key
+fg=DarkGray bg=Reset mod=NONE  (d) ChatGPT Plus/Pro
+fg=DarkGray bg=Reset mod=NONE  (e) Claude via CLI
+fg=DarkGray bg=Reset mod=NONE  (f) ChatGPT via Codex
+fg=DarkGray bg=Reset mod=NONE  active inference
+fg=DarkGray bg=Reset mod=NONE  addressing
+fg=DarkGray bg=Reset mod=NONE  duplex
+fg=DarkGray bg=Reset mod=NONE  enabled
+fg=DarkGray bg=Reset mod=NONE  enqueue at
+fg=DarkGray bg=Reset mod=NONE  inference
+fg=DarkGray bg=Reset mod=NONE  keep recordings
+fg=DarkGray bg=Reset mod=NONE  live transcription
+fg=DarkGray bg=Reset mod=NONE  mic device
+fg=DarkGray bg=Reset mod=NONE  name
+fg=DarkGray bg=Reset mod=NONE  offer at
+fg=DarkGray bg=Reset mod=NONE  push to talk
+fg=DarkGray bg=Reset mod=NONE  sol_effort
+fg=DarkGray bg=Reset mod=NONE  speak
+fg=DarkGray bg=Reset mod=NONE  speak replies
+fg=DarkGray bg=Reset mod=NONE  stt
+fg=DarkGray bg=Reset mod=NONE  stt_live.model
+fg=DarkGray bg=Reset mod=NONE  text_helper
+fg=DarkGray bg=Reset mod=NONE  tts
+fg=DarkGray bg=Reset mod=NONE  typesafe key
+fg=DarkGray bg=Reset mod=NONE  voice
+fg=DarkGray bg=Reset mod=NONE  · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc chat ·
+fg=Green bg=Reset mod=NONE  present
+fg=Green bg=Reset mod=NONE  present · selected
+fg=Reset bg=Reset mod=BOLD  (b) Claude Pro/Max
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+fg=Yellow bg=Reset mod=NONE  missing
+fg=Yellow bg=Reset mod=NONE  signed out
+fg=Yellow bg=Reset mod=NONE  waiting for your browser

@@ -1,0 +1,40 @@
+[package]
+name = "neo-cli"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless command-line interface for Starkbot Neo."
+
+[[bin]]
+name = "neo"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+jev-nav = { workspace = true, features = ["ax"] }
+neo-ax.workspace = true
+neo-agent.workspace = true
+neo-cdp.workspace = true
+neo-core.workspace = true
+neo-eval.workspace = true
+neo-store.workspace = true
+neo-tui.workspace = true
+neo-otel.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+zeroize.workspace = true
