@@ -1,5 +1,7 @@
 # 07 — Media engine (`neo-media` + the `degen-media-maker` library)
 
+> **2026-09-19 — superseded.** Starkbot no longer embeds media generation or a canvas. It operates the editors **Powermove** and **Diffusion Studio** and the generator **Degen Media Studio** (the renamed Degen Media Maker, rewritten in Bend 2 and thinned to generation only) through their UIs, with Jev + accessibility, and holds only OpenAI + TypeSafe keys. See [12-media-apps](12-media-apps.md) and [13-degen-media-studio](13-degen-media-studio.md). The Hypercanvas is retired. This doc is kept for reference (quality pipeline, takes, shoot-out practice).
+
 Constitution: P2 (media must be *very good*), K1, K2, K4, K5, A10, A12, A13, A16, M6.
 
 ## 1. Scope

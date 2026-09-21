@@ -288,7 +288,7 @@ Pattern: **JSON pack + native Rust tools.** A capability needing a new protocol 
 | `neo-browser` | on | **generic web skills** (tabs, forms, search → results → detail, pagination, reading a page, consent banners → most privacy-preserving option) + `desktop/apps` hints **per browser** (Safari / Firefox AX flag, tab shortcuts). **Nothing per website.** |
 | `neo-apple-apps` | on | hints + routines + skills for Finder, Notes, Mail, Calendar, Reminders, Messages, Music, Keynote; the open/save-panel routine used by media export |
 | `neo-electron` | on | hints only: Slack, Discord, Notion, Spotify, VS Code (editor panes; its terminal stays denied) |
-| `neo-media` | **off** | native `media_*` tools (07), `requires_env: FAL_KEY, QUIVERAI_API_KEY` + `key_help`, per-model prompting skills, spend policies |
+| `media-apps` | **off** | Jev-enablement data for Powermove, Diffusion Studio and Degen Media Studio: vocabulary, accessibility hints, verified UI routines, Sol goal templates, and confirm labels. No native media tools and no credentials; each media app owns its projects, generation keys, and credits (12). |
 | `neo-gtm` | **on** | workflow skills + routines + pacing policies (09); no native code, no site knowledge |
 | `neo-user` | on, **writable** | the user's own routines, native-app hints, vocabulary; edited in the Packs UI; never published implicitly |
 

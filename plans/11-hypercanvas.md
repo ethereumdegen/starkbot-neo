@@ -1,5 +1,7 @@
 # 11 — Hypercanvas: one agentic design surface for web pages, ads, graphics and video
 
+> **2026-09-19 — superseded.** Starkbot no longer embeds media generation or a canvas. It operates the editors **Powermove** and **Diffusion Studio** and the generator **Degen Media Studio** (the renamed Degen Media Maker, rewritten in Bend 2 and thinned to generation only) through their UIs, with Jev + accessibility, and holds only OpenAI + TypeSafe keys. See [12-media-apps](12-media-apps.md) and [13-degen-media-studio](13-degen-media-studio.md). The Hypercanvas is retired. This doc is kept for reference (quality pipeline, takes, shoot-out practice).
+
 An infinite canvas in the main window's **Design** mode (A15). The same surface designs a landing page, an ad set, a social graphic, a logo sheet and a video. Most of the designing is done **by the agent**; the user steers by voice, chat, pins, knobs and direct manipulation. It absorbs the Studio: 07 remains the spec of the generation engine (`neo-media`), this doc is the spec of everything the user sees and edits.
 
 **One rule shapes everything (A13): every frame is an HTML + CSS document.** Rust owns that document; a browser engine lays it out and paints it; the agent writes and rewrites HTML because that is what models are best at.

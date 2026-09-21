@@ -1,10 +1,24 @@
 # starkbot-neo — master plan
 
-A voice-first desktop agent for macOS, written in Rust (Tauri v2). You talk (or
-type); it drives your browser with **Jev** at classifier speed, designs web
-pages, ads and video on an agentic **Hypercanvas**, generates and edits media
-through fal.ai and QuiverAI, and strings those together for go-to-market work —
-while a UI shows what it hears, thinks, judges and does.
+A **go-to-market marketing and media harness** for macOS, written in Rust (P2′).
+You talk (or type); it drives your browser with **Jev** at classifier speed,
+authors and edits media by **operating media apps** — the editors Powermove and
+Diffusion Studio and the generator Degen Media Studio — through the same Jev +
+accessibility loop, and strings those together for go-to-market work, while a UI
+shows what it hears, thinks, judges and does. It is **not** a shell or coding
+agent: there is no `bash` tool and no general file access (P3).
+
+It has **two front ends over one core** (P12): a **ratatui TUI** (`neo tui`,
+modelled on the OMP coding harness) that is the default surface for development
+and milestone acceptance, and the **Tauri v2 desktop app** that ships to users.
+Neither holds a secret or makes a decision.
+
+It needs exactly two kinds of credential (K6): a **TypeSafe AI key** for Jev,
+plus **one inference connection** — an **OpenAI API key**, a **ChatGPT plan**
+through the official Codex app-server, an **Anthropic API key**, or an
+**Anthropic (Claude) subscription** through the official Claude Code agent
+surface. Speech is OpenAI-API-key only. The media apps own their own fal and
+QuiverAI credentials.
 
 **Start here:** [plans/00-decisions.md](plans/00-decisions.md) is the decision
 record. It wins over every other document, including this one.
@@ -14,15 +28,19 @@ record. It wins over every other document, including this one.
 | [00-decisions](plans/00-decisions.md) | every firm decision, vocabulary, crate map, milestones, open questions |
 | [10-navigator](plans/10-navigator.md) | `jev-nav` — Rust port of `browser-use/jev-ultrafast`: the step loop, TypeSafe wire format, `CdpObserver`, managed Chrome, safety heads, `AxObserver` |
 | [03-agent](plans/03-agent.md) | `neo-judge` + `neo-agent` — intake + routing, queue, router, Sol orchestrator on metalcraft, `Gated<T>`, rules, confirms, trace, caps |
-| [11-hypercanvas](plans/11-hypercanvas.md) | `neo-canvas` — HTML/CSS frames (Web · Graphic · Set · Video · Board), ops + undo, agent passes, pins, knobs, Jev micro-edits, exports |
-| [07-media](plans/07-media.md) | `neo-media` + the `degen-media-maker` library — backends, takes + lineage, tools, quality pipeline, spend gate, enablement |
+| [12-media-apps](plans/12-media-apps.md) | **media through apps**: the editors Powermove + Diffusion Studio and the generator Degen Media Studio, driven by Jev + accessibility; the `media-apps` Jev-enablement pack; commanding Powermove's agent; S8 smoke tests |
+| [13-degen-media-studio](plans/13-degen-media-studio.md) | **Degen Media Studio** (renamed Degen Media Maker) rewritten in Bend 2, **generation only**: fal + Quiver takes, ledger + lineage, shoot-outs, quotes, send-to-editor, an accessibility-first UI, laws |
+| [11-hypercanvas](plans/11-hypercanvas.md) | *(retired 2026-09-19; editing lives in Powermove + Diffusion Studio)* HTML/CSS frames (Web · Graphic · Set · Video · Board), ops + undo, agent passes, pins, knobs, Jev micro-edits, exports |
+| [07-media](plans/07-media.md) | *(largely superseded by 12)* takes + lineage, quality pipeline — reference for the quality pipeline |
 | [09-gtm](plans/09-gtm.md) | product focus, `extract`, the `neo-gtm` workflows, pacing guard, hard stops |
 | [06-packs](plans/06-packs.md) | `neo-packs` — Axoniac pack format, `desktop/` extension, routines, meta-tools, enablement flow, registry |
 | [02-voice](plans/02-voice.md) | `neo-voice` — capture, VAD, STT, TTS, duplex, listen states |
-| [04-ui](plans/04-ui.md) | app shell, Assist mode, windows + panels, onboarding, settings, Identity, Rust↔TS protocol |
+| [04-ui](plans/04-ui.md) | the **Tauri desktop** front end: app shell, Assist mode, windows + panels, onboarding, settings, Identity, Rust↔TS protocol |
+| [14-tui](plans/14-tui.md) | the **ratatui terminal** front end (`neo tui`, P12): panes, keybindings, the shared event/command seam, TUI acceptance per milestone |
+| [15-heartbeat](plans/15-heartbeat.md) | the **heartbeat** (P13, A26, A27): `heartbeat.md`, cadence settings, tick semantics, user-declared CLIs |
 | [01-accessibility](plans/01-accessibility.md) | `neo-ax` — native-app accessibility actor |
 | [05-platform](plans/05-platform.md) | workspace, dependencies, SQLite schema, keys, registry, permissions, signing, testing, CI |
-| [08-providers](plans/08-providers.md) | direct vendor keys now; provider traits; what StarkRouter must offer later |
+| [08-providers](plans/08-providers.md) | the four K6 inference connections (OpenAI key, ChatGPT/Codex, Anthropic key, Claude subscription); provider + runtime traits; what StarkRouter must offer later |
 | [research/](plans/research/) | archived research that is *not* part of the design |
 
 ## 1. How it works
@@ -37,8 +55,8 @@ record. It wins over every other document, including this one.
              ┌──────────────────────┬──────────────┴───────────┬──────────────────────┐
              ▼                      ▼                          ▼                      ▼
       route: navigate         route: routine            route: design / media     route: multi / question
-      JEV NAVIGATOR           fixed steps, Jev-verified  SOL + canvas + media      SOL ORCHESTRATOR
-      (zero Sol calls)                                   tools                     navigate() · extract() · ask_user()
+      JEV NAVIGATOR           fixed steps, Jev-verified  SOL + navigate() in      SOL ORCHESTRATOR
+      (zero Sol calls)                                   media apps                navigate() · extract() · ask_user()
              │                                                 │                          │
              └───────────── every acting step: rules → Jev safety heads → confirm card ───┘
                                           │
@@ -49,7 +67,7 @@ record. It wins over every other document, including this one.
 - A **fast text helper** (`gpt-5.6-luna`, reasoning off) is called only when a field must be typed into.
 - **Sol** (`gpt-5.6-sol`) is the orchestrator and the creative: multi-stage work, extraction, answers, long-form copy, art direction, visual critique, recovery from `BLOCKED`. For a plain browser task it is never called.
 - The **web** is observed through CDP with one atomic in-page snapshot, in a Chrome profile the app manages. **Native apps** use the same navigator policy through the macOS accessibility API.
-- **Design and media** happen on the Hypercanvas, where every frame is real HTML + CSS; the agent builds in layered passes and you refine with pins, knobs, direct edits and ~150 ms Jev micro-edits by voice.
+- **Design and media** happen in media apps that Starkbot operates like any other UI: the editors **Powermove** (AI-native motion and video editor whose own agent can add panels and effects) and **Diffusion Studio** (canvas + timeline), and the generator **Degen Media Studio** (fal + Quiver takes, handed to the editors as files). Sol art-directs and critiques the renders the apps produce; Jev does the clicking; a `media-apps` skill pack supplies vocabulary, hints and routines. Paid actions inside the apps are confirm cards.
 - **Safety** is deterministic rules, then Jev's safety heads in the same request, then a human confirm card. Anything outward-facing, destructive or spending money waits for you.
 
 ## 2. Who does what
@@ -60,8 +78,7 @@ record. It wins over every other document, including this one.
 | Browser / app steps | operation + target every step; `DONE` / `BLOCKED` | the one value to type | takes over on `BLOCKED` | observe, guards, execute, waits, verification |
 | Safety | `outward` · `destructive` · `spends` · `on_task` | — | — | deny lists, secure fields, confirm labels, caps |
 | Multi-stage work | — | — | plan as `navigate(goal)` calls, `extract`, `ask_user` | queue, pacing guard |
-| Design | micro-edits: target + operation + amount | — | briefs, subtree rewrites, critique | document, ops, undo, tokens, exports |
-| Media | — | — | art direction, shoot-out critique via vision | backends, takes ledger, compositor, spend gate |
+| Design + media (in the apps) | every click in Powermove, Diffusion Studio and DMS | field values, titles, captions | briefs, art direction, shoot-out and render critique via vision, `navigate` goals | confirm gate, grounding probes; the apps own documents, generation, rendering |
 
 ### 2.1 Product user stories
 
@@ -91,30 +108,32 @@ These are end-to-end product contracts, not demo prompts. The default path uses 
 - Optional pack hints may enable AX trees or tune waits, but cannot encode selectors or workflows. Sol receives fine-grained gated AX tools only after the cheap navigator reports `BLOCKED`.
 - **Acceptance:** works with hints disabled across the fixture app and representative AppKit, SwiftUI, Catalyst, and Electron apps; secure-field values never enter memory, logs, or model state; stale references relocate only on one exact fingerprint match; focus, modifiers, Spaces, screen lock, and permission loss fail safely.
 
-#### Hypercanvas: agentic static and animated ad production
+#### Media through apps: Powermove, Diffusion Studio and Degen Media Studio
 
-> As a marketer or designer, I can brief Stark, receive strong ad directions on a Figma-like canvas, and iterate by voice, pins, knobs, text edits, or direct manipulation until a complete static and animated campaign set is export-ready.
+> As a marketer or creator, I can brief Stark and watch it make media in real apps. It generates stills, motion and vectors in Degen Media Studio, then cuts and animates them in Powermove or Diffusion Studio. I keep full, editable projects, and Stark only ever holds my OpenAI and Jev keys.
 
-- Sol owns briefs, concepts, layout/copy passes, art direction, and visual critique. Jev handles cheap micro-edits (`target + operation + amount`), selection intent, and repetitive placement decisions. Rust owns the HTML/CSS document, tokens, constraints, transactions, per-author undo, timeline, deterministic rendering, and export validation.
-- fal.ai and QuiverAI/Arrow2 provide image, SVG, edit, upscale, cutout, and motion takes behind the existing spend gate. The agent runs shoot-outs, places selected takes non-destructively, keeps lineage, and typesets all final copy in the browser renderer rather than inside generated imagery.
-- **Acceptance:** generate and iterate coherent 1:1, 4:5, 9:16, 16:9, and 1200×628 sets from one master; preserve user locks and edits across agent rewrites; produce static PNG/JPG/WebP/PDF and deterministic animated MP4/GIF outputs; compare Chrome exports against Hypercanvas previews; expose cost before paid calls; meet platform safe zones, legibility, and brand-token checks.
+- Starkbot operates the apps' UIs with the Jev navigator: `AxObserver` for the macOS apps (Diffusion Studio first; Powermove is Electron, with `AXManualAccessibility`), and the CDP snapshot for web UIs (DMS, `powermove serve`). The `media-apps` Jev-enablement skill pack adds app vocabulary, technical hints, Jev-verified routines (import, export, shoot-out, send to editor) and Sol goal templates. It never uses per-site selectors and collects no keys ([12](plans/12-media-apps.md)).
+- Sol owns briefs, art direction, the quality pipeline and vision critique of renders the apps produced. Jev does every click. Generate, render-with-credits, export-overwrite, publish and **requests to Powermove's self-rewriting agent** are confirm cards.
+- Degen Media Studio (renamed Degen Media Maker) is rewritten in Bend 2 and **thinned to generation**: fal + Quiver takes with lineage, shoot-outs, contact sheets, quotes, and send-to-editor with sidecars. It has proven ledger and spend laws and an accessibility-first UI ([13](plans/13-degen-media-studio.md)). The Hypercanvas is retired.
+- **Acceptance (smoke test S8):** S8a produces a 10 s 9:16 promo in the Diffusion Studio macOS app (ffprobe + filmstrip checks, 4 of 5 runs). S8b makes the same promo in Powermove, plus a panel created by Powermove's agent and used by Jev. S8c goes DMS shoot-out → star → animate → send to editor → a teaser cut in Diffusion Studio. All run with no fal or Quiver key anywhere in Starkbot.
 
 ## 3. Milestones
 
-Defined in [00-decisions](plans/00-decisions.md#milestones-supersede-every-earlier-phase-list); each area doc carries the acceptance criteria for its part. Every milestone is proven in the headless **`neo` CLI** before its UI is built.
+Defined in [00-decisions](plans/00-decisions.md#milestones-supersede-every-earlier-phase-list); each area doc carries the acceptance criteria for its part. Every milestone is proven headlessly in the **`neo` CLI** and then in the **`neo tui` terminal front end**; the desktop UI follows (P12, [14](plans/14-tui.md)).
 
 ```
 M0 spikes ─▶ M1 shell ─▶ M2 ears + conversation ─▶ M3 navigator (web) ─▶ M4 judge · queue · safety ─▶ M5 Sol orchestrator
                                                                                   │
                      ┌────────────────────────────────────────────────────────────┤
                      ▼                                                            ▼
-              M6 media engine ─▶ M7 hypercanvas I ─▶ M8 hypercanvas II     M9 packs + GTM ─▶ M10 native apps
+              M6′ media via apps (S8)                     M9 packs + GTM ─▶ M10 native apps
+              (M7/M8 retired; Degen Media Studio in Bend: G0–G4, own repo)
                                         │
                                         ▼
                                   M12 video            M11 voice out (any time after M4)            M13 ship
 ```
 
-First usable product = **M0–M5** (talk → it does the browser task → you watch and confirm). First *differentiated* product = **+ M6–M8** (it designs and makes the media too). M9 turns those into GTM workflows.
+First usable product = **M0–M5** (talk → it does the browser task → you watch and confirm), usable from `neo tui` before the desktop shell is finished. First *differentiated* product = **+ M6′** (it makes the media too, by operating Powermove, Diffusion Studio and Degen Media Studio). M9 turns those into GTM workflows.
 
 ### M0 spikes — what must be learned before building
 
@@ -127,6 +146,7 @@ First usable product = **M0–M5** (talk → it does the browser task → you wa
 | S5 | metalcraft + Sol + one tool with reasoning-item replay; do reasoning summaries come through `rig`? |
 | S6 | Non-activating NSPanel above a fullscreen app; click-through ring. |
 | S7 | Canvas fidelity: a Graphic frame's HTML/CSS → CDP screenshot at 1×/2×/3× vs the same frame in the webview; deterministic frame-stepping of a CSS animation → ffmpeg. |
+| S8 | Media through apps smoke tests ([12 §5](plans/12-media-apps.md#5-smoke-tests-spike-s8-before-m6)): S8a Diffusion Studio **macOS app** via `AxObserver` (needs a `neo-ax` spike ahead of M10), a 10 s 9:16 promo; S8b the same in Powermove plus a panel made by its agent; S8c DMS generate → send to editor → cut. Only OpenAI + TypeSafe keys. |
 
 Numbers and conclusions are recorded in `plans/spikes.md`; any *(verify)* in the docs is resolved there.
 
@@ -134,8 +154,8 @@ Numbers and conclusions are recorded in `plans/spikes.md`; any *(verify)* in the
 
 | Crate | Change | Needed by |
 |---|---|---|
-| `metalcraft` 0.12 | `rig` 0.42, reasoning-item replay, summaries, and deep-merged request params are complete locally; image tool-result parts and streaming delta hook remain | M5 (reasoning spine), M6 (`media_look`), M7 (`canvas_look`) |
-| `degen-media-maker` | split into lib + bin; `MediaBackend` trait; progress callback | M6 |
+| `metalcraft` **1.0.1** (published) | shipped: `rig` 0.42, reasoning-item replay, summaries, deep-merged request params, an append-only `Journal` with rewind/fork, cancellation through `NodeCtx`, and a `Telemetry` event stream correlated to journal entries (usable for the Mind pane and cost views). Still open: image tool-result parts, the streaming delta hook, and the **rig Anthropic Messages provider for the K6 Anthropic-API-key runtime** — `ReactAgentNode` only extracts OpenAI-shaped reasoning (`Summary`/`Encrypted`) and drops Anthropic's `ReasoningContent::Text { text, signature }`, so a thinking-plus-tools turn cannot be replayed | M5 (reasoning spine, A22 runtimes), M6 (`media_look`) |
+| `degen-media-maker` | renamed **Degen Media Studio**; rewritten in Bend 2 in `~/ai/degen-media-studio-bend`, generation only, accessibility-first UI ([13](plans/13-degen-media-studio.md)) | M6′ (S8c) |
 | Axoniac pack format | tolerate the neo-only `desktop/` folder in other hosts | M9 |
 
 ## 5. Top risks
@@ -150,6 +170,7 @@ Numbers and conclusions are recorded in `plans/spikes.md`; any *(verify)* in the
 | Media quality is merely "fine" | the quality pipeline (brief → per-model direction → shoot-out → vision critique → targeted edits → our own typesetting), a fixed 20-brief review set before each release |
 | macOS permission loss on re-sign | one stable signing identity from M1; `neo doctor` detects "toggle on but untrusted" |
 | Spend runaway | per-call / per-task / per-day caps, estimates shown before paid calls, exact usage recorded |
+| Media apps change their UI, or expose timelines only on `<canvas>` | no selectors (P9); Jev-verified routines fall back to plain navigation; S8a/S8b check Diffusion Studio's and Powermove's accessibility first (Powermove also offers `powermove serve` → CDP); DMS is accessibility-first by requirement; upstream issues/PRs (both editors are open source) |
 
 ## 6. Open questions for the user
 

@@ -315,6 +315,24 @@ pub trait AxSource { fn fetch(&self, n: NodeId) -> RawNode; fn children(&self, n
 
 Mutating subcommands obey the deny list and print the guard result and the diff. `neo nav "<goal>" --app Notes` (10) runs the navigator over `AxObserver`.
 
+## Findings from driving real apps (2026-09-19)
+
+Recorded here because each one cost a debugging session and each one is a
+deviation from, or a gap in, the design above.
+
+| App | What was learned |
+|---|---|
+| TextEdit | The whole loop works end to end: `neo app TextEdit "turn on bold in the formatting toolbar"` → Jev answered `CLICK bold` (p=0.99), `AXPress` executed in 116 ms, next decision `DONE`. This is the canonical smoke test (A23). |
+| LibreOffice | **Occlusion check 4 had to be relaxed.** An app that draws its own widgets answers `AXUIElementCopyElementAtPosition` with a synthetic parent (a canvas or the window) whose `AXParent` chain does not reach the target inside the hop budget, so *every* button read as `Occluded { by: "another element of the same app" }` and nothing ever executed — one run burned all 120 decisions. A same-app hit whose frame **encloses** the target is now accepted; a different pid, or a same-app element that does not enclose it, is still occluded. |
+| LibreOffice | The a11y tree is rich: 250 rows of buttons, tabs, menu leaves; a Calc sheet exposes every cell as a `textfield` labelled `A1`, `B1`, … with `TYPE_TEXT`. Spreadsheet automation needs no scripting bridge. |
+| LibreOffice Calc | **`AXValue` on a cell is read-only.** `set_value` now falls back to 01 §Actions' documented path (focus → type → read back). Typing lands in the grid's **current selection**, and neither `AXFocused` nor `AXPress` on a cell moves that selection, so writing to a *specific* cell is still unsolved. `neo ax type` into the selected cell does work (A1 now holds `Starkbot 42`, typed by `CGEvent` and committed with Return). Next thing to try: `AXSelected` on the cell, then the Name Box + Return as a technical hint (A19 allows hints, P9 forbids profiles). The actor refuses rather than reporting an unverifiable write. |
+| Every app | `CGEvent` posting **does** reach apps from an unsigned, unbundled `cargo build` binary once the terminal holds the Accessibility grant — contradicting the first `neo-ax` report. `type_text` and `key` are working paths today. |
+| LibreOffice | The 250-row budget is spent on grid cells before LibreOffice's own menus are reached, and the menu leaves that do fit come from the **Apple** menu. `table` has no goal to rank by; a real run ranks by goal-token overlap, but a spreadsheet still needs the A23 pruning (selected cell plus a window around it, the formula input, the sheet tabs) before its own menus are offered. |
+
+The navigator gained a matching guard: `rules::MAX_CONSECUTIVE_STALE` (5) ends a
+run whose surface is never fresh, instead of spending the decision budget on a
+question nothing can answer.
+
 ## Prior art (read before building)
 
 `erishen/ax-agent` (Rust + Tauri 2, closest match: index-path refs + relocation hints, 2 s timeout, 35-step budget) · `andelf/axcli` (Rust, CSS-like selectors `AXButton[title*=…]`, `CGEventPostToPid`) · `mediar-ai` MacosUseSDK (diff-after-action) · Ghost OS (depth tunnelling, sticky modifiers, focus requirement) · Playwright MCP snapshot spec (ref lifecycle, element descriptions) · `browser-use/jev-ultrafast` `browser.py` guards (the freshness model ported here; read, never executed).
@@ -345,3 +363,56 @@ Mutating subcommands obey the deny list and print the guard result and the diff.
 | Hung target app stalls the single actor | messaging timeouts, unresponsive marking, wall deadlines |
 | Electron builds ignoring `AXManualAccessibility` | ladder step 4 → `BLOCKED`; *(verify coverage on current Slack/Discord/Notion)* |
 | Secure-input left on by another app blocks typing | detected, named in the error and in Doctor |
+
+## Two switches an app may need before it publishes anything (measured)
+
+`AXEnhancedUserInterface` (AppKit) and `AXManualAccessibility` (Electron) are
+set on the application element at the start of every observation. Both writes
+are discarded if refused, and they are repeated per observation because an app
+that restarts forgets.
+
+This is not a precaution. Measured on this machine:
+
+| App | Elements before | Elements after |
+|---|---|---|
+| Numbers | **1** — the sheet-title field, no grid at all | **250**, including `table`, `row` and `cell`, with the fixture's value readable |
+| LibreOffice Calc | 250 (92 addressable cells) | unchanged — it needs neither switch |
+
+Without it, "Numbers is not automatable" would have been a reasonable and
+wrong conclusion — it matters for A24, where Numbers for iOS is the first
+target.
+
+## The two grid conventions
+
+A spreadsheet cell is not one shape. **Calc** labels a cell with its address
+(`A1`) and carries the contents as the value. **Numbers** labels a cell with
+its *contents* and exposes no address. So `neo-eval`'s cell probe reports the
+address lookup (`present`, `value`) **and** the whole grid as text, and a case
+asserts against whichever its app offers. A probe that only knew addresses
+reported Numbers as having no cells.
+
+## Budget diversity (A23 pruning, resolved)
+
+The 250-element budget is allocated so no single `(role, container)` group may
+reserve more than 40%, and the surplus is then spent **round-robin** across
+groups rather than down the list. Both halves were measured failures:
+
+* reading order alone gave Calc 250 rows with **zero** non-cell text inputs —
+  the sheet tabs, toolbar and formula controls never reached the model;
+* filling the surplus in reading order gave Numbers 209 menu items and
+  **two** grid cells, even though the reservation pass had kept room.
+
+Selection order is free, but *output* order is not: the table is emitted by
+original position, because an earlier round-robin version reordered it, one
+cell changing value moved most indices, every decision came back `STALE`, and a
+run ended `Blocked("the surface changed under every decision")` after five
+wasted Jev requests.
+
+## Writing a named spreadsheet cell — still no path
+
+`AXValue` on a Calc cell is read-only; `AXFocused` does not move the grid
+selection; **`AXSelected` does not either** — LibreOffice accepts the write,
+the selection stays put, and the extra round trip made the actor miss its
+deadline on a sheet-sized tree. Typing therefore lands in whichever cell is
+already selected. `neo eval --filter write-a-calc-cell` is the standing
+measurement of this gap.
