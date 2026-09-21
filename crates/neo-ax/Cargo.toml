@@ -70,7 +70,6 @@ serde_json.workspace = true
 rustix.workspace = true
 wayland-client.workspace = true
 wayland-protocols-misc.workspace = true
-wayland-protocols-wlr.workspace = true
 # The actor thread owns a current-thread runtime, so it needs the reactor
 # `zbus`'s tokio transport and the walk's deadlines run on.
 tokio = { version = "1", default-features = false, features = [

@@ -123,6 +123,26 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* The webview's default is an overlay scrollbar that only appears mid-
+     scroll, so a rail longer than the window looked like it simply ended
+     at the last visible row. A `::-webkit-scrollbar` rule is what switches
+     WebKit — on macOS and on GTK alike — from that overlay to a bar it
+     draws all the time; the standard `scrollbar-width`/`scrollbar-color`
+     pair would leave the overlay behaviour in place *and* disable these
+     rules, so it is deliberately not set. */
+}
+
+.body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
 }
 
 .tight {
@@ -159,11 +179,60 @@
   border-color: var(--working);
 }
 
+/* Two lines, then an ellipsis: one line lost the end of nearly every title
+   in a 216px rail, and a title is the only thing that tells two threads
+   apart. `anywhere` so a single long token (a URL, a path) wraps rather
+   than overflowing the row. */
 .rowTitle {
   font-size: var(--body);
+  line-height: 1.35;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+/* A row and the control that closes it. The row is a button, and a button
+   cannot hold a button, so the pair sits side by side: the row takes the
+   width and the close control stays out of its hit area. */
+.rowGroup {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+}
+
+.rowGroup > .row {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.rowClose {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  min-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  color: var(--text-3);
+  font-size: var(--emphasis);
+  line-height: 1;
+}
+
+.rowClose:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--surface-raised);
+}
+
+.rowClose:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .rowMeta {

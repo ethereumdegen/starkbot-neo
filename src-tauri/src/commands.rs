@@ -52,7 +52,7 @@ const SELECTABLE_RUNTIMES: [&str; 4] = [
 
 /// Run one of the façade's blocking calls off the UI's async threads: the
 /// store is an actor and answers on a channel.
-async fn blocking<T, F>(task: F) -> Result<T, UiError>
+pub(crate) async fn blocking<T, F>(task: F) -> Result<T, UiError>
 where
     F: FnOnce() -> Result<T, RuntimeError> + Send + 'static,
     T: Send + 'static,
@@ -586,6 +586,15 @@ pub async fn rename_conversation(
     blocking(move || runtime.rename_conversation(id, &title)).await
 }
 
+#[tauri::command]
+pub async fn delete_conversation(
+    state: State<'_, Desktop>,
+    id: ConversationId,
+) -> Result<(), UiError> {
+    let runtime = state.runtime();
+    blocking(move || runtime.delete_conversation(id)).await
+}
+
 /// One thread, oldest first, as stored — including the `result` rows an
 /// action produced, so a reopened window shows the steps a turn took and not
 /// just its answer.
@@ -614,9 +623,22 @@ pub async fn send_message(
     conversation: ConversationId,
     text: String,
 ) -> Result<RunId, UiError> {
-    let runtime = state.runtime();
-    let runs = state.runs();
+    start_turn(state.runtime(), state.runs(), conversation, text).await
+}
 
+/// The body of [`send_message`], reachable without a `State` borrow.
+///
+/// Split out for the control socket (`crate::control`), which starts a turn
+/// on behalf of a shell command rather than a click. There is deliberately
+/// only one of these: a second way to start a turn would be a second place
+/// to forget the registry entry the Stop button reads, or to record the
+/// user's message twice.
+pub(crate) async fn start_turn(
+    runtime: Arc<Runtime>,
+    runs: Arc<Runs>,
+    conversation: ConversationId,
+    text: String,
+) -> Result<RunId, UiError> {
     // Recorded before the turn starts, so the thread the model is shown
     // contains what the user just said — and so a second window sees the
     // message the moment it is sent rather than when the turn ends.

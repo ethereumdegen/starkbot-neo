@@ -28,8 +28,11 @@ use tokio_util::sync::CancellationToken;
 pub struct NavOptions {
     pub url: String,
     pub goal: String,
-    /// Run without a window, in a profile that dies with the run. The
-    /// default is the app's own headed Chrome, where logins persist.
+    /// Run without a window, in a profile that dies with the run — the
+    /// fixture and CI shape. Since P17 an ordinary run is headless anyway, so
+    /// what this flag still decides is the *profile*: asking for it here is
+    /// asking to leave nothing behind, and without it the run uses the app's
+    /// own Chrome where the user's logins persist (B4).
     pub headless: bool,
     /// Turn off the Jev safety heads. Off means *no* head is asked, which also
     /// means nothing can trip the confirm gate: only for fixtures.
@@ -55,7 +58,9 @@ pub struct AppNavOptions {
 pub async fn run(runtime: Arc<Runtime>, options: NavOptions) -> Result<()> {
     let settings = tokio::task::block_in_place(|| runtime.settings())?;
     let mut request = BrowserOptions::unattended(&settings, options.url, options.goal);
-    request.headless = options.headless;
+    request.headless = options.headless || request.headless;
+    // The flag's whole remaining meaning: discard the profile afterwards.
+    request.throwaway = options.headless;
     request.safety_heads = !options.no_safety;
     request.attach = options.attach;
     request.profile = options.profile;

@@ -62,6 +62,16 @@ pub(crate) struct RawNode {
     /// autofocus would otherwise be typeable — the rest would carry no operation at all and
     /// be unreachable. Always false on macOS, where a settable `AXValue` is the path.
     pub focusable_text: bool,
+    /// Whether the node is one of a set the user picks from — an AT-SPI
+    /// `Selectable` row. Its sibling above exists for the same reason: a
+    /// WebKitGTK listbox option implements no `Action` and is not a click
+    /// role, so without this the rows of an open combobox popup carry no
+    /// operation at all and the only reachable element is the input that
+    /// opened it. Measured on degen-paint Studio's command palette, where
+    /// the op the navigator had correctly filtered down to could be read and
+    /// not chosen. Always false on macOS, where such a row advertises
+    /// `AXPress`.
+    pub selectable: bool,
     /// Enumerable choices, when the control exposes them while closed.
     pub options: Vec<String>,
     /// Children in reading order, already tunnelled through by the walker only
@@ -138,8 +148,35 @@ pub(crate) struct MenuLeaf {
 impl MenuLeaf {
     /// The label Jev sees: the full path joined with `›`.
     pub(crate) fn label(&self) -> String {
-        self.path.join(" › ")
+        self.path.join(MENU_SEPARATOR)
     }
+}
+
+/// What joins a menu leaf's path segments into the one label a flat table can
+/// offer.
+pub(crate) const MENU_SEPARATOR: &str = " › ";
+
+/// Is `live` — the label an element reports about itself — the same element
+/// the table recorded as `observed`?
+///
+/// Menu rows are the one place the two legitimately differ. The table is
+/// flat, so a menu leaf is written as its whole path (`File › New Project…`)
+/// to be nameable at all; the node itself only ever reports its own segment
+/// (`New Project…`). A guard comparing the two literally found *every* menu
+/// item stale on every read, which is not a near-miss: five consecutive stale
+/// reads block the run, so no menu item could be actioned at all — and menus
+/// are how an application is asked to import, export or start a document.
+/// Observed on degen-paint Studio, where `File › New Project…` was chosen
+/// with p=0.97 five times and executed zero times.
+///
+/// Only the trailing segment is allowed to stand in for the path. Anything
+/// looser would let a guard accept a *different* menu item with the same leaf
+/// name — `File › Close` approving a click on `Edit › Close`.
+pub(crate) fn label_matches(observed: &str, live: &str) -> bool {
+    observed == live
+        || observed
+            .rsplit_once(MENU_SEPARATOR)
+            .is_some_and(|(_, leaf)| leaf == live)
 }
 
 /// Render a menu item's keyboard shortcut from `AXMenuItemCmdChar` and
@@ -267,5 +304,26 @@ mod tests {
         assert_eq!(render_shortcut(Some("F2"), 0b1000).as_deref(), Some("F2"));
         assert_eq!(render_shortcut(None, 0), None);
         assert_eq!(render_shortcut(Some(" "), 0), None);
+    }
+
+    /// The defect this guards: a menu row is recorded as its whole path but
+    /// reports only its leaf, so a literal comparison made every menu item
+    /// permanently stale and nothing on a menu could be clicked.
+    #[test]
+    fn a_menu_row_matches_the_leaf_the_element_reports() {
+        assert!(label_matches("File › New Project…", "New Project…"));
+        assert!(label_matches("View › Panes › Layers", "Layers"));
+        // A plain element is still compared whole.
+        assert!(label_matches("New project", "New project"));
+    }
+
+    /// The identity check must not be loosened into "any item with this
+    /// name": two menus commonly share a leaf, and approving one must never
+    /// authorise a click on the other.
+    #[test]
+    fn a_leaf_name_alone_does_not_match_a_different_menu() {
+        assert!(!label_matches("File › Close", "Edit › Close"));
+        assert!(!label_matches("File › New Project…", "Open Project…"));
+        assert!(!label_matches("Send", "Sending"));
     }
 }

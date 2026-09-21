@@ -85,6 +85,39 @@ const MODAL_SUBROLES: [&str; 3] = ["AXDialog", "AXSystemDialog", "AXSystemFloati
 /// Roles that mean "the app is busy".
 const BUSY_ROLES: [&str; 2] = ["AXProgressIndicator", "AXBusyIndicator"];
 
+/// One AT-SPI action name in the `AX…` vocabulary the policy sets are keyed
+/// on, or the name unchanged when it means nothing here.
+///
+/// Roles were canonicalised from the start and actions were not, which left
+/// half a translation: [`operations`] asks whether a node advertises one of
+/// [`PRESS_ACTIONS`] — all of them `AX…` names — while AT-SPI answers
+/// `GetName` with ATK's own vocabulary (`click`, `press`, `activate`, …). The
+/// test never matched on Linux, so the only elements that could be clicked
+/// were the ones a *role* made clickable, and anything that is activatable
+/// only by its action was inert.
+///
+/// Measured on degen-paint Studio: the command palette's filtered options
+/// arrive as `ListItem` → `AXRow`, which is not a click role, and carried
+/// `click` as their action. They were shown to Jev with an empty operation
+/// list — visible, correctly ranked, and impossible to choose. Every list
+/// option, every result row and every custom activatable widget on the
+/// toolkit was in that state.
+#[cfg(target_os = "linux")]
+pub(crate) fn canonical_action(name: &str) -> &str {
+    // ATK has no fixed enum here: the names are conventions, lower-cased and
+    // occasionally spaced. Compared case-insensitively without allocating by
+    // matching the shapes actually published.
+    match name.trim().to_ascii_lowercase().as_str() {
+        // "jump" is what ATK calls following a link; "open" is what a file
+        // manager row publishes. Both are "activate this" to a navigator.
+        "click" | "press" | "activate" | "jump" | "open" | "default" => "AXPress",
+        "showmenu" | "show menu" | "show-menu" | "menu" => "AXShowMenu",
+        "pick" | "select" => "AXPick",
+        "confirm" => "AXConfirm",
+        _ => name,
+    }
+}
+
 /// The AT-SPI2 role vocabulary, said in the canonical one.
 ///
 /// Returns `(role, subrole)` in `AX…` terms, which is the only vocabulary
@@ -326,10 +359,40 @@ pub(crate) fn operations(node: &RawNode, is_menu_leaf: bool) -> Vec<Operation> {
         ops.push(Operation::Click);
     }
 
+    // A row the user is meant to pick from is a row a navigator must be able
+    // to pick. `Selectable` is the honest signal for that and is the only
+    // one used here.
+    //
+    // Offering CLICK on *any* labelled row was tried and reverted. A
+    // WebKitGTK `role="option"` sets neither `Selectable` nor `Action`, so
+    // the rule had to fall back to "row with a label", and the synthetic
+    // click it promised does not activate such a row — the app binds
+    // activation to a handler the pointer event does not reach. The effect
+    // was worse than the gap: Jev spent its steps clicking a command
+    // palette's option instead of pressing Enter, which is the path that
+    // does choose it and which the app documents.
+    if node.selectable && !ops.contains(&Operation::Click) {
+        ops.push(Operation::Click);
+    }
+
     // SELECT only when the choices are already known: a pop-up button that
     // hides its menu until it is opened stays a CLICK target.
     if SELECT_ROLES.contains(&role) && !node.options.is_empty() {
         ops.push(Operation::Select);
+    }
+
+    // …and a chooser that is *open* stops being a CLICK target, which is the
+    // same rule read the other way. Clicking a chooser is how it is opened;
+    // once it is open, a click closes it or does nothing, and it is
+    // indistinguishable to a classifier from the action that would make
+    // progress. Gated on `expanded` rather than on having options, because a
+    // closed AppKit pop-up publishes its menu items too and must stay
+    // clickable. Measured on degen-paint Studio: with the command palette
+    // open and filtered to the one op the goal named, five steps in a row
+    // chose CLICK on the palette at p≈0.2 and nothing happened, instead of
+    // the SELECT sitting beside it.
+    if node.expanded == Some(true) && ops.contains(&Operation::Select) {
+        ops.retain(|op| *op != Operation::Click);
     }
 
     ops
@@ -450,6 +513,28 @@ mod tests {
         let mut group = node("AXRadioGroup");
         group.options = vec!["One".into()];
         assert_eq!(operations(&group, false), vec![Operation::Select]);
+    }
+
+    /// A chooser that is already open must not still offer the click that
+    /// opens it: with both on the table the classifier picked CLICK over and
+    /// over and the run made no progress.
+    #[test]
+    fn an_open_chooser_offers_the_choice_and_not_the_click() {
+        let mut palette = node("AXComboBox");
+        palette.focusable_text = true;
+        palette.options = vec!["vector.object.add-ellipse".into()];
+
+        palette.expanded = Some(false);
+        let closed = operations(&palette, false);
+        assert!(closed.contains(&Operation::Click), "{closed:?}");
+        assert!(closed.contains(&Operation::Select), "{closed:?}");
+
+        palette.expanded = Some(true);
+        let open = operations(&palette, false);
+        assert!(!open.contains(&Operation::Click), "{open:?}");
+        assert!(open.contains(&Operation::Select), "{open:?}");
+        // Typing is how the list is filtered, so it survives either way.
+        assert!(open.contains(&Operation::TypeText), "{open:?}");
     }
 
     #[test]

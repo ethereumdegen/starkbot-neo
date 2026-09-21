@@ -50,8 +50,10 @@
 mod backend;
 mod deny;
 mod error;
+mod inventory;
 mod mapping;
 mod raw;
+pub mod seat;
 // Turning a walked tree into an `ElementTable` is backend work, and a
 // platform with no backend walks nothing, so these builders have no caller
 // there.
@@ -63,6 +65,8 @@ pub use backend::perm::{ACCESSIBILITY_SETTINGS_URL, can_post_events, request_tru
 pub use backend::{AxHandle, perm};
 pub use deny::AxPolicy;
 pub use error::{AxError, Freshness, StaleReason};
+pub use inventory::{InstalledApp, inventory, lookup};
+pub use seat::may_take_seat;
 pub use types::{
     ActOutcome, AppInfo, AppSel, AxAction, Checked, Control, Element, ElementTable, Fingerprint,
     Guard, Key, Method, Modifier, Operation, Rect, Ref, ScrollDir, State, WindowInfo,

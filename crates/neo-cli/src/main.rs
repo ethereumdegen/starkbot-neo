@@ -17,6 +17,7 @@ use neo_agent::codex::{
 use neo_agent::runtime::Runtime;
 use neo_core::ProviderAccount;
 use neo_store::{ProviderAccountRepository, Store};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use zeroize::Zeroize;
 
@@ -101,6 +102,22 @@ enum CommandKind {
         app: String,
         goal: String,
     },
+    /// Run one installed pack routine directly (06 §4.2).
+    ///
+    /// The counterpart of `neo app` for work that spans a dialog or a form:
+    /// the routine's steps share one screen hold, so what one opens the next
+    /// can still see.
+    Routine {
+        /// `<pack>/<name>`, or the bare name when it is unambiguous.
+        #[arg(default_value = "")]
+        name: String,
+        /// The routine's parameters, as one JSON object.
+        #[arg(long, default_value = "{}")]
+        params: String,
+        /// List the installed routines instead of running one.
+        #[arg(long)]
+        list: bool,
+    },
     /// Named standing work and its per-project heartbeat.
     Projects {
         #[command(subcommand)]
@@ -121,6 +138,14 @@ enum CommandKind {
     },
     /// Every Starkbot running on this machine, and what each is doing.
     Sessions,
+    /// Put a message into the desktop window that is already open, as a new
+    /// thread the user can watch the agent work in.
+    Say {
+        text: String,
+        /// Name the thread. The default is the message itself, shortened.
+        #[arg(long, value_name = "TITLE")]
+        title: Option<String>,
+    },
     /// Run the app-control evaluation suite (agent in the loop, real apps).
     Eval {
         /// Only cases whose id or name contains this.
@@ -391,10 +416,14 @@ async fn run(
             let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
             nav::run_app(runtime, nav::AppNavOptions { app, goal }).await
         }
+        CommandKind::Routine { name, params, list } => {
+            run_routine(data_dir, &name, &params, list).await
+        }
         CommandKind::Projects { command } => run_projects(data_dir, command).await,
         CommandKind::Heartbeat { command } => run_heartbeat(data_dir, command).await,
         CommandKind::Doctor => run_doctor(data_dir),
         CommandKind::Sessions => run_sessions(data_dir),
+        CommandKind::Say { text, title } => run_say(data_dir, text, title).await,
         CommandKind::Tui => run_tui(data_dir).await,
         CommandKind::Gui { build } => run_gui(build).await,
         CommandKind::Eval {
@@ -577,6 +606,123 @@ fn run_sessions(data_dir: Option<PathBuf>) -> Result<()> {
                 })
             })
             .collect(),
+    ))
+}
+
+/// `neo routine` — run one installed pack routine, or list them.
+///
+/// The direct surface for the thing an `app` goal cannot express: several
+/// steps against one screen hold. Takes the screen the same way `neo app`
+/// does, so it refuses rather than fighting a run already under way.
+async fn run_routine(
+    data_dir: Option<PathBuf>,
+    name: &str,
+    params: &str,
+    list: bool,
+) -> Result<()> {
+    let installed = neo_agent::routines::installed();
+    if list {
+        return print_json(&serde_json::json!(
+            installed
+                .iter()
+                .map(|routine| serde_json::json!({
+                    "id": routine.id(),
+                    "description": routine.description,
+                    "params": routine.params,
+                }))
+                .collect::<Vec<_>>()
+        ));
+    }
+    if name.is_empty() {
+        return Err(anyhow!(
+            "name a routine to run, or pass `--list` to see them"
+        ));
+    }
+    let routine = neo_agent::routines::find(name)
+        .ok_or_else(|| anyhow!("no routine is named `{name}` — try `neo routine --list`"))?;
+    let params: serde_json::Value = serde_json::from_str(params)
+        .map_err(|error| anyhow!("`--params` has to be one JSON object: {error}"))?;
+    let params = params
+        .as_object()
+        .ok_or_else(|| anyhow!("`--params` has to be one JSON object"))?
+        .clone();
+
+    let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
+    // No lease is taken here: each `navigate` step takes and drops the screen
+    // exactly as `neo app` does. What a routine buys is adjacency — no model
+    // round trip between steps — not a shared hold.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = neo_agent::routines::run(
+        &runtime,
+        &routine,
+        &params,
+        neo_core::RunId::new(),
+        &cancel,
+        None,
+    )
+    .await?;
+    print_json(&serde_json::to_value(&outcome)?)
+}
+
+/// `neo say` — a message for the window that is already open.
+///
+/// Deliberately not a local turn with a fallback. The point of this verb is
+/// that the user *watches* the work: a turn started in this process would
+/// publish its events into this process's own broadcast, finish in a thread
+/// nobody has on screen, and look to the person at the machine exactly like
+/// nothing happened. With no window to hand it to, the honest answer is to
+/// say so and exit non-zero.
+async fn run_say(data_dir: Option<PathBuf>, text: String, title: Option<String>) -> Result<()> {
+    let data_dir = match data_dir {
+        Some(path) => path,
+        None => default_data_dir()?,
+    };
+    let socket = neo_core::paths::control_socket(&data_dir);
+    let mut stream = tokio::net::UnixStream::connect(&socket)
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "no Starkbot window is open on this machine; start one with `neo gui` ({}: {error})",
+                socket.display()
+            )
+        })?;
+
+    let mut request = serde_json::Map::new();
+    request.insert("say".to_owned(), serde_json::Value::String(text));
+    // Omitted rather than sent as null when unset, so the window applies its
+    // own default instead of being told to have none.
+    if let Some(title) = title {
+        request.insert("title".to_owned(), serde_json::Value::String(title));
+    }
+    let line = format!("{}\n", serde_json::Value::Object(request));
+    stream
+        .write_all(line.as_bytes())
+        .await
+        .context("the Starkbot window closed before it could be told")?;
+    stream
+        .flush()
+        .await
+        .context("the Starkbot window closed before it could be told")?;
+
+    let mut answer = String::new();
+    tokio::io::BufReader::new(stream)
+        .read_line(&mut answer)
+        .await
+        .context("the Starkbot window closed before it answered")?;
+    let answer: serde_json::Value = serde_json::from_str(answer.trim())
+        .with_context(|| format!("the Starkbot window answered with {answer:?}"))?;
+    print_json(&answer)?;
+    // The response is printed either way — a caller parsing stdout gets the
+    // window's own words — and the exit code is what a script branches on.
+    if answer.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{}",
+        answer
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("the Starkbot window refused the message")
     ))
 }
 

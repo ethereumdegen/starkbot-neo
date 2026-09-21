@@ -61,13 +61,16 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "t
 # actor thread owns; `async-io` still arrives through `atspi-proxies`'
 # non-optional zbus dependency, and zbus prefers tokio when both are on.
 atspi = { version = "0.30", default-features = false, features = ["proxies", "connection", "wrappers", "tokio"] }
-# The Wayland input fallback of 17 §3.3: `zwp_virtual_keyboard_v1` for keys
-# and `zwlr_virtual_pointer_v1` for the pointer, spoken in-process. The
-# alternative was spawning `xdotool` (X11-only) or `ydotool` (a root daemon
-# on `/dev/uinput`), which P3 refuses.
+# The Wayland input fallback of 17 §3.3: `zwp_virtual_keyboard_v1` for keys,
+# spoken in-process. The alternative was spawning `xdotool` (X11-only) or
+# `ydotool` (a root daemon on `/dev/uinput`), which P3 refuses.
+#
+# Keys only. `zwlr_virtual_pointer_v1` was bound here once and is gone: a run
+# has to share the machine with the person at it, and a synthetic click warps
+# their cursor and — under `follow_mouse` — takes their window focus with it.
+# The protocol is left unbound so the guarantee is structural.
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
-wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # `flock` for the screen lease, through a safe API: the workspace denies
 # `unsafe_code`, which rules out calling libc directly for it.
 rustix = { version = "1", features = ["fs"] }

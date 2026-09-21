@@ -13,7 +13,7 @@
 use serde_json::{Value, json};
 use spice_framework::agent::AgentOutput;
 use spice_framework::assertion::Assertion;
-use spice_framework::test_case::{TestCase, TestSuite};
+use spice_framework::test_case::{JudgeSpec, TestCase, TestSuite};
 
 use crate::apps::App;
 use crate::cards::Cards;
@@ -50,6 +50,7 @@ pub fn all() -> Vec<Case> {
         read_a_numbers_cell(),
         numbers_surface_offers_menus(),
         open_diffusion_studio(),
+        make_a_starkbot_logo(),
     ];
     cases.extend(review_set());
     cases.extend(live_review_set());
@@ -76,6 +77,42 @@ fn case(
     tags: &[&str],
 ) -> Case {
     build(app, id, message, probe, None, None, assertions, tags)
+}
+
+/// A case the judge grades as well as the assertions.
+///
+/// Assertions answer "did the application end up in this state"; they cannot
+/// answer "is that a logo". The rubric is what Jev grades, and it carries the
+/// standard explicitly so the judgement is against a written brief rather
+/// than the model's taste.
+#[allow(clippy::too_many_arguments)]
+fn case_judged(
+    app: App,
+    id: &str,
+    message: &str,
+    probe: Probe,
+    fixture: Option<Fixture>,
+    assertions: Vec<Assertion>,
+    rubric: &str,
+    threshold: f64,
+    max_steps: usize,
+    tags: &[&str],
+) -> Case {
+    let mut case = build(app, id, message, probe, fixture, None, assertions, tags);
+    case.test.judges = vec![JudgeSpec {
+        rubric: rubric.to_owned(),
+        threshold,
+    }];
+    // A case that may spend more actions needs the wall clock to match, or it
+    // is cut off mid-work and scored as a failure that never happened: the
+    // first eighteen-action run died on the three-minute default with the
+    // logo half drawn. One navigator goal is a handful of Jev round trips
+    // plus a text-helper call, which measures at roughly half a minute.
+    case.test.timeout = Some(std::time::Duration::from_secs(30 * max_steps as u64 + 60));
+    if let Some(data) = case.test.config.data.as_object_mut() {
+        data.insert("max_steps".to_owned(), json!(max_steps));
+    }
+    case
 }
 
 /// A case with a fixture: the app is put into a known state first.
@@ -152,7 +189,7 @@ fn read_a_page() -> Case {
         "read-a-page",
         "Open https://example.com and tell me the exact heading text on the page.",
         Probe::AppText {
-            app: App::Chrome.selector().to_owned(),
+            app: App::Chrome.selector(),
         },
         vec![
             Assertion::ExpectNoError,
@@ -177,7 +214,7 @@ fn extract_from_a_page() -> Case {
         "Go to https://www.rfc-editor.org/rfc/rfc2119.txt and tell me the RFC number \
          and the single word this RFC says is an absolute requirement.",
         Probe::AppText {
-            app: App::Chrome.selector().to_owned(),
+            app: App::Chrome.selector(),
         },
         vec![
             Assertion::ExpectNoError,
@@ -200,11 +237,11 @@ fn type_into_textedit() -> Case {
         "type-into-textedit",
         "In TextEdit, type exactly: Q4 launch brief",
         Probe::AppText {
-            app: App::TextEdit.selector().to_owned(),
+            app: App::TextEdit.selector(),
         },
         // A fresh document, or the probe reads whatever was left on screen.
         Some(Fixture::TextDocument {
-            app: App::TextEdit.selector().to_owned(),
+            app: App::TextEdit.selector(),
         }),
         vec![
             Assertion::ExpectNoError,
@@ -242,10 +279,10 @@ fn format_in_textedit() -> Case {
         "format-in-textedit",
         "In TextEdit, turn on bold using the formatting controls.",
         Probe::Surface {
-            app: App::TextEdit.selector().to_owned(),
+            app: App::TextEdit.selector(),
         },
         Some(Fixture::TextDocument {
-            app: App::TextEdit.selector().to_owned(),
+            app: App::TextEdit.selector(),
         }),
         vec![
             Assertion::ExpectNoError,
@@ -300,7 +337,7 @@ fn write_a_calc_cell() -> Case {
         "In LibreOffice Calc, put the number 42 in cell B2.",
         crate::probe::cell_of(App::LibreOffice, "B2"),
         Some(Fixture::Spreadsheet {
-            app: App::LibreOffice.selector().to_owned(),
+            app: App::LibreOffice.selector(),
             a1: "Starkbot 42".to_owned(),
         }),
         vec![
@@ -334,7 +371,7 @@ fn read_a_calc_cell() -> Case {
         "In LibreOffice Calc, tell me what is in cell A1.",
         crate::probe::cell_of(App::LibreOffice, "A1"),
         Some(Fixture::Spreadsheet {
-            app: App::LibreOffice.selector().to_owned(),
+            app: App::LibreOffice.selector(),
             a1: "Starkbot 42".to_owned(),
         }),
         vec![
@@ -364,10 +401,10 @@ fn spreadsheet_surface_offers_menus() -> Case {
         "spreadsheet-offers-menus",
         "In LibreOffice Calc, tell me which menus are available.",
         Probe::Surface {
-            app: App::LibreOffice.selector().to_owned(),
+            app: App::LibreOffice.selector(),
         },
         Some(Fixture::Spreadsheet {
-            app: App::LibreOffice.selector().to_owned(),
+            app: App::LibreOffice.selector(),
             a1: "Starkbot 42".to_owned(),
         }),
         vec![
@@ -413,7 +450,7 @@ fn read_a_numbers_cell() -> Case {
         // Numbers imports CSV without a dialog; it has no flat-ODF importer,
         // which is why the fixture picks the format per app.
         Some(Fixture::Spreadsheet {
-            app: App::Numbers.selector().to_owned(),
+            app: App::Numbers.selector(),
             a1: "Starkbot 42".to_owned(),
         }),
         vec![
@@ -455,10 +492,10 @@ fn numbers_surface_offers_menus() -> Case {
         "numbers-offers-menus",
         "In Numbers, tell me which menus are available.",
         Probe::Surface {
-            app: App::Numbers.selector().to_owned(),
+            app: App::Numbers.selector(),
         },
         Some(Fixture::Spreadsheet {
-            app: App::Numbers.selector().to_owned(),
+            app: App::Numbers.selector(),
             a1: "Starkbot 42".to_owned(),
         }),
         vec![
@@ -495,7 +532,7 @@ fn open_diffusion_studio() -> Case {
         "open-diffusion-studio",
         "Open Diffusion Studio and tell me what the window offers.",
         Probe::Surface {
-            app: App::DiffusionStudio.selector().to_owned(),
+            app: App::DiffusionStudio.selector(),
         },
         vec![
             Assertion::ExpectNoError,
@@ -521,6 +558,70 @@ fn open_diffusion_studio() -> Case {
             })),
         ],
         &["media", "s8a"],
+    )
+}
+
+/// S8d, in the words a person actually used (A37).
+///
+/// This is the case the whole Linux media path exists for, and it is written
+/// as the user wrote it — the ellipsis, the missing word and the misspelled
+/// repository name included. That is not cosmetic. The first time this task
+/// was run, the agent read "degen-paint" as a domain, browsed
+/// `degen-paint.com`, fell back to a GitHub search and spent its whole budget
+/// without opening anything; the defect was that nothing ever told it which
+/// applications this machine has. A case written in tidied-up language would
+/// not have caught that, because the tidying is the part the agent got wrong.
+///
+/// Scored twice over. The assertions are facts from degen-paint's own
+/// grounding API — a project is open, the document has objects in it — so a
+/// turn that narrates a logo it never drew fails regardless of how well it
+/// narrates. The rubric is then graded by Jev against the real brand, whose
+/// palette and mark are taken from `starkbot-web`'s own brand kit rather than
+/// invented here.
+fn make_a_starkbot_logo() -> Case {
+    case_judged(
+        App::DegenPaint,
+        "make-a-starkbot-logo",
+        "use degen-paint to make a cool logo for starkbot ai... \
+         like one the in the dev build for starkbot-ai-web",
+        Probe::Grounding {
+            app: App::DegenPaint.selector(),
+            base: crate::probe::grounding_base(),
+        },
+        Some(Fixture::DegenPaintProject {
+            app: App::DegenPaint.selector(),
+            base: crate::probe::grounding_base(),
+        }),
+        vec![
+            Assertion::ExpectNoError,
+            // The Studio is the mutation path (12 §2). A run that reached for
+            // the browser instead did not do this task.
+            Assertion::ExpectTools(vec!["app".to_owned()]),
+            // A project has to be open, and it has to have something in it.
+            // These are read back from the application, not from the answer.
+            Assertion::ExpectToolArg("probe".into(), "open".into(), json!(true)),
+            Assertion::ExpectToolArg("probe".into(), "drawn".into(), json!(true)),
+        ],
+        "The agent had to make a logo for Starkbot AI inside degen-paint's Studio, \
+         resembling the mark the starkbot-ai-web build ships.\n\
+         The reference is a flat, two-tone icon: a stylised robot head, white or \
+         silver, centred on a near-black square. Its palette is monochrome — black \
+         #0a0a0a, dark #1a1a1a, silver #c0c0c0, light grey #d4d4d4, white #ffffff — \
+         with no second hue, no gradient and no photographic imagery.\n\
+         Score yes only if all of these hold: a degen-paint project is open and its \
+         document contains drawn objects; the work was done by operating the Studio, \
+         not by describing it; and the document the digest reports is consistent with \
+         that reference — a dark ground, a light mark on it, and colours drawn from \
+         that monochrome palette. A blank or single-rectangle document is not a logo, \
+         and a brightly coloured one is not this brand.",
+        0.6,
+        // The task names a reference it has to *look at* before it can match
+        // it, and then draws a mark out of several shapes. Measured: a run
+        // with ten actions spent every one of them drawing and never opened
+        // the reference at all, producing a competent logo in the wrong
+        // brand. This is the budget for looking first.
+        18,
+        &["media", "s8d", "degen-paint"],
     )
 }
 
@@ -585,11 +686,11 @@ fn nav_case(
         id,
         &message,
         Probe::Page {
-            app: App::Chrome.selector().to_owned(),
+            app: App::Chrome.selector(),
             url: pages::state_url(),
         },
         Some(Fixture::WebPage {
-            app: App::Chrome.selector().to_owned(),
+            app: App::Chrome.selector(),
             url: pages::state_url(),
         }),
         cards,
@@ -1193,7 +1294,7 @@ fn live_case(
         id,
         message,
         Probe::AppText {
-            app: App::Chrome.selector().to_owned(),
+            app: App::Chrome.selector(),
         },
         None,
         cards,

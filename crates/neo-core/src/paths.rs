@@ -17,7 +17,7 @@
 
 #[cfg(not(target_os = "macos"))]
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The macOS bundle id, which is also the directory name under `~/Library`.
 pub const BUNDLE_ID: &str = "com.starkbot.neo";
@@ -37,6 +37,19 @@ pub fn data_dir() -> Option<PathBuf> {
     {
         xdg(std::env::var_os("XDG_DATA_HOME"), ".local/share")
     }
+}
+
+/// The desktop shell's control socket, beside the store it belongs to.
+///
+/// Here rather than in either front end because the socket is a rendezvous
+/// between two processes: the window binds it and `neo say` connects to it,
+/// and a crate that spelled the name differently would report that no window
+/// is open while one sits on screen. Taken as an argument rather than read
+/// from [`data_dir`] so a `--data-dir` run reaches its own window rather than
+/// the default one's.
+#[must_use]
+pub fn control_socket(data_dir: &Path) -> PathBuf {
+    data_dir.join("control.sock")
 }
 
 /// Logs and other state worth keeping but not worth backing up.

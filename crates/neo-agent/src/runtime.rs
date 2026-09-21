@@ -1200,6 +1200,25 @@ impl Runtime {
         Ok(())
     }
 
+    /// Close a thread for good: its messages, turns and utterances go with
+    /// it. A thread that is already gone is not an error — the switcher row
+    /// that named it was stale, and the outcome the user asked for holds.
+    ///
+    /// Announced as [`AppEvent::ConversationReset`] for the same reason
+    /// [`Runtime::new_conversation`] is: to every observer the instruction is
+    /// the same — drop what you were rendering of it and read again, which
+    /// for a deleted thread reads back as empty.
+    pub fn delete_conversation(
+        &self,
+        conversation: neo_core::ConversationId,
+    ) -> Result<(), RuntimeError> {
+        self.store.conversations().delete(conversation)?;
+        self.publish(AppEvent::ConversationReset {
+            conversation_id: conversation,
+        });
+        Ok(())
+    }
+
     /// The `limit` most recent model round trips of one thread, oldest first.
     /// One row per call, which is what a cost view sums — a turn that
     /// appended three messages is still one call.

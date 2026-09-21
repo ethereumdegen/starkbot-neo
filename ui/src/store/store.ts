@@ -77,6 +77,7 @@ interface Actions {
   selectConversation: (id: ConversationId) => Promise<void>;
   newConversation: (title?: string) => Promise<void>;
   renameConversation: (id: ConversationId, title: string) => Promise<void>;
+  deleteConversation: (id: ConversationId) => Promise<void>;
   send: (text: string) => Promise<void>;
   stop: (run: RunId) => Promise<void>;
   /**
@@ -302,6 +303,34 @@ export const useStore = create<Store>()((set, get) => {
     renameConversation: async (id, title) => {
       await guard(async () => {
         await api.renameConversation(id, title);
+        await reloadList();
+      });
+    },
+
+    /**
+     * Close a thread. The screen leaves it *before* the command goes out:
+     * the delete is announced as a `ConversationReset`, and a reset of the
+     * active thread is an instruction to re-read it — which for a thread
+     * that no longer exists would put an empty transcript under a dead id,
+     * and the next message typed would be sent into it. Leaving first means
+     * the reset arrives for a thread nobody is looking at, and only the
+     * switcher is marked stale.
+     */
+    deleteConversation: async (id) => {
+      set((state) =>
+        state.conversation.activeId === id
+          ? {
+              conversation: {
+                ...state.conversation,
+                activeId: null,
+                messages: [],
+                threadStale: false,
+              },
+            }
+          : state,
+      );
+      await guard(async () => {
+        await api.deleteConversation(id);
         await reloadList();
       });
     },

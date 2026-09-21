@@ -73,6 +73,7 @@ export function Chat() {
   const select = useStore((state) => state.selectConversation);
   const create = useStore((state) => state.newConversation);
   const rename = useStore((state) => state.renameConversation);
+  const remove = useStore((state) => state.deleteConversation);
   const model = useStore((state) => modelId(state.settings));
   const setScreen = useStore((state) => state.setScreen);
   const gates = useStore((state) => state.gates);
@@ -183,17 +184,34 @@ export function Chat() {
           {conversations.length === 0 && (
             <p className={panes.empty}>No thread yet. Say something and one starts.</p>
           )}
-          {conversations.map((row) => (
-            <button
-              key={row.id}
-              className={panes.row}
-              aria-selected={row.id === activeId}
-              onClick={() => void select(row.id)}
-            >
-              <span className={panes.rowTitle}>{row.title ?? "Untitled"}</span>
-              <span className={panes.rowMeta}>{when(row.updated_at)}</span>
-            </button>
-          ))}
+          {conversations.map((row) => {
+            // A thread with a turn running in it cannot be closed from here:
+            // the turn is still writing rows into it, and deleting the
+            // conversation under a live run would fail its next append.
+            // Stop the run first — the button says so rather than vanishing.
+            const running = currentChatRun(runs, row.id)?.status === "running";
+            return (
+              <div key={row.id} className={panes.rowGroup}>
+                <button
+                  className={panes.row}
+                  aria-selected={row.id === activeId}
+                  onClick={() => void select(row.id)}
+                >
+                  <span className={panes.rowTitle}>{row.title ?? "Untitled"}</span>
+                  <span className={panes.rowMeta}>{when(row.updated_at)}</span>
+                </button>
+                <button
+                  className={panes.rowClose}
+                  aria-label={`Close thread ${row.title ?? "Untitled"}`}
+                  title={running ? "Stop the running turn before closing this thread" : "Close thread"}
+                  disabled={busy || running}
+                  onClick={() => void remove(row.id)}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
       </section>
 

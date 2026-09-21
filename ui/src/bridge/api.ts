@@ -323,6 +323,7 @@ export const api = {
     invoke<ConversationView>("new_conversation", { title: title ?? null }),
   renameConversation: (id: ConversationId, title: string) =>
     invoke<null>("rename_conversation", { id, title }),
+  deleteConversation: (id: ConversationId) => invoke<null>("delete_conversation", { id }),
   listConversations: (limit: number) =>
     invoke<ConversationView[]>("list_conversations", { limit }),
   loadThread: (id: ConversationId, limit: number) =>

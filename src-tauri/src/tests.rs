@@ -431,9 +431,10 @@ fn a_dropped_event_is_announced_as_a_notice() {
 }
 
 /// Threads are what the window is organised around: it can start one, name
-/// it, and find it again by the id it was given.
+/// it, find it again by the id it was given, and close it — after which the
+/// switcher no longer lists it, and closing it again is not an error.
 #[tokio::test]
-async fn conversations_can_be_started_and_renamed() {
+async fn conversations_can_be_started_renamed_and_closed() {
     let dir = scratch("threads");
     let app = app(&dir);
     let created = commands::new_conversation(app.state(), Some("nav work".to_owned()))
@@ -453,6 +454,20 @@ async fn conversations_can_be_started_and_renamed() {
         .find(|row| row.id == created.id)
         .expect("the new thread is in the switcher");
     assert_eq!(row.title.as_deref(), Some("nav work, day two"));
+
+    commands::delete_conversation(app.state(), created.id)
+        .await
+        .expect("a thread can be closed");
+    let rows = commands::list_conversations(app.state(), None)
+        .await
+        .expect("threads are listable");
+    assert!(
+        rows.iter().all(|row| row.id != created.id),
+        "a closed thread leaves the switcher"
+    );
+    commands::delete_conversation(app.state(), created.id)
+        .await
+        .expect("closing a thread that is already gone is fine");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -567,4 +582,191 @@ fn a_stale_webview_is_refused_by_name() {
         }
         other => panic!("a mismatch is fixed by rebuilding the UI, not by {other:?}"),
     }
+}
+
+/// The whole reason the control socket exists: a message handed to a shell
+/// has to land in the window somebody is watching. What proves it landed is
+/// the store — a thread that exists, named after what was said, with the
+/// user's own line already in it — because that is what the open window
+/// re-reads when the turn it started begins to publish.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_control_message_becomes_a_thread_with_the_user_in_it() {
+    let dir = scratch("control");
+    let app = app(&dir);
+    let desktop = app.state::<Desktop>();
+
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::control::handle(
+            r#"{"say":"make a cool logo for starkbot"}"#,
+            desktop.runtime(),
+            desktop.runs(),
+        ),
+    )
+    .await
+    .expect("the handler answers without waiting for the turn");
+    let answer = serde_json::to_value(&answer).expect("the response is JSON");
+    assert_eq!(
+        answer.get("ok").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the request was accepted: {answer}"
+    );
+    let conversation: neo_core::ConversationId = answer
+        .get("conversation")
+        .and_then(serde_json::Value::as_str)
+        .expect("a conversation id comes back")
+        .parse()
+        .expect("the id is a uuid");
+    assert!(
+        answer
+            .get("run")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "the run id the events will carry comes back too: {answer}"
+    );
+
+    let thread = commands::load_thread(app.state(), conversation, None)
+        .await
+        .expect("the new thread is readable");
+    assert_eq!(
+        thread.first().map(|message| message.text.as_str()),
+        Some("make a cool logo for starkbot"),
+        "the message is in the thread before the turn is spawned"
+    );
+
+    let rows = commands::list_conversations(app.state(), None)
+        .await
+        .expect("threads are listable");
+    let row = rows
+        .iter()
+        .find(|row| row.id == conversation)
+        .expect("the new thread is in the switcher");
+    assert_eq!(
+        row.title.as_deref(),
+        Some("make a cool logo for starkbot"),
+        "an untitled request names its thread after what was asked"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A peer that writes nonsense gets words back and nothing else happens. The
+/// listener serves the window; it may not be taken down by whatever arrives
+/// on it, and a caller that guessed the protocol wrong is owed an answer it
+/// can print rather than a closed socket.
+#[tokio::test]
+async fn a_malformed_control_line_is_answered_not_fatal() {
+    let dir = scratch("control-junk");
+    let app = app(&dir);
+    let desktop = app.state::<Desktop>();
+
+    let answer = crate::control::handle("{ not json", desktop.runtime(), desktop.runs()).await;
+    let answer = serde_json::to_value(&answer).expect("the response is JSON");
+    assert_eq!(
+        answer.get("ok").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        answer
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|error| error.contains("say")),
+        "the refusal names the field the caller missed: {answer}"
+    );
+
+    let rows = commands::list_conversations(app.state(), None)
+        .await
+        .expect("threads are listable");
+    assert!(
+        rows.is_empty(),
+        "a request that could not be read started nothing"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The socket itself, which is the only part a shell ever touches: a file
+/// nobody else on the machine may open, taken back from a crashed window's
+/// leftovers, answering one line with one line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_control_socket_answers_a_line_and_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let dir = scratch("control-socket");
+    let app = app(&dir);
+    let desktop = app.state::<Desktop>();
+    let socket = neo_core::paths::control_socket(&dir);
+    // What a crash leaves behind. The next window has to take it back, or
+    // `neo say` would report no window while one is on screen.
+    std::fs::write(&socket, b"a crashed window's leftovers").expect("a stale socket file");
+
+    let serving = tokio::spawn(crate::control::serve(
+        socket.clone(),
+        desktop.runtime(),
+        desktop.runs(),
+    ));
+    let mut stream = connect(&socket).await;
+
+    let mode = std::fs::metadata(&socket)
+        .expect("the socket exists")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "this is a door into the user's agent, so only the user may open it"
+    );
+
+    stream
+        .write_all(b"{\"say\":\"drive TextEdit\",\"title\":\"from a shell\"}\n")
+        .await
+        .expect("the request is written");
+    let mut answer = String::new();
+    tokio::io::BufReader::new(stream)
+        .read_line(&mut answer)
+        .await
+        .expect("one line comes back");
+    let answer: serde_json::Value =
+        serde_json::from_str(answer.trim()).expect("the answer is JSON");
+    assert_eq!(
+        answer.get("ok").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the request was accepted: {answer}"
+    );
+
+    let conversation: neo_core::ConversationId = answer
+        .get("conversation")
+        .and_then(serde_json::Value::as_str)
+        .expect("a conversation id comes back")
+        .parse()
+        .expect("the id is a uuid");
+    let rows = commands::list_conversations(app.state(), None)
+        .await
+        .expect("threads are listable");
+    let row = rows
+        .iter()
+        .find(|row| row.id == conversation)
+        .expect("the thread the socket started is in the switcher");
+    assert_eq!(
+        row.title.as_deref(),
+        Some("from a shell"),
+        "a request that named its thread gets that name"
+    );
+
+    serving.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Binding happens on the listener's own task, so a caller that connects the
+/// instant after it is spawned can legitimately arrive first.
+async fn connect(socket: &std::path::Path) -> tokio::net::UnixStream {
+    for _ in 0..100u32 {
+        if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
+            return stream;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the control socket never came up at {}", socket.display())
 }

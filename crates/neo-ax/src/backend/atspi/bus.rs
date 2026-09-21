@@ -317,7 +317,14 @@ impl Bus {
                 .call(target, ACTION, "GetName", &(index))
                 .await
                 .unwrap_or_default();
-            out.push(name);
+            if name.is_empty() {
+                continue;
+            }
+            // Said in the canonical vocabulary here, at the edge, for the
+            // same reason roles are: the policy sets downstream know only
+            // `AX…` names, and a toolkit's own spelling reaching them is a
+            // silently empty operation list.
+            out.push(crate::mapping::canonical_action(&name).to_owned());
         }
         out
     }

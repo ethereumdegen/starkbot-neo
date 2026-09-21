@@ -70,14 +70,6 @@ pub(crate) trait WindowManager: Send + Sync {
     ///
     /// When the compositor refuses or cannot be reached.
     fn focus(&self, client: &Client) -> Result<(), AxError>;
-
-    /// The bounding box of every output, which is the coordinate space
-    /// `zwlr_virtual_pointer_v1` absolute motion is expressed in.
-    ///
-    /// # Errors
-    ///
-    /// When the compositor cannot be reached.
-    fn layout_bounds(&self) -> Result<(u32, u32), AxError>;
 }
 
 /// The compositor of this session, or a named refusal.
@@ -212,32 +204,5 @@ impl WindowManager for Hyprland {
                 last.trim()
             ),
         })
-    }
-
-    fn layout_bounds(&self) -> Result<(u32, u32), AxError> {
-        let body = self.request("j/monitors")?;
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-        let mut right = 0i64;
-        let mut bottom = 0i64;
-        for monitor in parsed.as_array().into_iter().flatten() {
-            let read = |key: &str| monitor.get(key).and_then(serde_json::Value::as_i64);
-            let (Some(x), Some(y), Some(w), Some(h)) =
-                (read("x"), read("y"), read("width"), read("height"))
-            else {
-                continue;
-            };
-            right = right.max(x + w);
-            bottom = bottom.max(y + h);
-        }
-        if right <= 0 || bottom <= 0 {
-            return Err(AxError::NoWindowManager {
-                detail: "Hyprland reported no outputs".to_owned(),
-            });
-        }
-        Ok((
-            u32::try_from(right).unwrap_or(u32::MAX),
-            u32::try_from(bottom).unwrap_or(u32::MAX),
-        ))
     }
 }

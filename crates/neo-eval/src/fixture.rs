@@ -53,6 +53,19 @@ pub enum Fixture {
     /// has to be cleared before the agent starts. `url` is the origin's
     /// read-only state page, the same one the probe reads.
     WebPage { app: String, url: String },
+    /// Bring degen-paint's Studio forward and say what it is holding.
+    ///
+    /// A media case needs a document to work in, and the app's own New
+    /// Project flow ends in the desktop's file chooser — a portal dialog
+    /// that is not this app's surface and not what the case is measuring.
+    /// So the project is prepared outside and the fixture *states the
+    /// starting condition*, which is all a fixture is for: the first run
+    /// without this spent its whole budget closing the open project and
+    /// re-creating it, never reaching the drawing the task asked for.
+    ///
+    /// Nothing here draws anything. What it reports is read from the same
+    /// read-only grounding API the probe scores with.
+    DegenPaintProject { app: String, base: String },
 }
 
 impl Fixture {
@@ -76,6 +89,13 @@ impl Fixture {
                 app,
                 url: fixture.get("url").and_then(Value::as_str)?.to_owned(),
             }),
+            "degen_paint_project" => Some(Self::DegenPaintProject {
+                app,
+                base: fixture
+                    .get("base")
+                    .and_then(Value::as_str)
+                    .map_or_else(crate::probe::grounding_base, str::to_owned),
+            }),
             _ => None,
         }
     }
@@ -96,6 +116,9 @@ impl Fixture {
             Self::WebPage { app, url } => {
                 json!({ "fixture": { "kind": "web_page", "app": app, "url": url } })
             }
+            Self::DegenPaintProject { app, base } => {
+                json!({ "fixture": { "kind": "degen_paint_project", "app": app, "base": base } })
+            }
         }
     }
 
@@ -106,7 +129,8 @@ impl Fixture {
             | Self::Spreadsheet { app, .. }
             | Self::TextDocument { app }
             | Self::Activate { app }
-            | Self::WebPage { app, .. } => app,
+            | Self::WebPage { app, .. }
+            | Self::DegenPaintProject { app, .. } => app,
         }
     }
 }
@@ -122,6 +146,43 @@ pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Va
         crate::pages::serve().await?;
         let cleared = crate::pages::reset_state(runtime.data_dir(), url).await?;
         return Ok(json!({ "fixture": "web_page", "state": cleared }));
+    }
+    // Read over the app's own control contract, never the accessibility
+    // surface: this fixture states a starting condition, and raising a window
+    // to do that would take the screen from whoever is using it. It therefore
+    // also runs on a machine with no Accessibility grant, like the web ones.
+    if let Fixture::DegenPaintProject { base, .. } = fixture {
+        let http = reqwest::Client::new();
+        let status = crate::probe::grounding_get(
+            &http,
+            &format!("{}/api/v1/status", base.trim_end_matches('/')),
+        )
+        .await
+        .ok_or_else(|| {
+            ProbeError::Ax(format!(
+                "degen-paint's grounding API did not answer at {base}; \
+                         the Studio has to be running with a project open"
+            ))
+        })?;
+        let project = status.get("project").cloned().unwrap_or(Value::Null);
+        if project.is_null() {
+            return Err(ProbeError::Ax(
+                "degen-paint has no project open, so there is nothing to draw in".to_owned(),
+            ));
+        }
+        return Ok(json!({
+            "fixture": "degen_paint_project",
+            "app": "degen-paint Studio",
+            // What is true: the project is open and reachable. What is not:
+            // that there is a window. Saying "the Studio is open" sent a run
+            // looking for one, and being refused three times was all it did.
+            "note": "degen-paint already holds this project, and it is reachable through \
+                     the degen-paint routines without any window being open — do not create \
+                     or open another project, and do not expect a Studio window to drive",
+            "project": project,
+            "active_document": status.get("activeDoc").cloned().unwrap_or(Value::Null),
+            "revision": status.get("revision").cloned().unwrap_or(Value::Null),
+        }));
     }
     if !AxHandle::trusted() {
         return Err(ProbeError::NotTrusted);
@@ -142,6 +203,8 @@ pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Va
 
     match fixture {
         Fixture::Activate { .. } => Ok(json!({ "app": running.name, "fixture": "activate" })),
+        // Answered above, before any accessibility handle was taken.
+        Fixture::DegenPaintProject { .. } => Ok(json!({ "fixture": "degen_paint_project" })),
         Fixture::TextDocument { .. } | Fixture::Spreadsheet { .. } => {
             let a1 = match fixture {
                 Fixture::Spreadsheet { a1, .. } => a1.as_str(),

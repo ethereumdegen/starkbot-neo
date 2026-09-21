@@ -4,8 +4,15 @@
 //! about the agent. Every case declares the [`App`] it needs, and the runner
 //! skips — loudly, with the reason — rather than reporting a failure that is
 //! really an absent dependency.
+//!
+//! Detection is [`neo_ax::lookup`], which is the same question the navigator
+//! asks when it is told to open something: a desktop entry on Linux, an
+//! application bundle on macOS. This module used to test for
+//! `Contents/MacOS`, so on Linux *every* app case skipped and the suite
+//! silently measured nothing — the gap 17 §L3 records as *"`neo-eval` app
+//! detection by desktop entry … still to run"*.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,22 +38,47 @@ pub enum App {
     Powermove,
     /// Degen Media Studio, the generator of A13′.
     DegenMediaStudio,
+    /// degen-paint's Studio: the fourth media app, and the one that works on
+    /// Linux (A37). The target of the S8d smoke test.
+    DegenPaint,
 }
 
 impl App {
-    /// The name to hand `neo app` / the `app` action: a bundle id where one is
-    /// stable, otherwise the display name.
+    /// Every id this application is known by, most precise first.
+    ///
+    /// Two platforms name the same product differently and neither name is
+    /// wrong: macOS resolves a bundle by its name (`Numbers`), Linux a
+    /// desktop entry by its id (`libreoffice-calc`), and the reverse-DNS form
+    /// (`dev.degenpaint.studio`) is what both the Wayland `app_id` and the
+    /// macOS bundle id use for a GTK or Tauri app. Listing them together lets
+    /// one case description run on either platform, which is what 17 §L3
+    /// asks of the suite.
     #[must_use]
-    pub const fn selector(self) -> &'static str {
+    pub const fn selectors(self) -> &'static [&'static str] {
         match self {
-            Self::Chrome => "com.google.Chrome",
-            Self::TextEdit => "com.apple.TextEdit",
-            Self::LibreOffice => "org.libreoffice.script",
-            Self::Numbers => "Numbers",
-            Self::DiffusionStudio => "Diffusion Studio",
-            Self::Powermove => "Powermove",
-            Self::DegenMediaStudio => "Degen Media Studio",
+            Self::Chrome => &["com.google.Chrome", "Google Chrome", "chromium"],
+            Self::TextEdit => &["com.apple.TextEdit", "TextEdit"],
+            Self::LibreOffice => &["org.libreoffice.script", "LibreOffice", "libreoffice-calc"],
+            Self::Numbers => &["Numbers", "Numbers Creator Studio"],
+            Self::DiffusionStudio => &["Diffusion Studio", "diffusion-studio"],
+            Self::Powermove => &["Powermove"],
+            Self::DegenMediaStudio => &["Degen Media Studio", "DegenMediaStudio"],
+            Self::DegenPaint => &["dev.degenpaint.studio", "degen-paint"],
         }
+    }
+
+    /// The name to hand `neo app` / the `app` action.
+    ///
+    /// Resolved against what is installed rather than hard-coded, because the
+    /// selector has to be one this machine can act on: handing a macOS bundle
+    /// id to the AT-SPI backend names nothing. Falls back to the canonical id
+    /// when the app is absent, so a skip message still says what was looked
+    /// for.
+    #[must_use]
+    pub fn selector(self) -> String {
+        self.resolved()
+            .map(|app| app.id)
+            .unwrap_or_else(|| self.selectors()[0].to_owned())
     }
 
     #[must_use]
@@ -59,66 +91,42 @@ impl App {
             Self::DiffusionStudio => "Diffusion Studio",
             Self::Powermove => "Powermove",
             Self::DegenMediaStudio => "Degen Media Studio",
+            Self::DegenPaint => "degen-paint Studio",
         }
     }
 
-    /// Where the bundle would be. Several of these ship under a name that is
-    /// not the product name — on this machine Numbers is installed as
-    /// *Numbers Creator Studio*, so the search covers name variants rather
-    /// than one hard-coded path.
+    /// The installed application, by the first of its names this machine
+    /// answers to.
     #[must_use]
-    pub fn candidates(self) -> Vec<PathBuf> {
-        let names: &[&str] = match self {
-            Self::Chrome => &["Google Chrome.app"],
-            Self::TextEdit => &["TextEdit.app"],
-            Self::LibreOffice => &["LibreOffice.app"],
-            Self::Numbers => &["Numbers.app", "Numbers Creator Studio.app"],
-            Self::DiffusionStudio => &["Diffusion Studio.app", "diffusion-studio.app"],
-            Self::Powermove => &["Powermove.app"],
-            Self::DegenMediaStudio => &["Degen Media Studio.app", "DegenMediaStudio.app"],
-        };
-        let roots = [
-            PathBuf::from("/Applications"),
-            PathBuf::from("/System/Applications"),
-            PathBuf::from("/Applications/Utilities"),
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join("Applications"),
-        ];
-        roots
-            .iter()
-            .flat_map(|root| names.iter().map(move |name| root.join(name)))
-            .collect()
+    pub fn resolved(self) -> Option<neo_ax::InstalledApp> {
+        self.selectors().iter().find_map(|id| neo_ax::lookup(id))
     }
 
-    /// The installed bundle, if there is one.
+    /// Where the application was found, for a report header and skip
+    /// decisions.
     #[must_use]
     pub fn installed(self) -> Option<PathBuf> {
-        self.candidates().into_iter().find(|path| is_bundle(path))
+        self.resolved().map(|app| app.path)
     }
 }
 
-fn is_bundle(path: &Path) -> bool {
-    path.join("Contents/MacOS").is_dir()
-}
+/// Every target this suite knows, in the order a report lists them.
+pub const ALL: [App; 8] = [
+    App::Chrome,
+    App::TextEdit,
+    App::LibreOffice,
+    App::Numbers,
+    App::DiffusionStudio,
+    App::Powermove,
+    App::DegenMediaStudio,
+    App::DegenPaint,
+];
 
 /// Every target and whether it is present, for a report header and for skip
 /// decisions.
 #[must_use]
 pub fn availability() -> Vec<(App, Option<PathBuf>)> {
-    [
-        App::Chrome,
-        App::TextEdit,
-        App::LibreOffice,
-        App::Numbers,
-        App::DiffusionStudio,
-        App::Powermove,
-        App::DegenMediaStudio,
-    ]
-    .into_iter()
-    .map(|app| (app, app.installed()))
-    .collect()
+    ALL.into_iter().map(|app| (app, app.installed())).collect()
 }
 
 #[cfg(test)]
@@ -127,9 +135,6 @@ mod tests {
 
     /// TextEdit is the one target A23 guarantees, because it ships with the
     /// OS. If this fails on a Mac, no app case can run.
-    ///
-    /// macOS-only by its own terms: the Linux targets are desktop entries
-    /// and arrive with L3.
     #[cfg(target_os = "macos")]
     #[test]
     fn textedit_is_always_installed() {
@@ -140,26 +145,28 @@ mod tests {
     }
 
     /// A product installed under a different bundle name still has to be
-    /// found — this is not hypothetical, it is how Numbers is installed here.
+    /// found — this is not hypothetical, it is how Numbers is installed on
+    /// the author's machine.
     #[test]
-    fn an_app_is_found_under_any_of_its_bundle_names() {
-        let names: Vec<String> = App::Numbers
-            .candidates()
-            .iter()
-            .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into()))
-            .collect();
-        assert!(names.iter().any(|name| name == "Numbers.app"));
-        assert!(
-            names
-                .iter()
-                .any(|name| name == "Numbers Creator Studio.app")
-        );
+    fn an_app_is_known_by_every_name_it_ships_under() {
+        assert!(App::Numbers.selectors().contains(&"Numbers"));
+        assert!(App::Numbers.selectors().contains(&"Numbers Creator Studio"));
+    }
+
+    /// The selector has to be something the platform under the test can
+    /// actually act on, so an absent app still reports the canonical id
+    /// rather than an empty string.
+    #[test]
+    fn an_absent_app_still_names_what_was_looked_for() {
+        assert_eq!(App::Powermove.selectors()[0], "Powermove");
+        assert!(!App::Powermove.selector().is_empty());
     }
 
     #[test]
     fn availability_covers_every_target() {
         let rows = availability();
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), ALL.len());
         assert!(rows.iter().any(|(app, _)| *app == App::DiffusionStudio));
+        assert!(rows.iter().any(|(app, _)| *app == App::DegenPaint));
     }
 }

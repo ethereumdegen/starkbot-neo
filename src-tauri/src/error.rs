@@ -210,6 +210,14 @@ impl From<EvalError> for UiError {
             EvalError::NoInference { .. } => {
                 Self::new("no_inference", error.to_string()).with_fix(Fix::ChooseRuntime)
             }
+            // The same repair as any other missing Jev key: the window has a
+            // field for it, so the suite's refusal points at the control
+            // rather than at the `neo keys set typesafe` the message names.
+            EvalError::NoJudge { .. } => {
+                Self::new("missing_key", error.to_string()).with_fix(Fix::SetKey {
+                    account: JEV_ACCOUNT.to_owned(),
+                })
+            }
             EvalError::NoCases => Self::new("no_cases", error.to_string()),
             EvalError::ScreenBusy(ref busy) => screen_busy(busy),
             EvalError::Runtime(inner) => Self::from(inner),

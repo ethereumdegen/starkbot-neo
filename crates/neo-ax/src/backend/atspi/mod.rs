@@ -15,7 +15,7 @@
 //! which backend produced a tree.
 
 mod actor;
-mod apps;
+pub(crate) mod apps;
 mod bus;
 mod input;
 pub mod perm;

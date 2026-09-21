@@ -47,6 +47,17 @@ pub enum Probe {
     /// what selects the origin: the cross-origin case records on one and the
     /// frame lives on the other.
     Page { app: String, url: String },
+    /// What degen-paint reports about the document it is holding (A37).
+    ///
+    /// The media app is the one target whose result cannot be read off an
+    /// accessibility tree. A canvas is pixels; "is there a logo on it" is not
+    /// a label, and the window says the same thing whether the document is
+    /// empty or finished. degen-paint answers that about itself over the
+    /// read-only grounding API its skill contract declares, and reading it is
+    /// allowed exactly where driving it would not be: 12 §2 makes the UI the
+    /// only mutation path and leaves side channels read-only. The agent still
+    /// has to have *operated the Studio* to change what this returns.
+    Grounding { app: String, base: String },
 }
 
 impl Probe {
@@ -66,6 +77,10 @@ impl Probe {
                 app,
                 url: probe.get("url").and_then(Value::as_str)?.to_owned(),
             }),
+            "grounding" => Some(Self::Grounding {
+                app,
+                base: probe.get("base").and_then(Value::as_str)?.to_owned(),
+            }),
             _ => None,
         }
     }
@@ -82,6 +97,9 @@ impl Probe {
             Self::Page { app, url } => {
                 json!({ "probe": { "kind": "page", "app": app, "url": url } })
             }
+            Self::Grounding { app, base } => {
+                json!({ "probe": { "kind": "grounding", "app": app, "base": base } })
+            }
         }
     }
 
@@ -91,7 +109,8 @@ impl Probe {
             Self::AppText { app }
             | Self::Cell { app, .. }
             | Self::Surface { app }
-            | Self::Page { app, .. } => app,
+            | Self::Page { app, .. }
+            | Self::Grounding { app, .. } => app,
         }
     }
 }
@@ -105,6 +124,120 @@ pub fn cell_of(app: App, cell: &str) -> Probe {
     }
 }
 
+/// Where degen-paint's grounding API answers, overridable for a fixture.
+///
+/// The default is the one its own skill contract declares, so a case does not
+/// restate the vendor's address.
+#[must_use]
+pub fn grounding_base() -> String {
+    std::env::var("DPAINT_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:4317".to_owned())
+}
+
+/// Read one grounding endpoint, tolerating an absent one.
+///
+/// A probe reports what it found; it does not fail the case because a
+/// document has no digest yet. The distinction matters: "no project is open"
+/// is a *result* the assertions are entitled to see, not an error.
+pub(crate) async fn grounding_get(http: &reqwest::Client, url: &str) -> Option<Value> {
+    let response = http
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json().await.ok()
+}
+
+/// What degen-paint says about the document it is holding.
+///
+/// Every key is flattened to the top level rather than left nested, because
+/// `Assertion::ExpectToolArg` matches one argument by name: a case asserts
+/// `drawn == true`, not a path into a vendor document. The raw `digest` rides
+/// along for the judge, which needs the colours and the object tree to tell a
+/// logo from a blank canvas.
+async fn read_grounding(app: &str, base: &str) -> Result<Value, ProbeError> {
+    let http = reqwest::Client::new();
+    let base = base.trim_end_matches('/');
+
+    let status = grounding_get(&http, &format!("{base}/api/v1/status"))
+        .await
+        .ok_or_else(|| {
+            ProbeError::Ax(format!(
+                "degen-paint's grounding API did not answer at {base}; \
+                 the Studio has to be running for this case to be scored"
+            ))
+        })?;
+
+    let project = status.get("project").cloned().unwrap_or(Value::Null);
+    let revision = status.get("revision").and_then(Value::as_u64).unwrap_or(0);
+    let active = status.get("activeDoc").and_then(Value::as_str);
+
+    let digest = match active {
+        Some(doc) => grounding_get(&http, &format!("{base}/api/v1/doc/{doc}/digest")).await,
+        None => None,
+    };
+    let lint = match active {
+        Some(doc) => grounding_get(&http, &format!("{base}/api/v1/doc/{doc}/lint")).await,
+        None => None,
+    };
+    let history = grounding_get(&http, &format!("{base}/api/v1/history?limit=40"))
+        .await
+        .unwrap_or(Value::Null);
+
+    let objects = digest
+        .as_ref()
+        .and_then(|d| d.get("tree"))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    // What "drawn" has to mean, measured rather than assumed: a freshly
+    // created vector document already reports one tree entry and renders to
+    // nothing, so counting objects would pass a blank canvas. Alpha coverage
+    // is the fraction of the canvas with any opacity at all — it is zero
+    // until something is actually on it.
+    let coverage = digest
+        .as_ref()
+        .and_then(|d| d.get("alpha_coverage"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let lint_errors = lint
+        .as_ref()
+        .and_then(|l| l.get("errors"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    // The journal is the app's own record of what happened to it, which is
+    // what makes "it exported" a fact rather than a claim in the transcript.
+    let entries = history.as_array().map(Vec::as_slice).unwrap_or_default();
+    let exported = entries.iter().any(|entry| {
+        entry
+            .get("op")
+            .and_then(Value::as_str)
+            .is_some_and(|op| op.contains("export") || op.contains("render"))
+    });
+
+    Ok(json!({
+        "app": app,
+        "open": !project.is_null(),
+        "project": project,
+        "revision": revision,
+        "document": active,
+        "objects": objects,
+        "alpha_coverage": coverage,
+        "drawn": coverage > 0.01,
+        "mean_color": digest.as_ref().and_then(|d| d.get("mean_color")).cloned(),
+        "dominant_colors": digest
+            .as_ref()
+            .and_then(|d| d.get("dominant_colors"))
+            .cloned(),
+        "exported": exported,
+        "lint_errors": lint_errors,
+        "digest": digest,
+        "history": history,
+    }))
+}
+
 /// Observe the application. The returned object becomes the `probe` tool
 /// call's arguments, so every key here is assertable with `ExpectToolArg`.
 pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeError> {
@@ -115,6 +248,12 @@ pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeE
     // native app at all.
     if let Probe::Page { url, .. } = probe {
         return crate::pages::read_state(runtime.data_dir(), url).await;
+    }
+    // Likewise a grounding read: it is an HTTP GET against the application's
+    // own read-only contract, so it has nothing to do with the accessibility
+    // grant and must not be gated behind one.
+    if let Probe::Grounding { app, base } = probe {
+        return read_grounding(app, base).await;
     }
     if !AxHandle::trusted() {
         return Err(ProbeError::NotTrusted);
@@ -230,8 +369,9 @@ pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeE
                 "roles": roles,
             }))
         }
-        // Answered above, before the accessibility handle was taken.
+        // Both answered above, before the accessibility handle was taken.
         Probe::Page { url, .. } => crate::pages::read_state(runtime.data_dir(), url).await,
+        Probe::Grounding { app, base } => read_grounding(app, base).await,
     }
 }
 

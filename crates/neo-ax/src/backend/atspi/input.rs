@@ -1,5 +1,13 @@
 //! The input fallback: `zwp_virtual_keyboard_v1` and
-//! `zwlr_virtual_pointer_v1`, spoken in-process (17 §3.3).
+//! `zwp_virtual_keyboard_v1`, spoken in-process (17 §3.3).
+//!
+//! **There is no virtual pointer here, on purpose.** A run shares the machine
+//! with the person at it, and a synthetic click cannot be shared: it warps the
+//! cursor out from under their hand, and under `follow_mouse` it drags window
+//! focus along with it. The keyboard takes only the focused window, which is a
+//! thing a person can work around. So the pointer protocol is not bound, not
+//! held, and not reachable — the guarantee is the absence of the code, not a
+//! rule someone has to remember.
 //!
 //! AT-SPI actions come first, exactly as on macOS. This is what happens when
 //! an element advertises no usable action, or when a field takes typed text
@@ -27,20 +35,16 @@ use std::os::fd::AsFd;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
-use wayland_client::protocol::wl_pointer::{Axis, ButtonState};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1;
-use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
-use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
 use crate::error::AxError;
-use crate::types::{Key, Modifier, ScrollDir};
+use crate::types::{Key, Modifier};
 
 /// `BTN_LEFT` from `linux/input-event-codes.h`.
-const BTN_LEFT: u32 = 0x110;
 /// `XKB_KEYMAP_FORMAT_TEXT_V1`.
 const KEYMAP_TEXT_V1: u32 = 1;
 /// evdev keycode = xkb keycode − 8.
@@ -48,8 +52,14 @@ const EVDEV_OFFSET: u32 = 8;
 /// Symbols per uploaded keymap. Wayland key codes are evdev codes and the
 /// compositor adds 8, so staying well inside 255 keeps every keycode legal.
 const KEYMAP_PAGE: usize = 96;
-/// One wheel notch, in the units `wl_pointer.axis` uses.
-const NOTCH: f64 = 15.0;
+/// Most characters [`VirtualInput::clear_field`] will delete. A form field
+/// holding more than this is not a field the navigator should be rewriting
+/// keystroke by keystroke.
+const MAX_CLEAR: usize = 512;
+/// How long a freshly uploaded keymap is given to reach the focused client
+/// before keycodes are posted against it. Paid only when the layout actually
+/// changes, which is once per write, not once per keystroke.
+const KEYMAP_SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// Modifier bits, in the order an X11 keymap assigns them.
 const MOD_SHIFT: u32 = 1;
@@ -66,12 +76,8 @@ pub(crate) struct VirtualInput {
     seat: WlSeat,
     keyboard: Option<ZwpVirtualKeyboardV1>,
     keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
-    pointer: Option<ZwlrVirtualPointerV1>,
-    pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
     /// The layout currently uploaded, so a repeat burst skips the upload.
     uploaded: Vec<String>,
-    /// Bounds of the whole output layout, for absolute pointer motion.
-    bounds: (u32, u32),
 }
 
 /// The event sink. Nothing here needs an event: the virtual devices are
@@ -81,8 +87,6 @@ struct Sink;
 delegate_noop!(Sink: ignore WlSeat);
 delegate_noop!(Sink: ignore ZwpVirtualKeyboardManagerV1);
 delegate_noop!(Sink: ignore ZwpVirtualKeyboardV1);
-delegate_noop!(Sink: ignore ZwlrVirtualPointerManagerV1);
-delegate_noop!(Sink: ignore ZwlrVirtualPointerV1);
 
 impl Dispatch<WlRegistry, GlobalListContents> for Sink {
     fn event(
@@ -113,7 +117,7 @@ impl VirtualInput {
     /// compositor that offers neither protocol still connects: the refusal
     /// then names the protocol the action needed, which is more useful than
     /// "input unavailable".
-    pub(crate) fn connect(bounds: (u32, u32), compositor: &'static str) -> Result<Self, AxError> {
+    pub(crate) fn connect(compositor: &'static str) -> Result<Self, AxError> {
         let conn = Connection::connect_to_env().map_err(|e| AxError::NoVirtualInput {
             detail: format!("no Wayland display: {e}"),
         })?;
@@ -129,7 +133,6 @@ impl VirtualInput {
                     detail: format!("no seat: {e}"),
                 })?;
         let keyboard_manager = globals.bind(&handle, 1..=1, ()).ok();
-        let pointer_manager = globals.bind(&handle, 1..=2, ()).ok();
         Ok(Self {
             compositor,
             queue,
@@ -137,10 +140,7 @@ impl VirtualInput {
             seat,
             keyboard: None,
             keyboard_manager,
-            pointer: None,
-            pointer_manager,
             uploaded: Vec::new(),
-            bounds,
         })
     }
 
@@ -166,28 +166,26 @@ impl VirtualInput {
         Ok(keyboard)
     }
 
-    fn pointer(&mut self) -> Result<ZwlrVirtualPointerV1, AxError> {
-        if let Some(pointer) = &self.pointer {
-            return Ok(pointer.clone());
-        }
-        let manager = self
-            .pointer_manager
-            .as_ref()
-            .ok_or_else(|| AxError::NoVirtualInput {
-                detail: format!(
-                    "{} does not implement zwlr_virtual_pointer_v1",
-                    self.compositor
-                ),
-            })?;
-        let pointer = manager.create_virtual_pointer(Some(&self.seat), &self.handle, ());
-        self.pointer = Some(pointer.clone());
-        Ok(pointer)
-    }
-
     /// Upload a layout holding exactly `symbols`, unless it is already up.
     fn upload(&mut self, symbols: &[String]) -> Result<(), AxError> {
         if self.uploaded == symbols {
             return Ok(());
+        }
+        // A *new* keyboard for every layout, because a focused client is
+        // only told a keymap when one is first delivered to it. Replacing
+        // the layout on a keyboard the client has already seen leaves that
+        // client decoding the new keycodes with the old table: measured on
+        // degen-paint Studio, where the Down that should have moved the
+        // command palette's selection arrived as a *character*, appended
+        // itself to the query, filtered the list to nothing and closed the
+        // palette. Every key posted after a text write behaved that way, so
+        // no typed value could ever be committed.
+        //
+        // Destroying and re-creating is what a fresh process does implicitly,
+        // which is exactly why the same sequence worked one key per `neo ax
+        // key` invocation and failed inside a single run.
+        if let Some(previous) = self.keyboard.take() {
+            previous.destroy();
         }
         let keyboard = self.keyboard()?;
         let text = keymap(symbols);
@@ -206,6 +204,20 @@ impl VirtualInput {
         let size = u32::try_from(bytes.len() + 1).unwrap_or(u32::MAX);
         keyboard.keymap(KEYMAP_TEXT_V1, file.as_fd(), size);
         self.flush();
+        // The roundtrip above synchronises with the *compositor*, which is
+        // not who has to understand these keycodes. The compositor forwards
+        // `wl_keyboard.keymap` to the focused client, and that client — a
+        // WebKitGTK window, here — mmaps and loads it on its own event-loop
+        // turn. There is no protocol event to wait for: a client cannot be
+        // synchronised with through the compositor, so the only correct
+        // thing to wait is a moment.
+        //
+        // Without it, keys posted immediately after a *second* upload are
+        // interpreted against the keymap the client still has. Measured on
+        // degen-paint Studio: clearing a field and typing into it re-uploads
+        // between the two, and the write landed nothing at all — which is
+        // every overwrite of a field that already had a value.
+        std::thread::sleep(KEYMAP_SETTLE);
         self.uploaded = symbols.to_vec();
         Ok(())
     }
@@ -236,22 +248,101 @@ impl VirtualInput {
         Ok(())
     }
 
-    /// ⌃A: select everything in the focused field.
+    /// Empty the focused field, without a chord.
     ///
-    /// Not part of the navigator's key set (which is chord-free by design),
-    /// but the write path needs it: a field that already holds text would
-    /// otherwise be appended to, and a typed value that *appends* is the
-    /// exact defect L1 fixed on the web path.
+    /// The write path needs a field cleared before it is typed into: a value
+    /// that *appends* is the exact defect L1 fixed on the web path. This used
+    /// to send ⌃A, and on this backend that silently did the opposite. The
+    /// virtual-keyboard protocol takes a keymap this process uploads, and a
+    /// one-symbol map defined as the *Unicode* codepoint `U0061` is a key
+    /// that produces the text "a"; WebKitGTK under Wayland took the control
+    /// modifier as a held state rather than a chord and inserted the literal
+    /// character. Measured on degen-paint Studio: a field reading `artboard`
+    /// became `artboarda`, and every write to a non-empty field failed with
+    /// "the value did not appear" — which is every command palette, every
+    /// filter and every form field that had a default in it.
+    ///
+    /// So the caret is driven instead, with two keys that are already in the
+    /// navigator's fixed set and mean the same thing on every toolkit: Right
+    /// to the end (a press past the end is a no-op), then Backspace for each
+    /// character. No modifier is held, so nothing can be reinterpreted as
+    /// text.
     ///
     /// # Errors
     ///
     /// [`AxError::NoVirtualInput`] when the compositor has no virtual
     /// keyboard.
-    pub(crate) fn select_all(&mut self) -> Result<(), AxError> {
-        let symbol = "U0061".to_owned();
-        self.upload(std::slice::from_ref(&symbol))?;
+    pub(crate) fn replace_text(
+        &mut self,
+        clear: usize,
+        text: &str,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), AxError> {
+        if stopped() {
+            return Err(AxError::Stopped);
+        }
+        // A field is a field, not a document: the cap keeps a mis-measured
+        // length from turning into thousands of key events.
+        let clear = clear.min(MAX_CLEAR);
+        let chars: Vec<char> = text.chars().collect();
+
+        // One keycode per *distinct* symbol, not one per keystroke. That is
+        // what lets a clear and the value that replaces it share a single
+        // keymap: a field's text rarely has more than a few dozen distinct
+        // characters, so the whole write fits in one upload and the client
+        // never has to reload a layout mid-write.
+        let mut symbols: Vec<String> = Vec::new();
+        let index_of = |symbols: &mut Vec<String>, symbol: String| -> usize {
+            match symbols.iter().position(|held| *held == symbol) {
+                Some(index) => index,
+                None => {
+                    symbols.push(symbol);
+                    symbols.len() - 1
+                }
+            }
+        };
+        let (right, backspace) = if clear > 0 {
+            (
+                Some(index_of(&mut symbols, "Right".to_owned())),
+                Some(index_of(&mut symbols, "BackSpace".to_owned())),
+            )
+        } else {
+            (None, None)
+        };
+        let keys: Vec<usize> = chars
+            .iter()
+            .map(|ch| index_of(&mut symbols, unicode_keysym(*ch)))
+            .collect();
+        if symbols.len() > KEYMAP_PAGE {
+            // More distinct symbols than a keymap holds. Nothing sensible
+            // types this into a form field, and a partial write is worse than
+            // a refused one.
+            return Err(AxError::Unsupported(
+                "the value needs more distinct characters than one keymap holds",
+            ));
+        }
+
+        self.upload(&symbols)?;
         let keyboard = self.keyboard()?;
-        self.tap(&keyboard, 0, MOD_CONTROL);
+        if let (Some(right), Some(backspace)) = (right, backspace) {
+            // To the end first: a press past the end is a no-op, so this
+            // needs no knowledge of where the caret actually was.
+            for _ in 0..clear {
+                self.tap(&keyboard, right, 0);
+            }
+            for _ in 0..clear {
+                if stopped() {
+                    return Err(AxError::Stopped);
+                }
+                self.tap(&keyboard, backspace, 0);
+            }
+        }
+        for index in keys {
+            if stopped() {
+                return Err(AxError::Stopped);
+            }
+            self.tap(&keyboard, index, 0);
+        }
         Ok(())
     }
 
@@ -285,72 +376,6 @@ impl VirtualInput {
                 self.tap(&keyboard, index, 0);
             }
         }
-        Ok(())
-    }
-
-    /// Click at a point in global compositor coordinates.
-    ///
-    /// # Errors
-    ///
-    /// [`AxError::NoVirtualInput`] when the compositor has no virtual
-    /// pointer.
-    pub(crate) fn click(&mut self, x: f64, y: f64) -> Result<(), AxError> {
-        let pointer = self.pointer()?;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a screen coordinate clamped to the layout is a small positive integer"
-        )]
-        let (px, py) = (
-            x.max(0.0).min(f64::from(self.bounds.0)) as u32,
-            y.max(0.0).min(f64::from(self.bounds.1)) as u32,
-        );
-        pointer.motion_absolute(now_ms(), px, py, self.bounds.0, self.bounds.1);
-        pointer.frame();
-        pointer.button(now_ms(), BTN_LEFT, ButtonState::Pressed);
-        pointer.frame();
-        pointer.button(now_ms(), BTN_LEFT, ButtonState::Released);
-        pointer.frame();
-        self.flush();
-        Ok(())
-    }
-
-    /// Scroll the surface under a point by `notches` wheel clicks.
-    ///
-    /// # Errors
-    ///
-    /// [`AxError::NoVirtualInput`] when the compositor has no virtual
-    /// pointer.
-    pub(crate) fn scroll(
-        &mut self,
-        x: f64,
-        y: f64,
-        direction: ScrollDir,
-        notches: i32,
-    ) -> Result<(), AxError> {
-        let pointer = self.pointer()?;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a screen coordinate clamped to the layout is a small positive integer"
-        )]
-        let (px, py) = (
-            x.max(0.0).min(f64::from(self.bounds.0)) as u32,
-            y.max(0.0).min(f64::from(self.bounds.1)) as u32,
-        );
-        pointer.motion_absolute(now_ms(), px, py, self.bounds.0, self.bounds.1);
-        pointer.frame();
-        // Wayland's axis is positive downwards: scrolling *down* reveals
-        // content below, which is what `ScrollDir::Down` means.
-        let sign = match direction {
-            ScrollDir::Down => 1.0,
-            ScrollDir::Up => -1.0,
-        };
-        for _ in 0..notches.clamp(1, 40) {
-            pointer.axis(now_ms(), Axis::VerticalScroll, sign * NOTCH);
-            pointer.frame();
-        }
-        self.flush();
         Ok(())
     }
 }

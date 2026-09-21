@@ -17,10 +17,11 @@
 //!
 //! Nothing in `spice` needed changing. Three seams carry all of it:
 //! [`spice_framework::AgentUnderTest`] (implemented by [`NeoAgent`] over
-//! `Runtime::chat`), [`spice_framework::Judge`] (implemented by [`NeoJudge`]
-//! over the user's own subscription, so judging needs no extra key), and
-//! `Assertion::ExpectToolArg`, which is how a probe's observation becomes a
-//! hard assertion.
+//! `Runtime::chat`), [`spice_framework::Judge`] (implemented by
+//! [`judge::JevJudge`] over TypeSafe's typed heads, on the same Jev
+//! credential the navigator already needs, so judging costs no second
+//! vendor), and `Assertion::ExpectToolArg`, which is how a probe's
+//! observation becomes a hard assertion.
 //!
 //! # The part that makes this an eval and not a vibe check
 //!
@@ -47,7 +48,6 @@ use neo_core::{ActionKind, ActionSummary, AppEvent, ConversationId, Envelope, Ru
 use serde_json::{Value, json};
 use spice_framework::agent::{AgentConfig, AgentOutput, AgentUnderTest, ToolCall, Turn, Usage};
 use spice_framework::error::SpiceError;
-use spice_framework::judge::{Judge, JudgeRequest, JudgeVerdict};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -55,6 +55,7 @@ pub mod apps;
 pub mod cards;
 pub mod cases;
 pub mod fixture;
+pub mod judge;
 pub mod pages;
 pub mod probe;
 pub mod suite;
@@ -62,6 +63,7 @@ pub mod suite;
 pub use apps::{App, availability};
 pub use cards::Cards;
 pub use fixture::Fixture;
+pub use judge::JevJudge;
 pub use probe::{Probe, run_probe};
 pub use spice_framework::report::{SuiteReport, TestReport};
 pub use suite::{CASE_TIMEOUT, CaseListing, EvalError, Selection, list_cases, run_suite};
@@ -157,20 +159,45 @@ impl AgentUnderTest for NeoAgent {
         // last run left on screen, which is how the first TextEdit case
         // "failed".
         let mut prelude: Vec<Turn> = Vec::new();
+        // What the fixture wants the model to know. The prelude turn below
+        // is part of the *report*, not the conversation — the request is
+        // built from the user message alone — so a note left only there
+        // reaches the judge and never the agent. Three runs opened their own
+        // project against a fixture that had already opened one, because the
+        // sentence saying so was never sent.
+        let mut note: Option<String> = None;
         if let Some(fixture) = Fixture::from_config(config) {
             match fixture::apply(&self.runtime, &fixture).await {
-                Ok(applied) => prelude.push(Turn {
-                    index: 0,
-                    output_text: Some("fixture applied".to_owned()),
-                    tool_calls: vec![ToolCall {
-                        id: "fixture".to_owned(),
-                        name: "fixture".to_owned(),
-                        arguments: applied.clone(),
-                    }],
-                    tool_results: vec![applied],
-                    stop_reason: Some("fixture".to_owned()),
-                    duration: Duration::ZERO,
-                }),
+                Ok(applied) => {
+                    note = applied
+                        .get("note")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    prelude.push(Turn {
+                        index: 0,
+                        // The fixture's own words when it has any. A fixture that
+                        // prepared something the task must not redo has to say so
+                        // where the model reads prose, not only inside the tool
+                        // arguments: with the note in the payload alone, a run
+                        // opened its own project anyway and spent nine of ten
+                        // actions in a file chooser.
+                        output_text: Some(
+                            applied
+                                .get("note")
+                                .and_then(Value::as_str)
+                                .unwrap_or("fixture applied")
+                                .to_owned(),
+                        ),
+                        tool_calls: vec![ToolCall {
+                            id: "fixture".to_owned(),
+                            name: "fixture".to_owned(),
+                            arguments: applied.clone(),
+                        }],
+                        tool_results: vec![applied],
+                        stop_reason: Some("fixture".to_owned()),
+                        duration: Duration::ZERO,
+                    });
+                }
                 // A broken fixture is a harness failure, not a model failure:
                 // it is reported as the run's error so the case does not read
                 // as "the agent could not do it".
@@ -185,9 +212,27 @@ impl AgentUnderTest for NeoAgent {
             }
         }
 
-        let mut request =
-            ChatRequest::new(self.conversation, vec![ChatMessage::user(user_message)]);
-        request.max_steps = EVAL_MAX_STEPS;
+        // The environment the task starts in, then the task. Stated as its
+        // own message rather than folded into the user's words, because the
+        // case's `user_message` is the sentence a person actually said and
+        // the run is only honest if that reaches the model unedited.
+        let mut messages = Vec::new();
+        if let Some(note) = note {
+            messages.push(ChatMessage::user(format!("Before you start: {note}.")));
+        }
+        messages.push(ChatMessage::user(user_message));
+        let mut request = ChatRequest::new(self.conversation, messages);
+        // Most cases are one concrete outcome and get the tight default. A
+        // case that legitimately needs more — a media task opens an app,
+        // makes a document and exports it, which is three outcomes before
+        // anything is drawn — says so in its own config rather than raising
+        // the budget for the spreadsheet cases too.
+        request.max_steps = config
+            .data
+            .get("max_steps")
+            .and_then(Value::as_u64)
+            .and_then(|steps| usize::try_from(steps).ok())
+            .unwrap_or(EVAL_MAX_STEPS);
         request.cancel = self.cancel.clone();
         request.screen = self.screen;
 
@@ -481,72 +526,8 @@ fn absorb(collected: &mut Collected, run: RunId, event: AppEvent) -> bool {
     }
 }
 
-/// An LLM judge on the user's own subscription.
-///
-/// `spice`'s built-in judge needs an OpenAI API key. Starkbot's whole point is
-/// that one inference connection is enough (K6/K7), so the judge runs on
-/// whatever runtime is selected — a Claude Pro/Max or ChatGPT plan included.
-pub struct NeoJudge {
-    runtime: Arc<Runtime>,
-}
-
-impl NeoJudge {
-    #[must_use]
-    pub fn new(runtime: Arc<Runtime>) -> Self {
-        Self { runtime }
-    }
-}
-
-#[async_trait]
-impl Judge for NeoJudge {
-    async fn score(&self, req: JudgeRequest<'_>) -> Result<JudgeVerdict, SpiceError> {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "score": {
-                    "type": "number",
-                    "description": "0.0 to 1.0, how fully the rubric is met"
-                },
-                "reasoning": { "type": "string" }
-            },
-            "required": ["score", "reasoning"],
-            "additionalProperties": false
-        });
-        let prompt = format!(
-            "You are grading whether an agent completed a task by operating a real \
-             application. Be strict: a claim of success with no evidence in the \
-             transcript scores low.\n\n\
-             Task given to the agent:\n{task}\n\n\
-             Rubric:\n{rubric}\n\n\
-             What the agent answered:\n{answer}\n\n\
-             What the agent actually did, step by step:\n{trace}\n\n\
-             Score from 0.0 to 1.0 against the rubric only.",
-            task = req.user_message,
-            rubric = req.rubric,
-            answer = req.output.final_text,
-            trace = trace_of(req.output),
-        );
-        let (value, _turn) = self
-            .runtime
-            .ask_json(&prompt, &schema, None)
-            .await
-            .map_err(|error| SpiceError::AgentError(error.to_string()))?;
-        let score = value.get("score").and_then(Value::as_f64).ok_or_else(|| {
-            SpiceError::AgentError("the judge answered without a score".to_owned())
-        })?;
-        // The runner applies `threshold`; a judge only reports.
-        Ok(JudgeVerdict::new(
-            score,
-            value
-                .get("reasoning")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        ))
-    }
-}
-
 /// The trace a judge is shown: what was done, and what each action produced.
-fn trace_of(output: &AgentOutput) -> String {
+pub(crate) fn trace_of(output: &AgentOutput) -> String {
     if output.turns.is_empty() {
         return "(nothing)".to_owned();
     }

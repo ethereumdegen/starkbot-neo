@@ -27,6 +27,7 @@
 //! a tool call lands in `jev-nav` through the same `run_browser`/`run_app`
 //! that `neo nav` uses, with the same policy, budgets and safety heads.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,6 +41,7 @@ use metalcraft::{
     LlmResponseSnapshot, LlmUsage, Mailbox, RunEvent, RunOutcome, Tool, ToolRegistry, UserInput,
     create_react_agent_with_options,
 };
+use neo_ax::InstalledApp;
 use neo_core::{
     ActionKind, ActionSummary, AppEvent, ConversationId, CoreError, Message, MessageId,
     MessageKind, MessageRole, MessageSource, ProviderId, RunId, Settings, TimestampMs, TurnUsage,
@@ -60,12 +62,31 @@ use crate::runtime::Runtime;
 /// The surfaces are named, and the absence of a shell is named with them: a
 /// model that is not told it has no command execution will try to ask for one,
 /// and spend a step finding out.
+///
+/// Nothing here names a platform any more. The text used to say "this Mac"
+/// and list four macOS applications, which is false on half the machines Neo
+/// runs on (P16: one product, one policy, Linux and macOS alike) — and a
+/// model told it is on a Mac when it is not will reach for a Mac's
+/// applications and find none of them. What the machine actually has is not
+/// a constant at all, so it is appended at the call site from
+/// [`installed_apps_section`] instead of guessed here.
 const PREAMBLE: &str = "\
 You are Starkbot, a go-to-market marketing and media operator. You get work \
-done by operating real applications on this Mac: web pages through a managed \
-Chrome, and native applications (TextEdit, LibreOffice, Numbers, media tools) \
-through macOS accessibility. You are not a coding assistant and you have no \
-shell, no file system and no command execution.
+done by operating real applications on this machine: web pages through a \
+managed browser, and native applications through the platform's \
+accessibility API. You are not a coding assistant and you have no shell, no \
+file system and no command execution.
+
+When a task names an application, open that application with the `app` tool \
+rather than looking for a web page about it. That is about finding the \
+*application* only.
+
+When a task says to match something that already exists — a product, a site, \
+a design, another document — find it and read it **first**, before you make \
+anything. Its name is the search term; a product's own site usually states \
+its colours and marks in text you can read. Every detail the thing you are \
+copying already fixes is a detail you do not get to choose, and inventing one \
+is the single way a task like this fails while looking finished.
 
 Use a tool when the work is on a screen; answer directly when the \
 conversation already contains what is needed — do not open a browser to \
@@ -75,6 +96,89 @@ no selectors, no step lists. After each tool call you are told what it \
 produced; use that before deciding what to do next. When you have the answer, \
 say it in plain prose. If you cannot proceed without the user, say what you \
 need and stop.";
+
+/// How many applications the prompt may name (A23).
+///
+/// A real desktop answers [`neo_ax::inventory`] with far more than a prompt
+/// should carry — this machine returns 87, a laptop with a full desktop
+/// environment returns roughly 150 — and every settings panel, toolkit demo
+/// and D-Bus helper among them is a few hundred tokens per turn to say
+/// something that changes only when software is installed.
+const APP_LIMIT: usize = 40;
+
+/// The applications this machine can actually open, as a line the model can
+/// resolve a name against.
+///
+/// This is the half of the fix the preamble cannot hold (A23). "Use
+/// degen-paint" is only a website to a model that was never told
+/// `dev.degenpaint.studio` is installed, and the baseline run spent its whole
+/// budget browsing for one. [`neo_ax::inventory`] is the single source of
+/// truth for what is here; this function only renders it.
+fn installed_apps_section() -> String {
+    render_installed_apps(&neo_ax::inventory())
+}
+
+/// [`installed_apps_section`] over a list it is handed, so the empty machine —
+/// a platform with no accessibility backend — is a case a test can state
+/// rather than a case that needs an OS without applications on it.
+///
+/// An empty inventory renders the empty string, not a heading with nothing
+/// under it: a prompt that says "applications on this machine:" and then
+/// stops is worse than silence, because the model reads it as "none", and
+/// [`neo_ax::lookup`] may still resolve a name the inventory could not list.
+///
+/// Which `APP_LIMIT` survive the cut is decided here rather than taken from
+/// the inventory's own order, for two reasons found by rendering this machine:
+///
+/// - [`neo_ax::inventory`] sorts by `String` order, which is byte order, so
+///   every lowercase-named application — `foot`, `gimp`, `imv`, `chromium`,
+///   and `degen-paint Studio` itself — sorts behind every capitalised one.
+///   A cut at 40 was therefore not "the first 40 alphabetically" but "the
+///   first 40 that happen to start with a capital", and it dropped the one
+///   application the failing task named. Ordering is case-insensitive here.
+/// - [`InstalledApp`] carries no category, so there is no field that says
+///   "this is a work target" — but it carries the path it was found at, and
+///   an entry under the user's own home was installed deliberately by this
+///   person, while `/usr/share/applications` is whatever the distribution
+///   shipped. That is real evidence rather than a hardcoded list of names,
+///   which is the macOS list this preamble has just stopped having, so the
+///   user's own applications are named first.
+///
+/// The rest still exists: the closing sentence says the list is partial, and
+/// [`neo_ax::lookup`] resolves a name the model passes through anyway.
+fn render_installed_apps(apps: &[InstalledApp]) -> String {
+    if apps.is_empty() {
+        return String::new();
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut ranked: Vec<&InstalledApp> = apps.iter().collect();
+    ranked.sort_by_cached_key(|app| {
+        let mine = !home.as_ref().is_some_and(|home| app.path.starts_with(home));
+        // The id breaks ties, so two applications sharing a display name
+        // render in the same order on every turn.
+        (mine, app.name.to_lowercase(), app.id.clone())
+    });
+
+    let listed = ranked
+        .iter()
+        .take(APP_LIMIT)
+        .map(|app| format!("{} ({})", app.name, app.id))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut section = String::from(
+        "\n\nApplications installed on this machine, as human name then the \
+id to give the `app` tool's target: ",
+    );
+    section.push_str(&listed);
+    section.push('.');
+    if ranked.len() > APP_LIMIT {
+        section.push_str(
+            " This list is partial; an application that is not on it may still \
+be installed, and can be named to the `app` tool directly.",
+        );
+    }
+    section
+}
 
 /// How long an answer may grow in memory before the thread holds it too.
 ///
@@ -787,6 +891,124 @@ impl Tool for App {
     }
 }
 
+/// Run one of an installed pack's routines: the `routine` tool (06 §4.2).
+///
+/// The reason this exists beside `app`: an `app` call is one navigator run
+/// against one screen, and a sequence whose state does not outlive a run
+/// cannot be spelled as several of them. degen-paint's command palette closes
+/// the moment focus leaves it, so *choose an op* and *fill the form it just
+/// opened* are not two goals — they are one routine.
+struct RunRoutine {
+    reporter: Arc<Reporter>,
+    run: RunId,
+    cancel: tokio_util::sync::CancellationToken,
+    screen: Option<crate::screen::ScreenScope>,
+}
+
+#[async_trait::async_trait]
+impl Tool for RunRoutine {
+    fn name(&self) -> &str {
+        "routine"
+    }
+
+    fn description(&self) -> &str {
+        "Run a named recipe an installed application shipped for itself. \
+         Prefer this over `app` whenever a routine covers the work: its steps \
+         run back to back against one screen, so a dialog or a form one step \
+         opens is still open for the next. The routines available on this \
+         machine are listed above, each with the parameters it takes; pass \
+         every one it names in `params`, for example \
+         {\"name\": \"media-apps/dp-run-op\", \"params\": {\"op\": \"vector.object.add-ellipse\", \
+         \"values\": \"cx 512, cy 512, rx 360, fill #ffffff\"}}."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "the routine, as `<pack>/<name>` or by its bare name"
+                },
+                "params": {
+                    "type": "object",
+                    "description": "the routine's parameters, as its instructions describe them",
+                    "additionalProperties": true
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(&self, args: Value) -> metalcraft::Result<Value> {
+        let name = field(&args, "name");
+        let params = args
+            .get("params")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        // The card says which routine and with what, because a routine call
+        // with its parameters left out looks identical to one without them.
+        let summary = ActionSummary {
+            kind: ActionKind::App,
+            target: name.clone(),
+            goal: Some(Value::Object(params.clone()).to_string()),
+            text: None,
+        };
+        let reporter = Arc::clone(&self.reporter);
+        observed(&reporter, summary, async {
+            let name = name.ok_or_else(|| ToolError::App {
+                app: "?".to_owned(),
+                detail: "`routine` needs the routine's `name`".to_owned(),
+            })?;
+            let routine = crate::routines::find(&name).ok_or_else(|| ToolError::App {
+                app: name.clone(),
+                detail: format!(
+                    "no routine is named `{name}`; the installed ones are listed \
+                         in the application's instructions"
+                ),
+            })?;
+            let outcome = crate::routines::run(
+                self.reporter.runtime(),
+                &routine,
+                &params,
+                self.run,
+                &self.cancel,
+                self.screen,
+            )
+            .await
+            .map_err(|error| ToolError::App {
+                app: routine.id(),
+                detail: error.to_string(),
+            })?;
+            Ok(render_routine(&outcome))
+        })
+        .await
+    }
+}
+
+/// What the model is told a routine did.
+///
+/// The steps are named and so is the disposition, because a routine that ran
+/// every step and failed its own verify sentence is a different thing from
+/// one that fell over in the middle, and the recovery differs: the first
+/// needs checking, the second needs redoing.
+fn render_routine(run: &crate::routines::RoutineRun) -> String {
+    let mut out = format!("routine {} — {:?}\n", run.routine, run.disposition);
+    for step in &run.steps {
+        out.push_str(&format!("  {step}\n"));
+    }
+    if let Some(detail) = &run.detail {
+        out.push_str(&format!("stopped: {detail}\n"));
+    }
+    if !run.observation.trim().is_empty() {
+        out.push_str("\nWhat the surface says:\n");
+        out.push_str(run.observation.trim());
+    }
+    out
+}
+
 /// Look at an application without touching it: the `ax` tool.
 ///
 /// The read-only half of the accessibility surface `neo ax` exposes. It takes
@@ -1132,11 +1354,21 @@ where
     let steering = Arc::new(Steering::new(request.conversation));
     let _live = runtime_guard(reporter, request.run, Arc::clone(&steering));
 
+    // Once per turn, not once per step: the graph holds the system prompt for
+    // the whole run, and scanning the machine's desktop entries is file system
+    // work that would otherwise repeat at every round trip.
+    let system = format!(
+        "{PREAMBLE}{}{}{}{}",
+        installed_apps_section(),
+        crate::skills::render(&crate::skills::installed_skills()),
+        crate::routines::render(&crate::routines::installed()),
+        seat_section(),
+    );
     let (llm_call_hook, llm_response_hook) = inference_hooks(reporter, inference);
     let graph = create_react_agent_with_options(
         model,
         tools,
-        PREAMBLE,
+        system,
         AgentOptions {
             llm_call_hook: Some(llm_call_hook),
             llm_response_hook: Some(llm_response_hook),
@@ -1249,6 +1481,32 @@ fn registry(reporter: &Arc<Reporter>, request: &ChatRequest, settings: &Settings
             run: request.run,
             cancel: request.cancel.clone(),
         })
+        .register(RunRoutine {
+            reporter: Arc::clone(reporter),
+            run: request.run,
+            cancel: request.cancel.clone(),
+            screen: request.screen,
+        })
+}
+
+/// What the model is told about the seat, when the seat is not ours.
+///
+/// The machine has somebody at it, so a run does not raise windows or type
+/// into them (`neo_ax::seat`). That changes which tool does the work, not
+/// whether the work is possible — and a model that is not told will spend its
+/// budget re-trying an `app` goal that is refused every time, which is
+/// exactly what the first run after the policy landed did.
+fn seat_section() -> String {
+    if neo_ax::may_take_seat() {
+        return String::new();
+    }
+    "\n\nSomebody is using this machine, so you do not take the pointer, the \
+     keyboard or the focused window. You can still read any application and \
+     press its controls in place. What you cannot do is type into one: a goal \
+     that needs text typed into an application will be refused. Do that work \
+     through a `routine` instead — an application that ships one can be told \
+     to act through its own control channel, which needs none of those things."
+        .to_owned()
 }
 
 /// What one model round trip cost, to this turn's tally and to its trace.
@@ -2924,5 +3182,70 @@ mod tests {
             "got {error}"
         );
         assert!(!error.is_cancelled());
+    }
+
+    /// A machine with applications on it names them, id and all: the id is
+    /// the half the model has to produce to reach the `app` tool, so a
+    /// section that listed only human names would leave the guess it is
+    /// there to prevent (A23).
+    #[test]
+    fn the_inventory_section_names_an_app_by_its_id() {
+        let apps = vec![InstalledApp {
+            id: "dev.degenpaint.studio".to_owned(),
+            name: "degen-paint Studio".to_owned(),
+            path: std::path::PathBuf::from("/usr/share/applications/dev.degenpaint.studio.desktop"),
+        }];
+
+        let section = render_installed_apps(&apps);
+        assert!(
+            section.contains("degen-paint Studio (dev.degenpaint.studio)"),
+            "got {section}"
+        );
+    }
+
+    /// A machine with no backend — no desktop entries, no bundles — adds
+    /// nothing to the prompt. A bare heading would read as "there are none",
+    /// which is a stronger claim than the empty inventory supports.
+    #[test]
+    fn an_empty_inventory_adds_nothing_to_the_prompt() {
+        assert_eq!(render_installed_apps(&[]), "");
+    }
+
+    /// The one application the user installed themselves survives a machine
+    /// full of distribution entries.
+    ///
+    /// This is the bug the cut had when it took the inventory's own order:
+    /// that order is byte order, so a lowercase name sorts behind every
+    /// capitalised one, and `degen-paint Studio` — the application the
+    /// failing task named — fell off the end of a 40-entry list on a machine
+    /// that had it installed.
+    #[test]
+    fn a_users_own_app_outranks_the_distributions() {
+        let mut apps: Vec<InstalledApp> = (0..APP_LIMIT + 10)
+            .map(|nth| InstalledApp {
+                id: format!("org.distro.App{nth:03}"),
+                name: format!("App {nth:03}"),
+                path: PathBuf::from(format!("/usr/share/applications/app{nth:03}.desktop")),
+            })
+            .collect();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        apps.push(InstalledApp {
+            id: "dev.degenpaint.studio".to_owned(),
+            name: "degen-paint Studio".to_owned(),
+            path: home.join(".local/share/applications/dev.degenpaint.studio.desktop"),
+        });
+
+        let section = render_installed_apps(&apps);
+        assert!(section.contains("dev.degenpaint.studio"), "got {section}");
+        assert!(section.contains("list is partial"), "got {section}");
+    }
+
+    /// The preamble no longer asserts a platform (P16). The list of what is
+    /// here is appended, so the constant itself must stay neutral.
+    #[test]
+    fn the_preamble_names_no_platform() {
+        assert!(!PREAMBLE.contains("Mac"), "got {PREAMBLE}");
     }
 }

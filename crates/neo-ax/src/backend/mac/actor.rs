@@ -792,16 +792,21 @@ impl Actor {
                 now: live_role,
             });
         }
-        if live.label() != observed.label {
+        let live_label = live.label();
+        if !crate::raw::label_matches(&observed.label, &live_label) {
             return Freshness::Stale(StaleReason::LabelChanged {
                 was: observed.label.clone(),
-                now: live.label(),
+                now: live_label,
             });
         }
         if !live.enabled {
             return Freshness::Stale(StaleReason::Disabled);
         }
-        if guard.frame.moved_more_than_itself(&live.frame) {
+        // A row the table never measured cannot have moved: a menu leaf is
+        // read without opening its menu, so it carries no rect, and
+        // comparing a live on-screen rect against that placeholder reports
+        // every menu item as moved.
+        if !guard.frame.is_unmeasured() && guard.frame.moved_more_than_itself(&live.frame) {
             return Freshness::Stale(StaleReason::Moved);
         }
 

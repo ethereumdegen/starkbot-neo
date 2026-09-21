@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use jev_nav::BlockReason;
 use jev_nav::ax::AxObserver;
 use jev_nav::{Approval, Navigator, Outcome, RunConfig};
 use neo_ax::{AppSel, AxHandle};
@@ -266,6 +267,10 @@ pub struct BrowserOptions {
     /// cannot see is a browser they cannot sign into, and then everything
     /// behind a login is unreachable (16 §0, B4).
     pub headless: bool,
+    /// Drive a directory that dies with the run: the eval and CI shape, where
+    /// nobody signs in and nothing should be left behind. Never inferred from
+    /// `headless` — see [`throwaway`].
+    pub throwaway: bool,
     /// A profile directory to use instead of the app's own. `None` is the
     /// managed profile under the data directory — the one the user's logins
     /// live in — unless `headless` asked for a throwaway.
@@ -308,7 +313,16 @@ impl BrowserOptions {
         Self {
             url: url.into(),
             goal: goal.into(),
-            headless: false,
+            // A browser window is a window: mapping one puts it in front of
+            // whatever the person at the machine was looking at, and on a
+            // compositor that warps on focus it takes their cursor too. So
+            // an unattended run is headless exactly when the seat is not
+            // ours (P17). CDP drives a headless Chrome identically — the
+            // navigator never looked at pixels (P10).
+            headless: !neo_ax::may_take_seat(),
+            // The managed profile, kept: this is the user's own Chrome and
+            // their logins live in it (B4).
+            throwaway: false,
             profile: None,
             attach: Vec::new(),
             safety_heads: true,
@@ -909,12 +923,15 @@ fn median(sorted: &[u128]) -> u128 {
 
 /// Does this run drive a directory that dies with it?
 ///
-/// Only a headless run that named no profile. That is the unattended shape —
-/// eval, CI — where there is nobody to sign in and nothing should be left
-/// behind. A headless run that *was* given a profile is the opposite case:
-/// somebody signed into that profile by hand and wants it used.
+/// Asked of the run, not inferred from it. This used to read "headless and
+/// named no profile", which was a fair reading while headless meant *eval or
+/// CI* — nobody to sign in, nothing worth keeping. P17 made headless the
+/// ordinary shape, because a browser window is a window and a run does not
+/// put one in front of the person at the machine. Left inferred, every
+/// ordinary run would have thrown its profile away and signed the user out of
+/// every site, which is the exact regression B4 fixed.
 fn throwaway(options: &BrowserOptions) -> bool {
-    options.profile.is_none() && options.headless
+    options.throwaway && options.profile.is_none()
 }
 
 /// Which directory a browser run drives.
@@ -1158,6 +1175,16 @@ fn observe(outcome: &Outcome, steps: usize, ended_at: Option<&str>, text: Option
             "Waiting for you after {steps} action(s): {}{where_it_ended}",
             reason.sentence()
         ),
+        // "Nothing here to act on" is not a failure when the goal was to
+        // read: the page loaded, its text is right below, and the caller has
+        // what it asked for. Leading with "Blocked" taught runs that
+        // `browse` does not work for looking something up, and they stopped
+        // looking — which is how a logo got invented instead of matched.
+        Outcome::Blocked {
+            reason: BlockReason::NoOperation | BlockReason::NoAction,
+        } if steps == 0 && text.is_some_and(|text| !text.trim().is_empty()) => {
+            format!("Read the page; there was nothing on it to act on{where_it_ended}")
+        }
         Outcome::Blocked { reason } => {
             format!("Blocked after {steps} action(s): {reason}{where_it_ended}")
         }
@@ -1460,13 +1487,19 @@ mod tests {
         );
     }
 
-    /// The default run is the user's own Chrome: headed, and on the profile
-    /// their logins live in. It used to be headless on a directory thrown
-    /// away at the end, which put every logged-in site out of reach (B4).
+    /// The default run is on the user's own Chrome profile — the one their
+    /// logins live in. It used to be a directory thrown away at the end,
+    /// which put every logged-in site out of reach (B4), and that is the part
+    /// this pins.
+    ///
+    /// Whether the window is *shown* is no longer part of it: P17 keeps a run
+    /// off the screen while somebody is using the machine, so headedness
+    /// follows the seat policy rather than being a constant. The profile does
+    /// not — a headless run on the managed profile is still signed in.
     #[test]
     fn the_default_browser_run_is_the_users_own_chrome() {
         let options = BrowserOptions::unattended(&settings(), "https://example.com", "read it");
-        assert!(!options.headless);
+        assert_eq!(options.headless, !neo_ax::may_take_seat());
         assert_eq!(
             options.profile, None,
             "no profile means the managed one, not a throwaway"
@@ -1481,14 +1514,24 @@ mod tests {
         assert!(AppOptions::unattended(&settings(), "TextEdit", "type").safety_heads);
     }
 
-    /// `--headless` is the eval and CI opt-in, and it has to leave nothing
-    /// behind — but only when it was not also handed a profile. A headless
-    /// run on a profile somebody signed into by hand must use that profile,
-    /// not silently throw it away.
+    /// A throwaway is the eval and CI opt-in, and it has to leave nothing
+    /// behind — but only when it was not also handed a profile. A run on a
+    /// profile somebody signed into by hand must use that profile, not
+    /// silently throw it away.
+    ///
+    /// Asked for explicitly rather than read off `headless`, which since P17
+    /// is how nearly every run goes and says nothing about whether its
+    /// profile is worth keeping.
     #[test]
-    fn headless_is_a_throwaway_only_when_no_profile_was_named() {
+    fn a_throwaway_is_asked_for_and_only_honoured_without_a_profile() {
         let mut options = BrowserOptions::unattended(&settings(), "https://example.com", "read");
         options.headless = true;
+        assert!(
+            !throwaway(&options),
+            "headless alone must not discard the managed profile"
+        );
+
+        options.throwaway = true;
         assert!(throwaway(&options));
         assert_eq!(
             profile_of(Path::new("/data"), &options, Some(Path::new("/tmp/t1"))),

@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::apps::{self, App};
 use crate::cases::{self, Case};
-use crate::{NeoAgent, NeoJudge};
+use crate::{JevJudge, NeoAgent};
 
 /// One case may drive an app through several navigator steps, each a Jev round
 /// trip; three minutes is generous but finite.
@@ -60,6 +60,10 @@ pub enum EvalError {
     /// failure, which is a lie about the agent.
     #[error("the eval needs a working inference connection: {detail} ({fix})")]
     NoInference { detail: String, fix: String },
+    /// The judge is Jev (A6). Without its key every case would come back
+    /// ungraded, which says nothing about the agent either.
+    #[error("the eval needs a TypeSafe key to grade with: {detail} ({fix})")]
+    NoJudge { detail: String, fix: String },
     /// Nothing matched, or everything that matched needs an app this machine
     /// does not have.
     #[error("no runnable cases matched — try `neo eval --list`")]
@@ -193,7 +197,7 @@ pub async fn run_suite(
     run: RunId,
     cancel: &CancellationToken,
 ) -> Result<SuiteReport, EvalError> {
-    require_inference(runtime)?;
+    require_connections(runtime)?;
 
     let planned = plan(&selection);
     if !planned.iter().any(|(_, skip)| skip.is_none()) {
@@ -223,7 +227,13 @@ pub async fn run_suite(
         cancel.clone(),
         Some(screen.scope()),
     ));
-    let judge: Arc<dyn Judge> = Arc::new(NeoJudge::new(Arc::clone(runtime)));
+    // `require_connections` already refused a missing key by name; this
+    // covers the rest of what reading a credential can fail on.
+    let judge: Arc<dyn Judge> =
+        Arc::new(JevJudge::new(runtime).map_err(|error| EvalError::NoJudge {
+            detail: error.to_string(),
+            fix: "`neo keys set typesafe`".to_owned(),
+        })?);
     let trace_dir = runtime.data_dir().join("eval-traces");
 
     execute(
@@ -253,24 +263,36 @@ fn plan(selection: &Selection) -> Vec<(Case, Option<String>)> {
         .collect()
 }
 
-/// An eval with no inference connection measures the connection, not the
-/// agent, so it refuses to start rather than reporting eight model failures.
-fn require_inference(runtime: &Arc<Runtime>) -> Result<(), EvalError> {
+/// The two credentials a graded run needs, from one doctor pass.
+///
+/// Inference drives the agent; Jev grades it (A6). An eval missing either
+/// measures the connection rather than the agent, so it refuses to start —
+/// and it refuses *before* the first case, because discovering it afterwards
+/// has already spent the expensive half of the run.
+fn require_connections(runtime: &Arc<Runtime>) -> Result<(), EvalError> {
     let doctor = tokio::task::block_in_place(|| runtime.doctor())?;
-    match doctor
-        .checks
-        .iter()
-        .find(|check| check.name == "inference" && check.health == neo_agent::doctor::Health::Fail)
-    {
-        Some(check) => Err(EvalError::NoInference {
-            detail: check.detail.clone(),
-            fix: check
-                .fix
-                .clone()
-                .unwrap_or_else(|| "see `neo doctor`".to_owned()),
-        }),
-        None => Ok(()),
+    let failed = |name: &str| {
+        doctor
+            .checks
+            .iter()
+            .find(|check| check.name == name && check.health == neo_agent::doctor::Health::Fail)
+            .map(|check| {
+                (
+                    check.detail.clone(),
+                    check
+                        .fix
+                        .clone()
+                        .unwrap_or_else(|| "see `neo doctor`".to_owned()),
+                )
+            })
+    };
+    if let Some((detail, fix)) = failed("inference") {
+        return Err(EvalError::NoInference { detail, fix });
     }
+    if let Some((detail, fix)) = failed("navigator (jev)") {
+        return Err(EvalError::NoJudge { detail, fix });
+    }
+    Ok(())
 }
 
 /// The run loop, over anything that implements `spice`'s agent trait.

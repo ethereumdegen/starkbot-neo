@@ -19,6 +19,10 @@ neo-ax.workspace = true
 # a probe cannot attach to the tab the navigator drove, so it opens one of its
 # own on the same origin.
 neo-cdp.workspace = true
+# The judge runs on TypeSafe's typed heads, the same client the navigator uses.
+jev-nav.workspace = true
+# The grounding probe reads degen-paint's read-only HTTP contract (A37).
+reqwest.workspace = true
 neo-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,5 +35,4 @@ tokio-util.workspace = true
 # The gated fixture test observes a review-set page through the same web
 # observer the navigator uses, which is how a case's target control is proven
 # reachable without spending a model turn on it.
-jev-nav.workspace = true
 tempfile.workspace = true

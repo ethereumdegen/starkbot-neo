@@ -175,6 +175,7 @@ impl<'a> Walker<'a> {
             // WebKitGTK `<input>` typeable at all — it implements no `EditableText`.
             focusable_text: shallow.states.contains(State::Focusable)
                 && shallow.interfaces.contains(Interface::Component),
+            selectable: shallow.states.contains(State::Selectable),
             options: Vec::new(),
             children: Vec::new(),
         }
@@ -623,27 +624,54 @@ fn apply_tree(node: &mut RawNode, extras: &mut HashMap<u32, Extras>) {
     }
 }
 
+/// The labels of whichever children of `node` are choices.
+fn option_labels(node: &RawNode) -> Vec<String> {
+    node.children
+        .iter()
+        .filter(|child| {
+            matches!(
+                child.role.as_str(),
+                "AXRadioButton" | "AXRow" | "AXMenuItem" | "AXCell"
+            )
+        })
+        .map(RawNode::label)
+        .filter(|label| !label.is_empty())
+        .collect()
+}
+
 /// Fill `options` for the controls whose choices are already on the tree.
 ///
 /// `mapping::operations` offers SELECT only when the choices are known, and
 /// AT-SPI publishes a tab strip's tabs and an open combo box's items as
 /// ordinary children, so they cost nothing extra.
+///
+/// A combo box built the ARIA way keeps its list *beside* it rather than
+/// inside it — `<input role="combobox">` and `<ul role="listbox">` are
+/// siblings joined by `aria-controls`, which is what a web app almost always
+/// produces. Reading only children left such a control with no options, so
+/// SELECT was never offered and the filtered list was unreachable: measured
+/// on degen-paint Studio's command palette, where Jev could see the one op it
+/// wanted and had no operation that would take it.
 fn fill_options(node: &mut RawNode) {
     if matches!(node.role.as_str(), "AXTabGroup" | "AXComboBox" | "AXList") {
-        node.options = node
-            .children
-            .iter()
-            .filter(|child| {
-                matches!(
-                    child.role.as_str(),
-                    "AXRadioButton" | "AXRow" | "AXMenuItem" | "AXCell"
-                )
-            })
-            .map(RawNode::label)
-            .filter(|label| !label.is_empty())
-            .collect();
+        node.options = option_labels(node);
     }
     for child in &mut node.children {
         fill_options(child);
+    }
+    // After the recursion, so a combo box that found its own children keeps
+    // them and only an empty one borrows.
+    let beside: Vec<String> = node
+        .children
+        .iter()
+        .filter(|child| child.role == "AXList")
+        .flat_map(option_labels)
+        .collect();
+    if !beside.is_empty() {
+        for child in &mut node.children {
+            if child.role == "AXComboBox" && child.options.is_empty() {
+                child.options.clone_from(&beside);
+            }
+        }
     }
 }

@@ -63,6 +63,18 @@ impl Rect {
         let dy = (self.y - other.y).abs();
         dx > self.w.max(1.0) || dy > self.h.max(1.0)
     }
+
+    /// True when the table never measured this rectangle.
+    ///
+    /// A menu leaf is read without opening its menu, so it has no on-screen
+    /// position and is recorded as [`Rect::default`]. That is not a position
+    /// at the origin, and treating it as one makes every geometry check
+    /// answer nonsense: [`Self::moved_more_than_itself`] reads a live rect
+    /// anywhere on screen as "moved", which blocked every menu action.
+    #[must_use]
+    pub fn is_unmeasured(&self) -> bool {
+        !self.is_visible_size()
+    }
 }
 
 /// A running application, as far as the actor is concerned.

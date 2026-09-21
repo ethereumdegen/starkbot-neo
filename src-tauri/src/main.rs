@@ -13,6 +13,7 @@
 
 mod bindings;
 mod commands;
+mod control;
 mod error;
 mod events;
 mod state;
@@ -45,6 +46,11 @@ fn main() -> std::process::ExitCode {
         }
     };
     eprintln!("neo-desktop: runtime open at {}", data_dir.display());
+    // Derived once, from the directory the runtime was opened on: a
+    // `--data-dir` window and the default one are different agents, and each
+    // must answer on its own socket.
+    let socket = neo_core::paths::control_socket(&data_dir);
+    let listen_on = socket.clone();
 
     let app = tauri::Builder::default()
         .manage(desktop)
@@ -76,6 +82,7 @@ fn main() -> std::process::ExitCode {
             commands::list_conversations,
             commands::new_conversation,
             commands::rename_conversation,
+            commands::delete_conversation,
             commands::load_thread,
             commands::send_message,
             commands::steer_run,
@@ -88,10 +95,12 @@ fn main() -> std::process::ExitCode {
             commands::list_eval_cases,
             commands::run_eval,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Subscribed before the window can invoke anything, so the first
             // turn a screen starts cannot outrun the stream that reports it.
-            let runtime = tauri::Manager::state::<Desktop>(app).runtime();
+            let desktop = tauri::Manager::state::<Desktop>(app);
+            let runtime = desktop.runtime();
+            let runs = desktop.runs();
             let scheduler = runtime.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = scheduler.start_heartbeat_scheduler().await {
@@ -99,11 +108,28 @@ fn main() -> std::process::ExitCode {
                 }
             });
             events::forward(app.handle().clone(), &runtime);
+            // Last, so a turn a control message starts already has a stream
+            // carrying it to the window. On the app's own async runtime: the
+            // turns it spawns must outlive the connections that asked for
+            // them, and end with the window.
+            let control = control::serve(listen_on, runtime, runs);
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = control.await {
+                    eprintln!(
+                        "neo-desktop: no control socket, so `neo say` cannot reach this window: {error}"
+                    );
+                }
+            });
             eprintln!("neo-desktop: window `main` created");
             Ok(())
         })
         .run(tauri::generate_context!());
 
+    // The door closes with the window. Left behind, the file would have the
+    // next process treat it as a crash's leavings — which works, but only
+    // because it probes first; removing it here is what keeps that path
+    // exceptional.
+    let _ = std::fs::remove_file(&socket);
     // The window is closed and the last screen's spans are still in the
     // queue; the desktop has a runtime to wait on, so it waits.
     tauri::async_runtime::block_on(neo_otel::shutdown());

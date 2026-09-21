@@ -35,6 +35,9 @@ pub(crate) struct DesktopEntry {
     /// `Terminal=true`: the entry wants a terminal emulator, which this
     /// crate will not open (P3).
     pub terminal: bool,
+    /// The `.desktop` file this was read from, for an inventory row that
+    /// says where the answer came from.
+    pub path: PathBuf,
 }
 
 /// Every directory XDG says desktop entries live in, most specific first.
@@ -91,6 +94,7 @@ fn parse_entry(path: &Path) -> Option<DesktopEntry> {
         name: name.unwrap_or_else(|| id.clone()),
         exec: exec?,
         terminal,
+        path: path.to_path_buf(),
         id,
     })
 }
