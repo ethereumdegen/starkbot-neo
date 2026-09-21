@@ -22,6 +22,10 @@ use tokio_tungstenite::tungstenite::Message;
 
 pub const DEFAULT_CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
+/// Where Chrome publishes the debugging endpoint of a profile it is running.
+/// Written on startup, removed on a clean exit.
+const PORT_FILE: &str = "DevToolsActivePort";
+
 #[derive(Debug, thiserror::Error)]
 pub enum CdpError {
     #[error("chrome did not start: {0}")]
@@ -46,6 +50,16 @@ pub enum DebugTransport {
     WebSocket,
 }
 
+/// How a [`Browser`] handle came to exist, which is the difference between a
+/// cold start and a warm one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A Chrome was already running on this profile and was joined.
+    Attached,
+    /// No Chrome was running on this profile, so one was started.
+    Launched,
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub chrome: PathBuf,
@@ -53,16 +67,47 @@ pub struct LaunchOptions {
     pub headless: bool,
     pub window: (u32, u32),
     pub transport: DebugTransport,
+    /// Leave Chrome running when the handle drops.
+    ///
+    /// The managed profile holds the user's logins, and a run that killed it
+    /// on the way out would make the next run cold and the sign-in
+    /// pointless (10 §10). A throwaway profile is the opposite: its Chrome
+    /// must die with the run, or it outlives the directory it is reading.
+    pub keep_alive: bool,
 }
 
 impl LaunchOptions {
+    /// The managed Chrome: headed, persistent, and reachable again next run.
+    ///
+    /// Headed because the whole point of a profile that survives is that the
+    /// user signs into their accounts in it by hand; a headless default
+    /// makes everything behind a login unreachable. The WebSocket transport
+    /// is what makes the *next* process able to find this Chrome at all: a
+    /// debugging pipe belongs to the process that spawned it, so a pipe
+    /// launch on a shared profile can only ever be relaunched, never joined.
     pub fn new(profile_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            chrome: PathBuf::from(DEFAULT_CHROME),
+            profile_dir: profile_dir.into(),
+            headless: false,
+            window: (1120, 780),
+            transport: DebugTransport::WebSocket,
+            keep_alive: true,
+        }
+    }
+
+    /// A Chrome that belongs to one run: headless, driven over a private
+    /// pipe no other process can reach, and killed when the handle drops.
+    /// What an eval suite or CI wants, where there is nobody to sign in and
+    /// nothing should be left behind.
+    pub fn ephemeral(profile_dir: impl Into<PathBuf>) -> Self {
         Self {
             chrome: PathBuf::from(DEFAULT_CHROME),
             profile_dir: profile_dir.into(),
             headless: true,
             window: (1120, 780),
             transport: DebugTransport::Pipe,
+            keep_alive: false,
         }
     }
 }
@@ -78,13 +123,40 @@ struct Inner {
     calls: AtomicU64,
 }
 
-/// A running Chrome plus the browser-level connection. Dropping it kills Chrome.
+/// A running Chrome plus the browser-level connection.
+///
+/// Dropping it kills a Chrome this handle launched to own; a `keep_alive`
+/// launch and an attach both leave the browser running, because the profile
+/// they are driving outlives the run (10 §10).
 pub struct Browser {
     inner: Arc<Inner>,
     child: Option<Child>,
 }
 
 impl Browser {
+    /// The managed Chrome for `options.profile_dir`: the one already running
+    /// on that profile when there is one, otherwise a newly launched one.
+    ///
+    /// A profile directory is single-writer state — a second Chrome on it
+    /// either refuses to start or fights the first for the session, and the
+    /// user's logins live in it — so a run joins what is there instead of
+    /// starting a rival. Chrome publishes the endpoint in [`PORT_FILE`] and
+    /// removes it on a clean exit; a file a crash left behind simply fails to
+    /// connect, and the launch below rewrites it.
+    pub async fn attach_or_launch(options: &LaunchOptions) -> Result<(Self, Start)> {
+        // A pipe launch is private to the process that spawned it: there is
+        // no endpoint for anyone else to find, so there is nothing to join.
+        if options.transport == DebugTransport::WebSocket
+            && let Some(endpoint) = read_endpoint(&options.profile_dir.join(PORT_FILE))
+            && let Ok(browser) = Self::connect(&endpoint).await
+        {
+            return Ok((browser, Start::Attached));
+        }
+        Self::launch(options)
+            .await
+            .map(|browser| (browser, Start::Launched))
+    }
+
     pub async fn launch(options: &LaunchOptions) -> Result<Self> {
         std::fs::create_dir_all(&options.profile_dir)
             .map_err(|e| CdpError::Launch(e.to_string()))?;
@@ -103,7 +175,7 @@ impl Browser {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .kill_on_drop(!options.keep_alive);
         if options.headless {
             command.arg("--headless=new");
         }
@@ -136,11 +208,11 @@ impl Browser {
                 let parent_output: OwnedFd = parent_output.into();
                 let mut browser =
                     Self::connect_pipe(File::from(parent_input), File::from(parent_output));
-                browser.child = Some(child);
+                browser.child = keep(child, options);
                 Ok(browser)
             }
             DebugTransport::WebSocket => {
-                let port_file = options.profile_dir.join("DevToolsActivePort");
+                let port_file = options.profile_dir.join(PORT_FILE);
                 let _ = std::fs::remove_file(&port_file);
                 command.arg("--remote-debugging-port=0");
                 let child = command
@@ -148,7 +220,7 @@ impl Browser {
                     .map_err(|e| CdpError::Launch(e.to_string()))?;
                 let endpoint = wait_for_endpoint(&port_file, Duration::from_secs(20)).await?;
                 let mut browser = Self::connect(&endpoint).await?;
-                browser.child = Some(child);
+                browser.child = keep(child, options);
                 Ok(browser)
             }
         }
@@ -251,12 +323,34 @@ impl Browser {
         Ok(page)
     }
 
+    /// Close one target, by the id the caller got when it opened it.
+    ///
+    /// The bot works only in tabs it opened (10 §10), so this is never
+    /// reached with an id the caller did not create. An id Chrome no longer
+    /// knows — a tab the user closed, or a browser that restarted since —
+    /// answers with a protocol error, which is a fact, not a failure.
+    pub async fn close_target(&self, target_id: &str) -> Result<()> {
+        self.call("Target.closeTarget", json!({ "targetId": target_id }))
+            .await
+            .map(drop)
+    }
+
     pub async fn close(mut self) {
         let _ = self.call("Browser.close", json!({})).await;
         if let Some(mut child) = self.child.take() {
             let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
         }
     }
+}
+
+/// The child handle a launch keeps, if any.
+///
+/// A `keep_alive` Chrome must outlive this process, so its handle is dropped
+/// rather than stored: `kill_on_drop` is already off, and letting tokio's
+/// orphan reaper take the handle means a browser the user later quits does
+/// not sit in the process table until we exit.
+fn keep(child: Child, options: &LaunchOptions) -> Option<Child> {
+    (!options.keep_alive).then_some(child)
 }
 
 fn new_inner() -> (Arc<Inner>, mpsc::UnboundedReceiver<String>) {
@@ -354,15 +448,28 @@ async fn attach_page(inner: Arc<Inner>, target_id: String) -> Result<Page> {
 async fn wait_for_endpoint(port_file: &Path, limit: Duration) -> Result<String> {
     let started = Instant::now();
     while started.elapsed() < limit {
-        if let Ok(text) = std::fs::read_to_string(port_file) {
-            let mut lines = text.lines();
-            if let (Some(port), Some(path)) = (lines.next(), lines.next()) {
-                return Ok(format!("ws://127.0.0.1:{port}{path}"));
-            }
+        if let Some(endpoint) = read_endpoint(port_file) {
+            return Ok(endpoint);
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     Err(CdpError::Launch("DevToolsActivePort never appeared".into()))
+}
+
+/// The endpoint a running Chrome published for its profile, if one is there.
+fn read_endpoint(port_file: &Path) -> Option<String> {
+    endpoint_in(&std::fs::read_to_string(port_file).ok()?)
+}
+
+/// `DevToolsActivePort` is two lines: the port, then the browser's WebSocket
+/// path. Both are checked because this file is read while Chrome is still
+/// writing it — a half-written file is a browser that is not up yet, not an
+/// endpoint to connect to.
+fn endpoint_in(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let path = lines.next()?.trim();
+    (port != 0 && path.starts_with('/')).then(|| format!("ws://127.0.0.1:{port}{path}"))
 }
 
 #[derive(Debug, Clone)]
@@ -841,5 +948,78 @@ impl Page {
         )
         .await
         .map(drop)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // A failed `expect` in a test is the test failing, which is the point.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    /// The default used to be headless on a directory the caller threw away,
+    /// which put everything behind a login out of reach (16 §0, B4). Headed,
+    /// kept alive, and over the transport a *later* process can find again
+    /// are the three halves of "Stark's Chrome" — miss any one and the
+    /// user's sign-in does not survive to the next run.
+    #[test]
+    fn the_default_chrome_is_headed_persistent_and_joinable() {
+        let options = LaunchOptions::new("/tmp/starkbot-neo/chrome");
+        assert!(!options.headless);
+        assert!(options.keep_alive);
+        assert_eq!(options.transport, DebugTransport::WebSocket);
+    }
+
+    /// The opt-in for eval and CI: nobody to sign in, nothing left behind,
+    /// and no endpoint on the machine for anything else to drive.
+    #[test]
+    fn an_ephemeral_chrome_leaves_nothing_behind() {
+        let options = LaunchOptions::ephemeral("/tmp/throwaway");
+        assert!(options.headless);
+        assert!(!options.keep_alive);
+        assert_eq!(options.transport, DebugTransport::Pipe);
+    }
+
+    /// This file is read while Chrome is still writing it, and a run that
+    /// connected to `ws://127.0.0.1:` plus half a path would report a
+    /// browser failure for a browser that was merely still starting.
+    #[test]
+    fn only_a_complete_port_file_is_an_endpoint() {
+        assert_eq!(
+            endpoint_in("51234\n/devtools/browser/abc\n").as_deref(),
+            Some("ws://127.0.0.1:51234/devtools/browser/abc")
+        );
+        assert_eq!(endpoint_in("51234"), None, "the path line is missing");
+        assert_eq!(endpoint_in("51234\ndevtools\n"), None, "not a path");
+        assert_eq!(endpoint_in("\n/devtools/browser/abc\n"), None, "no port");
+        assert_eq!(endpoint_in(""), None);
+    }
+
+    /// A `DevToolsActivePort` left behind by a crashed Chrome must not stop
+    /// the next run: nothing answers on that port, so the attach fails and
+    /// the launch happens. Proven by the launch being the thing that fails —
+    /// the binary does not exist — rather than the attach.
+    #[tokio::test]
+    async fn a_stale_endpoint_falls_through_to_a_launch() {
+        let profile = tempfile::tempdir().expect("a temporary profile");
+        // A port nothing is listening on: bound to learn the number, then
+        // dropped. Asking the OS beats picking one and hoping.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let port = closed.local_addr().expect("the bound address").port();
+        drop(closed);
+        std::fs::write(
+            profile.path().join(PORT_FILE),
+            format!("{port}\n/devtools/browser/stale\n"),
+        )
+        .expect("the port file is written");
+
+        let mut options = LaunchOptions::new(profile.path());
+        options.chrome = PathBuf::from("/nonexistent/Google Chrome");
+        match Browser::attach_or_launch(&options).await {
+            Err(CdpError::Launch(_)) => (),
+            Err(other) => panic!("{other}"),
+            Ok(_) => panic!("nothing was listening, and there is no Chrome to launch"),
+        }
     }
 }

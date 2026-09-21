@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Profile card — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Profile card</h1>
+<p>The display-name field lives inside an open shadow root, so reaching it
+needs a snapshot that pierces shadow boundaries.</p>
+<profile-card></profile-card>
+<p id="status" aria-live="polite">No display name stored.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+customElements.define('profile-card',class extends HTMLElement{constructor(){super();
+ const root=this.attachShadow({mode:'open'});
+ root.innerHTML=`<label for="display">Display name</label>
+  <input id="display" type="text" autocomplete="off">
+  <button id="store">Store display name</button><output id="echo"></output>`;
+ root.getElementById('store').onclick=()=>{
+   const value=root.getElementById('display').value.trim();
+   root.getElementById('echo').value=value;
+   record('display_name',value);
+   q('status').textContent=`Display name stored: ${value||'(empty)'}.`;
+ };
+}});
+</script></body></html>

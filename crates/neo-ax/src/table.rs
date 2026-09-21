@@ -3,6 +3,13 @@
 //! Everything here is a pure function of a `RawNode` tree plus the menu-bar
 //! leaves, so the whole of `plans/01-accessibility.md` §Element table is
 //! testable with no Mac UI.
+//!
+//! Off macOS nothing calls it — the walker that produces `RawNode`s is
+//! `cfg(target_os = "macos")` — and it stays compiled anyway for the same
+//! reason it is pure: its tests are the executable form of 01 §Element
+//! table, and they are worth running on every lane, not only the one that
+//! can open a window.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::mapping::{
     carries_text, display_role, is_busy, is_decoration, is_modal, is_table_worthy, is_tunnel,
@@ -85,7 +92,11 @@ pub(crate) fn build_table(input: TableInput<'_>) -> BuiltTable {
         None => (input.window, false),
     };
 
-    let window_frame = if root.frame.is_visible_size() { root.frame } else { input.window.frame };
+    let window_frame = if root.frame.is_visible_size() {
+        root.frame
+    } else {
+        input.window.frame
+    };
 
     let mut candidates: Vec<Candidate<'_>> = Vec::new();
     let mut text = String::new();
@@ -122,15 +133,16 @@ pub(crate) fn build_table(input: TableInput<'_>) -> BuiltTable {
     let menu_ranked = rank_menu(input.menu, input.goal);
     let window_cap = WINDOW_CAP.max(MAX_ELEMENTS.saturating_sub(menu_ranked.len()));
     let window_take = ordered.len().min(window_cap);
-    let menu_cap = MAX_ELEMENTS.saturating_sub(window_take).max(if menu_ranked.is_empty() {
-        0
-    } else {
-        MENU_MIN.min(menu_ranked.len())
-    });
+    let menu_cap = MAX_ELEMENTS
+        .saturating_sub(window_take)
+        .max(if menu_ranked.is_empty() {
+            0
+        } else {
+            MENU_MIN.min(menu_ranked.len())
+        });
     let menu_take = menu_ranked.len().min(menu_cap);
 
-    let truncated =
-        text_truncated || offered > window_take || menu_ranked.len() > menu_take;
+    let truncated = text_truncated || offered > window_take || menu_ranked.len() > menu_take;
 
     let mut elements = Vec::with_capacity(window_take + menu_take);
     let mut raw_ids = Vec::with_capacity(window_take + menu_take);
@@ -148,7 +160,10 @@ pub(crate) fn build_table(input: TableInput<'_>) -> BuiltTable {
             container: candidate.container.clone(),
             operations: operations(node, false),
             options: node.options.clone(),
-            r: Ref { generation: input.generation, index },
+            r: Ref {
+                generation: input.generation,
+                index,
+            },
             frame: node.frame,
         });
         raw_ids.push(node.id);
@@ -169,11 +184,21 @@ pub(crate) fn build_table(input: TableInput<'_>) -> BuiltTable {
             role: "menuitem".to_owned(),
             label: leaf.label(),
             value: leaf.shortcut.clone(),
-            state: crate::types::State { enabled: leaf.enabled, ..Default::default() },
+            state: crate::types::State {
+                enabled: leaf.enabled,
+                ..Default::default()
+            },
             container: Some("menu bar".to_owned()),
-            operations: if leaf.enabled { vec![Operation::Menu] } else { Vec::new() },
+            operations: if leaf.enabled {
+                vec![Operation::Menu]
+            } else {
+                Vec::new()
+            },
             options: Vec::new(),
-            r: Ref { generation: input.generation, index },
+            r: Ref {
+                generation: input.generation,
+                index,
+            },
             frame: Rect::default(),
         });
         raw_ids.push(leaf.id);
@@ -349,7 +374,11 @@ fn container_label(node: &RawNode, inherited: &Option<String>) -> Option<String>
     if label.is_empty() && matches!(node.role.as_str(), "AXGroup" | "AXScrollArea") {
         return inherited.clone();
     }
-    Some(if label.is_empty() { role } else { format!("{role} {label}") })
+    Some(if label.is_empty() {
+        role
+    } else {
+        format!("{role} {label}")
+    })
 }
 
 /// The text a node contributes to the observation's `text`.
@@ -443,7 +472,10 @@ fn rank_menu<'a>(menu: &'a [MenuLeaf], goal: Option<&str>) -> Vec<&'a MenuLeaf> 
             .filter(|w| !w.is_empty())
             .map(str::to_lowercase)
             .collect();
-        tokens.iter().filter(|t| words.iter().any(|w| w == *t)).count()
+        tokens
+            .iter()
+            .filter(|t| words.iter().any(|w| w == *t))
+            .count()
     };
     // Stable sort: equal scores keep menu order.
     ranked.sort_by_key(|leaf| std::cmp::Reverse(score(leaf)));
@@ -466,7 +498,11 @@ pub(crate) fn scroll_affordance(root: &RawNode) -> ScrollAffordance {
         if node.frame.h <= node.frame.w {
             return;
         }
-        let Some(value) = node.value.as_deref().and_then(|v| v.trim().parse::<f64>().ok()) else {
+        let Some(value) = node
+            .value
+            .as_deref()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+        else {
             return;
         };
         if best.is_none_or(|(h, _)| node.frame.h > h) {
@@ -474,13 +510,13 @@ pub(crate) fn scroll_affordance(root: &RawNode) -> ScrollAffordance {
         }
     });
     match best {
-        Some((_, value)) => {
-            ScrollAffordance { up: value > 0.005, down: value < 0.995 }
-        }
+        Some((_, value)) => ScrollAffordance {
+            up: value > 0.005,
+            down: value < 0.995,
+        },
         None => ScrollAffordance::default(),
     }
 }
-
 
 /// Keep the window budget diverse: no single kind of control may consume it.
 ///
@@ -577,7 +613,12 @@ mod tests {
     use crate::types::Operation;
 
     fn frame(x: f64, y: f64) -> Rect {
-        Rect { x, y, w: 40.0, h: 20.0 }
+        Rect {
+            x,
+            y,
+            w: 40.0,
+            h: 20.0,
+        }
     }
 
     fn app() -> AppInfo {
@@ -592,7 +633,12 @@ mod tests {
     fn window(children: Vec<RawNode>) -> RawNode {
         let mut w = RawNode::new(0, "AXWindow");
         w.title = Some("Untitled".into());
-        w.frame = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
+        w.frame = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 800.0,
+        };
         w.children = children;
         w
     }
@@ -622,15 +668,29 @@ mod tests {
     fn a_modal_sheet_replaces_the_windows_elements() {
         let mut sheet = RawNode::new(100, "AXSheet");
         sheet.title = Some("Discard draft?".into());
-        sheet.frame = Rect { x: 100.0, y: 100.0, w: 400.0, h: 200.0 };
+        sheet.frame = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 400.0,
+            h: 200.0,
+        };
         sheet.children = vec![button(101, "Don't Save", 120.0, 220.0)];
 
         let win = window(vec![button(1, "Send", 10.0, 10.0), sheet]);
         let built = build(&win, &[]);
 
         assert!(built.table.window.modal);
-        let labels: Vec<&str> = built.table.elements.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels, vec!["Don't Save"], "nothing behind a modal is offered");
+        let labels: Vec<&str> = built
+            .table
+            .elements
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Don't Save"],
+            "nothing behind a modal is offered"
+        );
         assert_eq!(built.table.window.title, "Untitled — Discard draft?");
         assert_eq!(
             built.table.elements[0].container.as_deref(),
@@ -766,7 +826,10 @@ mod tests {
         let win = window(vec![a, b]);
         let built = build(&win, &[]);
         assert_eq!(built.table.text, "First line\nSecond line");
-        assert!(built.table.elements.is_empty(), "static text is text, not an action");
+        assert!(
+            built.table.elements.is_empty(),
+            "static text is text, not an action"
+        );
     }
 
     #[test]
@@ -807,18 +870,31 @@ mod tests {
         assert_eq!(e.value, None);
         assert!(e.operations.is_empty());
         let json = serde_json::to_string(&built.table).unwrap();
-        assert!(!json.contains("hunter2"), "a secure value never leaves the crate");
+        assert!(
+            !json.contains("hunter2"),
+            "a secure value never leaves the crate"
+        );
     }
 
     #[test]
     fn on_screen_elements_come_before_off_screen_ones() {
         let visible = button(1, "Visible", 10.0, 10.0);
         let mut hidden = button(2, "Hidden", 10.0, 10.0);
-        hidden.frame = Rect { x: 5000.0, y: 5000.0, w: 40.0, h: 20.0 };
+        hidden.frame = Rect {
+            x: 5000.0,
+            y: 5000.0,
+            w: 40.0,
+            h: 20.0,
+        };
         // Off-screen child first in tree order.
         let win = window(vec![hidden, visible]);
         let built = build(&win, &[]);
-        let labels: Vec<&str> = built.table.elements.iter().map(|e| e.label.as_str()).collect();
+        let labels: Vec<&str> = built
+            .table
+            .elements
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["Visible", "Hidden"]);
     }
 
@@ -831,7 +907,12 @@ mod tests {
         collapsed.children = vec![button(2, "Inner", 10.0, 10.0)];
         let win = window(vec![collapsed]);
         let built = build(&win, &[]);
-        let labels: Vec<&str> = built.table.elements.iter().map(|e| e.label.as_str()).collect();
+        let labels: Vec<&str> = built
+            .table
+            .elements
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["Inner"]);
     }
 
@@ -840,13 +921,22 @@ mod tests {
         let mut deep = button(999, "Deep", 10.0, 10.0);
         for _ in 0..60 {
             let mut wrapper = RawNode::new(0, "AXGroup");
-            wrapper.frame = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+            wrapper.frame = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            };
             wrapper.children = vec![deep];
             deep = wrapper;
         }
         let win = window(vec![deep]);
         let built = build(&win, &[]);
-        assert_eq!(built.table.elements.len(), 1, "anonymous wrappers cost no depth");
+        assert_eq!(
+            built.table.elements.len(),
+            1,
+            "anonymous wrappers cost no depth"
+        );
         assert_eq!(built.table.elements[0].label, "Deep");
     }
 
@@ -856,7 +946,12 @@ mod tests {
         for i in 0..60 {
             let mut wrapper = RawNode::new(0, "AXGroup");
             wrapper.title = Some(format!("Named {i}"));
-            wrapper.frame = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+            wrapper.frame = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            };
             wrapper.children = vec![deep];
             deep = wrapper;
         }
@@ -872,11 +967,26 @@ mod tests {
     fn rows_are_numbered_in_the_container_label() {
         let mut table_node = RawNode::new(1, "AXTable");
         table_node.title = Some("Messages".into());
-        table_node.frame = Rect { x: 0.0, y: 0.0, w: 500.0, h: 400.0 };
+        table_node.frame = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 500.0,
+            h: 400.0,
+        };
         for i in 0..3u32 {
             let mut row = RawNode::new(10 + i, "AXRow");
-            row.frame = Rect { x: 0.0, y: f64::from(i) * 20.0, w: 500.0, h: 20.0 };
-            row.children = vec![button(20 + i, &format!("Open {i}"), 0.0, f64::from(i) * 20.0)];
+            row.frame = Rect {
+                x: 0.0,
+                y: f64::from(i) * 20.0,
+                w: 500.0,
+                h: 20.0,
+            };
+            row.children = vec![button(
+                20 + i,
+                &format!("Open {i}"),
+                0.0,
+                f64::from(i) * 20.0,
+            )];
             table_node.children.push(row);
         }
         let win = window(vec![table_node]);
@@ -888,7 +998,10 @@ mod tests {
             .filter(|e| e.label.starts_with("Open"))
             .map(|e| e.container.as_deref())
             .collect();
-        assert_eq!(containers, vec![Some("row 1"), Some("row 2"), Some("row 3")]);
+        assert_eq!(
+            containers,
+            vec![Some("row 1"), Some("row 2"), Some("row 3")]
+        );
     }
 
     #[test]
@@ -903,28 +1016,57 @@ mod tests {
             window: &win,
             menu: &[],
             goal: None,
-            scroll: ScrollAffordance { up: false, down: true },
+            scroll: ScrollAffordance {
+                up: false,
+                down: true,
+            },
             settle_timed_out: true,
             url: None,
         });
-        assert_eq!(scrolled.table.controls, vec![Control::ScrollDown, Control::Wait]);
+        assert_eq!(
+            scrolled.table.controls,
+            vec![Control::ScrollDown, Control::Wait]
+        );
     }
 
     #[test]
     fn scroll_controls_follow_the_vertical_scroll_bar() {
         let mut bar = RawNode::new(1, "AXScrollBar");
-        bar.frame = Rect { x: 400.0, y: 0.0, w: 15.0, h: 300.0 };
+        bar.frame = Rect {
+            x: 400.0,
+            y: 0.0,
+            w: 15.0,
+            h: 300.0,
+        };
         bar.value = Some("0".into());
         let win = window(vec![bar.clone()]);
-        assert_eq!(scroll_affordance(&win), ScrollAffordance { up: false, down: true });
+        assert_eq!(
+            scroll_affordance(&win),
+            ScrollAffordance {
+                up: false,
+                down: true
+            }
+        );
 
         bar.value = Some("1".into());
         let win = window(vec![bar.clone()]);
-        assert_eq!(scroll_affordance(&win), ScrollAffordance { up: true, down: false });
+        assert_eq!(
+            scroll_affordance(&win),
+            ScrollAffordance {
+                up: true,
+                down: false
+            }
+        );
 
         bar.value = Some("0.5".into());
         let win = window(vec![bar.clone()]);
-        assert_eq!(scroll_affordance(&win), ScrollAffordance { up: true, down: true });
+        assert_eq!(
+            scroll_affordance(&win),
+            ScrollAffordance {
+                up: true,
+                down: true
+            }
+        );
 
         // A disabled bar means the content fits: neither control is offered.
         bar.enabled = false;
@@ -933,13 +1075,21 @@ mod tests {
 
         // A horizontal bar never drives SCROLL_UP / SCROLL_DOWN.
         let mut horizontal = RawNode::new(2, "AXScrollBar");
-        horizontal.frame = Rect { x: 0.0, y: 300.0, w: 400.0, h: 15.0 };
+        horizontal.frame = Rect {
+            x: 0.0,
+            y: 300.0,
+            w: 400.0,
+            h: 15.0,
+        };
         horizontal.value = Some("0.5".into());
         let win = window(vec![horizontal]);
         assert_eq!(scroll_affordance(&win), ScrollAffordance::default());
 
         // No scroll bar at all.
-        assert_eq!(scroll_affordance(&window(vec![])), ScrollAffordance::default());
+        assert_eq!(
+            scroll_affordance(&window(vec![])),
+            ScrollAffordance::default()
+        );
     }
 
     #[test]
@@ -957,7 +1107,12 @@ mod tests {
         area.title = Some("Document".into());
         area.value = Some("the whole document body".into());
         area.settable_value = true;
-        area.frame = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        area.frame = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
 
         let mut secret = RawNode::new(2, "AXTextArea");
         secret.subrole = Some("AXSecureTextField".into());
@@ -1067,7 +1222,15 @@ mod tests {
         let win = window(vec![button(1, "Send", 10.0, 10.0)]);
         let built = build(&win, &[]);
         let json = serde_json::to_value(&built.table).unwrap();
-        for key in ["generation", "app", "window", "text", "elements", "controls", "truncated"] {
+        for key in [
+            "generation",
+            "app",
+            "window",
+            "text",
+            "elements",
+            "controls",
+            "truncated",
+        ] {
             assert!(json.get(key).is_some(), "missing key {key}");
         }
         let element = &json["elements"][0];

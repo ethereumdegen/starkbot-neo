@@ -136,6 +136,7 @@ impl CdpObserver {
         let mut frame_markers = Vec::new();
         let mut frame_text = Vec::new();
         let mut frame_guards = Vec::new();
+        let mut child_signals: std::collections::BTreeMap<String, u64> = Default::default();
         let mut omitted = root["omitted_actions"].as_u64().unwrap_or(0);
         let mut observed_frames = 0u64;
 
@@ -168,6 +169,13 @@ impl CdpObserver {
             };
             observed_frames += 1;
             omitted += child["omitted_actions"].as_u64().unwrap_or(0);
+            if let Some(signals) = child["signals"].as_object() {
+                for (name, count) in signals {
+                    if let Some(count) = count.as_u64() {
+                        *child_signals.entry(name.clone()).or_insert(0) += count;
+                    }
+                }
+            }
             frame_markers.push(json!([&frame.id, child["marker"].clone()]));
             if let Some(text) = child["text"].as_str() {
                 frame_text.push(text.to_owned());
@@ -239,6 +247,13 @@ impl CdpObserver {
         root["text"] = json!(text.chars().take(6000).collect::<String>());
         root["marker"] = json!([root["marker"].clone(), frame_markers]);
         root["omitted_actions"] = json!(omitted);
+        // Child-frame signals add to the page's: a captcha or a login form
+        // inside an iframe is still this page's, and the gate reads one set
+        // of counts.
+        for (name, count) in child_signals {
+            let total = root["signals"][&name].as_u64().unwrap_or(0) + count;
+            root["signals"][name] = json!(total);
+        }
         root["signals"]["cross_origin_frames"] = json!(frames.len() as u64 - observed_frames);
         Ok(root)
     }

@@ -16,11 +16,12 @@ i or a s│1 2 3   focus pane    Tab     next pane        < >     resize split  
         │        next step, and is sent as a new turn if that one just ended.                                  │
         │        Esc leaves insert, Esc again stops the run; what it already did stays.                        │
         │Prompts: Enter saves · Ctrl-U clears a pre-filled value · Esc cancels                                 │
+        │On a card: y / n answer a confirm once it is on screen · j k pick · 1-9 answer · i types              │
         │Settings: s set key · x remove key · K check key · c sign in · d sign out                             │
         │          r refresh models · Enter toggles a bool or cycles a choice                                  │
         │                                                                                                      │
         │the : line                                                                                            │
-        │  :nav      <url> <goal> [--headed] [--profile P] [--no-safety]drive a web page to a goal             │
+        │  :nav      <url> <goal> [--headless] [--profile P] [--no-safety]drive a web page to a goal           │
         │  :app      <app> <goal>                                  drive a native application to a goal        │
         │  :ax       trusted|apps|table|press|set|menu|type|key    one direct accessibility call               │
         │  :eval     [--filter F] [--tag T] [--once] [--list]      run the app-control suite                   │
@@ -38,9 +39,8 @@ i or a s│1 2 3   focus pane    Tab     next pane        < >     resize split  
         │  :packs                                                  capability packs — not built yet            │
         │  :soul                                                   edit soul.md — not built yet                │
         │  :pause                                                  pause the queue — not built yet             │
-        │  :resume                                                 resume the queue — not built yet            │
-        │  :listen   on|off                                        microphone — not built yet                  │  ▼ live
-> Enter │                                                                                                      │
+        │  :resume                                                 resume the queue — not built yet            │  ▼ live
+> Enter │  :listen   on|off                                        microphone — not built yet                  │
 NORMAL │└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  Conve
@@ -72,7 +72,7 @@ fg=Cyan bg=Reset mod=NONE  └────────────────�
 fg=DarkGray bg=Reset mod=NONE  1
 fg=DarkGray bg=Reset mod=NONE  <app> <goal>
 fg=DarkGray bg=Reset mod=NONE  <title>
-fg=DarkGray bg=Reset mod=NONE  <url> <goal> [--headed] [--profile P] [--no-safety]
+fg=DarkGray bg=Reset mod=NONE  <url> <goal> [--headless] [--profile P] [--no-safety]
 fg=DarkGray bg=Reset mod=NONE  Ask Star
 fg=DarkGray bg=Reset mod=NONE  Enter
 fg=DarkGray bg=Reset mod=NONE  [--filter F] [--tag T] [--once] [--list]

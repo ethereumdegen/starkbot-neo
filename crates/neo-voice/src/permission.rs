@@ -32,7 +32,9 @@ pub const SPEECH_SETTINGS_URL: &str =
 pub const DICTATION_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
 
-/// How long a first-run prompt is given to be answered.
+/// How long a first-run prompt is given to be answered. Only the macOS
+/// paths prompt, and the workspace denies warnings, so it is gated with them.
+#[cfg(target_os = "macos")]
 const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What TCC says about microphone access.
@@ -58,6 +60,11 @@ pub enum SpeechAuth {
 }
 
 /// Current microphone authorisation. Never prompts.
+///
+/// Off macOS there is no per-application gate to read — ALSA/PulseAudio hand
+/// the device over or fail to open it — so this reports `Authorized` and a
+/// real refusal arrives as a [`VoiceError::Device`] from capture instead of
+/// being guessed at here.
 #[must_use]
 pub fn microphone_status() -> MicrophoneAuth {
     #[cfg(target_os = "macos")]
@@ -71,6 +78,10 @@ pub fn microphone_status() -> MicrophoneAuth {
 }
 
 /// Current speech-recognition authorisation. Never prompts.
+///
+/// Off macOS there is no `Speech.framework` to authorise, so the honest
+/// answer is `Denied`: the on-device backend is absent, and callers that
+/// need to explain that should read `BACKENDS`.
 #[must_use]
 pub fn speech_status() -> SpeechAuth {
     #[cfg(target_os = "macos")]
@@ -88,7 +99,8 @@ pub fn speech_status() -> SpeechAuth {
 /// On-device recognition refuses to run while it is off — the framework
 /// answers "Siri and Dictation are disabled" — so Doctor reads this and
 /// points the user at [`DICTATION_SETTINGS_URL`]. It is a read-only probe on
-/// purpose: Starkbot never flips a System Settings switch for the user.
+/// purpose: Starkbot never flips a System Settings switch for the user. Off
+/// macOS the switch does not exist, hence `false`.
 #[must_use]
 pub fn dictation_enabled() -> bool {
     #[cfg(target_os = "macos")]
@@ -103,7 +115,7 @@ pub fn dictation_enabled() -> bool {
 
 /// Make sure the microphone may be opened, prompting once if TCC has never
 /// asked. Blocks on the prompt, because push-to-talk has nothing to do until
-/// it is answered.
+/// it is answered. Off macOS nothing gates the open, so it is a no-op.
 pub(crate) fn ensure_microphone() -> Result<(), VoiceError> {
     #[cfg(target_os = "macos")]
     {

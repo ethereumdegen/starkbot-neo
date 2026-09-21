@@ -414,7 +414,10 @@ mod tests {
             assert_eq!(trace.len(), 32, "trace id `{trace}`");
             assert_eq!(span.len(), 16, "span id `{span}`");
             assert!(
-                trace.chars().chain(span.chars()).all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                trace
+                    .chars()
+                    .chain(span.chars())
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
                 "`{trace}` / `{span}` is not lowercase hex"
             );
         }
@@ -512,7 +515,10 @@ mod tests {
         let (tracer, mut receiver) = tracer(16);
         tracer
             .in_span(SpanBuilder::internal("invoke_agent"), async {
-                tracer.event("app_event.turn_step", vec![("starkbot.step", Value::from(1))]);
+                tracer.event(
+                    "app_event.turn_step",
+                    vec![("starkbot.step", Value::from(1))],
+                );
             })
             .await;
         let spans = queued(&mut receiver);
@@ -576,7 +582,10 @@ mod tests {
             .await;
         let spans = queued(&mut receiver);
         assert_eq!(spans[0]["attributes"][0]["key"], "starkbot.steps");
-        assert_eq!(spans[0]["attributes"][0]["value"], serde_json::json!({ "intValue": "2" }));
+        assert_eq!(
+            spans[0]["attributes"][0]["value"],
+            serde_json::json!({ "intValue": "2" })
+        );
         assert_eq!(
             spans[0]["status"],
             serde_json::json!({ "code": 2, "message": "the vendor refused" })

@@ -151,6 +151,8 @@ pub struct Request {
     pub state: Value,
     pub questions: Value,
     operations: Vec<String>,
+    /// Whether the safety heads were asked, and therefore are required back.
+    safety_heads: bool,
 }
 
 pub fn build_request(
@@ -245,6 +247,7 @@ pub fn build_request(
         state,
         questions: Value::Object(questions),
         operations: operations.keys().cloned().collect(),
+        safety_heads,
     }
 }
 
@@ -286,9 +289,14 @@ pub fn resolve(
         decision.target_confidence = Some(target.confidence);
         decision.target = Some(target.choice);
     }
-    for (name, _) in SAFETY {
-        if let Some(probability) = evaluation.yes(name) {
-            decision.safety.insert((*name).into(), probability);
+    // Asked for, therefore required (A-Q7). A safety head that did not come
+    // back is a broken response, not a safe one: the alternative is
+    // executing a mutation whose risk nothing scored.
+    if request.safety_heads {
+        for (name, _) in SAFETY {
+            decision
+                .safety
+                .insert((*name).into(), evaluation.noul(name)?);
         }
     }
     Ok(decision)

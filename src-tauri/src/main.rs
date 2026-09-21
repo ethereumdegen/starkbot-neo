@@ -37,7 +37,10 @@ fn main() -> std::process::ExitCode {
     let desktop = match Desktop::open(&data_dir) {
         Ok(desktop) => desktop,
         Err(error) => {
-            eprintln!("neo-desktop: could not open the runtime at {}: {error}", data_dir.display());
+            eprintln!(
+                "neo-desktop: could not open the runtime at {}: {error}",
+                data_dir.display()
+            );
             return std::process::ExitCode::from(2);
         }
     };
@@ -71,6 +74,8 @@ fn main() -> std::process::ExitCode {
             commands::send_message,
             commands::steer_run,
             commands::stop_run,
+            commands::resolve_confirm,
+            commands::answer_ask,
             commands::run_nav,
             commands::run_app_goal,
             commands::run_ax,

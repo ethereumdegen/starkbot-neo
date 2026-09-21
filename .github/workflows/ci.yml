@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# A branch with an open PR is otherwise built twice for the same commit, and
+# a push to it leaves the previous run burning a macOS runner for nothing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     runs-on: macos-14
@@ -14,6 +20,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup show
+      # The workspace is ~50 crates deep in dependencies; without this every
+      # run rebuilds all of them before it can say anything about this commit.
+      - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -22,7 +31,80 @@ jobs:
         run: cargo test --workspace
       - name: Dependency policy
         uses: EmbarkStudios/cargo-deny-action@v2
+      # Three invariants, checked the cheapest way there is.
+      #
+      # The vendor-hostname rule was one grep that banned four hosts outside
+      # `plans/` and `spikes/`, and it has failed since the first commit:
+      # `api.openai.com` and `api.typesafe.ai` legitimately appear at the one
+      # boundary each that talks to them. A check that cannot pass is a check
+      # nobody reads, so it now says what it actually means: the media
+      # vendors appear nowhere (their keys live in the media apps, P3/K6),
+      # and the two hosts this product does call appear only at their
+      # declared boundaries.
       - name: Architecture rules
         run: |
           test -z "$(git ls-files '*.py')"
-          ! git grep -nE 'api\.openai\.com|typesafe\.ai|fal\.run|quiver\.ai' -- ':!plans/**' ':!spikes/**'
+          ! git grep -nE 'fal\.run|quiver\.ai' -- ':!plans/**' ':!spikes/**' ':!.github/**'
+          test "$(git grep -lE 'api\.openai\.com|typesafe\.ai' -- ':!plans/**' ':!spikes/**' ':!.github/**' | sort | tr '\n' ' ')" \
+            = "crates/jev-nav/src/wire.rs crates/neo-agent/src/nav.rs crates/neo-agent/src/oauth/client.rs crates/neo-agent/src/providers/openai.rs crates/neo-voice/src/stt/openai.rs "
+          # No credential file may ever be tracked. The hostname greps would
+          # not catch key material, and a `.env` that reaches a branch is a
+          # rotation, not a revert (16 §3).
+          test -z "$(git ls-files '.env' '*.env' '**/.env')"
+
+  # Required, not advisory: Linux breakage that only warns rots within a week
+  # (16 §8.3), and the `cfg` seams Q5 cuts are exactly the kind of thing that
+  # breaks silently on the platform nobody develops on. Same commands as
+  # `rust` above — the gates do the narrowing, not different flags. `cargo
+  # fmt` is not repeated here: formatting is platform-independent, so the
+  # macOS lane checking it once is the whole check.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cpal's ALSA backend (neo-voice, spikes/s4-voice) is the workspace's
+      # only Linux build-time system dependency: alsa-sys asks pkg-config for
+      # `alsa.pc`, which ships in libasound2-dev. The Linux keychain backend
+      # talks Secret Service over zbus — pure Rust, so no libdbus-1-dev and no
+      # libsecret-1-dev — and its tests use the file backend, so the runner
+      # needs no session bus.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - name: Install Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # Three members cannot build here, and saying so is the point: Tauri
+      # needs webkit2gtk/libsoup and the desktop shell on Linux is L2,
+      # deferred per 16 §8.1, so neo-desktop is out; s6-panel and s7-webview
+      # are macOS-only spikes (tauri-nspanel, objc2-web-kit). Excluding them
+      # by name keeps the lane a real signal instead of a permanently red one.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude neo-desktop --exclude s6-panel --exclude s7-webview --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --exclude neo-desktop --exclude s6-panel --exclude s7-webview
+
+  # The webview's own checks. Independent of `rust` on purpose: it needs no
+  # Rust toolchain and no macOS, so it runs on the cheap runner in parallel
+  # instead of queueing behind a workspace build. It type-checks against the
+  # committed `ui/src/bridge/generated.ts`; that the committed file still
+  # matches the Rust types is the `rust` job's bindings test.
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Types
+        run: npx tsc --noEmit
+      - name: Test
+        run: npm test

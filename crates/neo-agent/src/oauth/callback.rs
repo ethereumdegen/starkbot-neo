@@ -71,12 +71,11 @@ impl fmt::Display for AuthCode {
 /// Bind the loopback port before the browser is opened, so a port already
 /// held by another CLI is reported while the user is still looking at us.
 pub(crate) fn bind(port: u16) -> Result<StdTcpListener, OauthError> {
-    let listener = StdTcpListener::bind(("127.0.0.1", port)).map_err(|error| {
-        OauthError::Listener {
+    let listener =
+        StdTcpListener::bind(("127.0.0.1", port)).map_err(|error| OauthError::Listener {
             port,
             detail: error.to_string(),
-        }
-    })?;
+        })?;
     listener
         .set_nonblocking(true)
         .map_err(|error| OauthError::Listener {
@@ -230,12 +229,7 @@ pub(crate) fn validate_redirect(url: &Url, expected_state: &str) -> Result<AuthC
 pub(crate) fn validate_pasted(pasted: &str, expected_state: &str) -> Result<AuthCode, OauthError> {
     let pasted = pasted.trim();
     match pasted.split_once('#') {
-        Some((code, state)) => finish(
-            non_empty(code),
-            non_empty(state),
-            None,
-            expected_state,
-        ),
+        Some((code, state)) => finish(non_empty(code), non_empty(state), None, expected_state),
         None => finish(
             non_empty(pasted),
             Some(expected_state.to_owned()),
@@ -280,8 +274,7 @@ fn non_empty(value: &str) -> Option<String> {
 const SUCCESS_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>Starkbot Neo</title><body style=\"font:16px -apple-system,sans-serif;padding:3rem\"><h1>Signed in</h1><p>You can close this tab and go back to Starkbot Neo.</p></body>";
 const FAILURE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>Starkbot Neo</title><body style=\"font:16px -apple-system,sans-serif;padding:3rem\"><h1>Sign-in failed</h1><p>Starkbot Neo rejected this callback. Close this tab and start the login again.</p></body>";
 const NOT_FOUND_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>Starkbot Neo</title><body>Not the sign-in callback.</body>";
-const BAD_REQUEST_PAGE: &str =
-    "<!doctype html><meta charset=\"utf-8\"><title>Starkbot Neo</title><body>Unreadable request.</body>";
+const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>Starkbot Neo</title><body>Unreadable request.</body>";
 
 #[cfg(test)]
 mod tests {

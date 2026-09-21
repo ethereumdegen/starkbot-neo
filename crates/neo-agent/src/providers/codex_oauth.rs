@@ -61,7 +61,8 @@ pub const ORIGINATOR: &str = "starkbot-neo";
 /// The instructions every Codex turn carries. Set explicitly so the turn does
 /// not inherit rig's default, which reads `CHATGPT_DEFAULT_INSTRUCTIONS` from
 /// the environment.
-const INSTRUCTIONS: &str = "You are a coding and reasoning assistant answering on behalf of Starkbot.";
+const INSTRUCTIONS: &str =
+    "You are a coding and reasoning assistant answering on behalf of Starkbot.";
 
 /// The single required tool that makes [`CodexOauthInference::complete_json`]
 /// strict, mirroring the Anthropic provider's.
@@ -159,7 +160,9 @@ impl CodexOauthInference {
     ) -> Result<(Value, Turn), ProviderError> {
         let (turn, answer) = self.send(token, model, prompt, Some(schema)).await?;
         let answer = answer.ok_or_else(|| {
-            ProviderError::InvalidResponse(format!("the model answered without calling `{JSON_TOOL}`"))
+            ProviderError::InvalidResponse(format!(
+                "the model answered without calling `{JSON_TOOL}`"
+            ))
         })?;
         Ok((answer, turn))
     }
@@ -213,11 +216,7 @@ impl CodexOauthInference {
             model: response.model.unwrap_or_else(|| model.to_string()),
             // The vendor's own `usage`, verbatim off the wire response rig
             // captured — not rig's normalized counts.
-            usage: response
-                .raw
-                .get("usage")
-                .cloned()
-                .unwrap_or(Value::Null),
+            usage: response.raw.get("usage").cloned().unwrap_or(Value::Null),
             duration_ms,
         };
         Ok((turn, answer))
@@ -395,7 +394,12 @@ mod tests {
             .await;
 
         let error = inference(&server)
-            .complete_json(&secret(), "gpt-5.3-codex", "judge", &json!({ "type": "object" }))
+            .complete_json(
+                &secret(),
+                "gpt-5.3-codex",
+                "judge",
+                &json!({ "type": "object" }),
+            )
             .await
             .expect_err("no tool call");
         assert!(matches!(error, ProviderError::InvalidResponse(_)));
@@ -470,7 +474,10 @@ mod tests {
             .complete_text(&secret(), "gpt-nope", "hi")
             .await
             .expect_err("an unknown model");
-        assert_eq!(error, ProviderError::ModelUnavailable("gpt-nope".to_string()));
+        assert_eq!(
+            error,
+            ProviderError::ModelUnavailable("gpt-nope".to_string())
+        );
     }
 
     /// The reason this provider goes through rig at all: the prepared model is

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "SQLite persistence, migrations, and serialized database actors for Starkbot Neo."
+publish = false
 
 [lints]
 workspace = true

@@ -1,8 +1,32 @@
 # Starkbot Neo
 
-Starkbot Neo is a local-first macOS agent in active development. The target product combines fast browser and macOS accessibility control, SEO workflows, voice, and an agentic Hypercanvas for static and animated creative work.
+Starkbot Neo is a local-first macOS agent in active development. It drives a
+browser over CDP and native macOS apps over the Accessibility API with the Jev
+navigator — a classifier that answers one operation head, one target head and
+the safety heads per step — and puts that loop behind an agent that takes work
+by voice or text. The product it is being built into is a go-to-market
+marketing and media harness: SEO and GTM workflows on the web, and media made
+by operating real media apps rather than by generating files itself. It is not
+a shell or coding agent; there is no `bash` tool and no general file access.
 
-Work is currently in Milestone 1. The Rust workspace, SQLite store, CLI, terminal front end, desktop Connections shell, subscription bridges, the web and accessibility navigators and the agent loop over them are runnable; the queue, media pipeline and Hypercanvas are planned but not yet released.
+Status, as observed in this tree rather than as planned:
+
+- The M0 spikes S1–S7 are run and their numbers recorded in
+  [`plans/spikes.md`](plans/spikes.md); S8 (media through apps) has not been
+  run, because nothing downstream of it is being built yet.
+- M1 (workspace, SQLite store, `neo` CLI, the ratatui terminal front end, the
+  Tauri developer shell, the subscription bridges, `neo doctor`) is complete
+  except the Apple signing identity, which is still waiting on the user
+  (00-decisions, *Still open* #1) and is what M1 is formally blocked on.
+- M3's web navigator runs, the accessibility path with it (`neo nav`,
+  `neo app`), together with a slice of M5: a streaming ReAct agent loop over
+  the `browse`, `app` and `ax` tools.
+- M4 — judge, queue, deterministic rules, confirm cards — is **not started**.
+  The queue and confirm tables exist in the schema with no Rust reader or
+  writer, and a tripped safety head ends the run with a message instead of
+  asking you to approve it.
+- Voice is push-to-talk capture plus speech-to-text; there is no speech out.
+- Media through apps, packs and the GTM workflows are unbuilt.
 
 ## Requirements
 
@@ -119,10 +143,11 @@ reaches an attribute, and text typed into a field is counted
 
 ## Project plans
 
-- [`PLAN.md`](PLAN.md) — milestone sequence and current status
+- [`PLAN.md`](PLAN.md) — what the product is and who does what
+- [`plans/00-decisions.md`](plans/00-decisions.md) — the decision record, including the authoritative milestone table
+- [`plans/16-quality.md`](plans/16-quality.md) — the quality upgrade (Q0–Q5), which is the work currently in progress
 - [`plans/`](plans/) — architecture and product contracts
 - [`plans/08-providers.md`](plans/08-providers.md) — account, provider, and cost policy
-- [`plans/11-hypercanvas.md`](plans/11-hypercanvas.md) — Hypercanvas architecture
 
 ## Status and safety
 

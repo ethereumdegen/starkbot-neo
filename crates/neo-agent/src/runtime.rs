@@ -28,9 +28,12 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::doctor::DoctorReport;
-use crate::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthClient, OauthCredential, OauthFlow, OauthProvider, OauthStore};
-use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
+use crate::oauth::{
+    ANTHROPIC_OAUTH, OPENAI_CODEX, OauthClient, OauthCredential, OauthFlow, OauthProvider,
+    OauthStore,
+};
 use crate::providers::{self, KeyBases};
+use crate::providers::{AnthropicOauthInference, CodexOauthInference, Turn};
 
 /// Version of the event/command surface both front ends compile against.
 ///
@@ -119,6 +122,11 @@ pub enum RuntimeError {
     /// The user selected an inference runtime this build cannot drive yet.
     #[error("the `{0}` inference runtime is not wired up yet; the Claude subscription path is")]
     RuntimeUnavailable(String),
+    /// An answer arrived for a card no run is waiting on: it was already
+    /// answered, it timed out, or the run ended. Said out loud, because a
+    /// front end that thinks it approved something must not believe it did.
+    #[error("confirm card {0} is no longer waiting for an answer")]
+    NoSuchCard(String),
 }
 
 /// Where the store lives and which schema it is on.
@@ -198,9 +206,12 @@ pub struct Runtime {
     /// [`Runtime::steer`] posts into it; a run that has ended is simply
     /// absent, which is the difference between "queued" and "send it as a new
     /// turn".
-    runs: std::sync::Mutex<
-        std::collections::HashMap<RunId, Arc<crate::agent::metal::Steering>>,
-    >,
+    runs: std::sync::Mutex<std::collections::HashMap<RunId, Arc<crate::agent::metal::Steering>>>,
+    /// The cards on screen right now, and the runs waiting on them.
+    ///
+    /// Parallel to `runs` and for the same reason: a paused run is otherwise
+    /// unreachable. See [`crate::confirm`].
+    broker: crate::confirm::Broker,
 }
 
 /// Where one runtime keeps its secrets.
@@ -246,11 +257,17 @@ impl Runtime {
             seq: std::sync::atomic::AtomicU64::new(1),
             screen: crate::screen::ScreenLease::new(data_dir, neo_otel::surface()),
             runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            broker: crate::confirm::Broker::default(),
         })
     }
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The confirm-card table, for [`crate::confirm`]'s methods.
+    pub(crate) fn broker(&self) -> &crate::confirm::Broker {
+        &self.broker
     }
 
     /// Take the screen for `run`, or find out who has it.
@@ -602,7 +619,9 @@ impl Runtime {
             let inference = AnthropicOauthInference::hosted()?;
             return match schema {
                 Some(schema) => {
-                    let (value, turn) = inference.complete_json(&token, model, prompt, schema).await?;
+                    let (value, turn) = inference
+                        .complete_json(&token, model, prompt, schema)
+                        .await?;
                     Ok((Some(value), turn))
                 }
                 None => Ok((None, inference.complete_text(&token, model, prompt).await?)),
@@ -614,7 +633,9 @@ impl Runtime {
         }
         match schema {
             Some(schema) => {
-                let (value, turn) = inference.complete_json(&token, model, prompt, schema).await?;
+                let (value, turn) = inference
+                    .complete_json(&token, model, prompt, schema)
+                    .await?;
                 Ok((Some(value), turn))
             }
             None => Ok((None, inference.complete_text(&token, model, prompt).await?)),
@@ -648,7 +669,10 @@ impl Runtime {
         match selected {
             id_ if id_ == ANTHROPIC_OAUTH.id => {
                 let id = self.resolved_model(&ANTHROPIC_OAUTH, model, saved)?;
-                Ok(self.oauth_turn(&ANTHROPIC_OAUTH, &id, prompt, None).await?.1)
+                Ok(self
+                    .oauth_turn(&ANTHROPIC_OAUTH, &id, prompt, None)
+                    .await?
+                    .1)
             }
             id_ if id_ == OPENAI_CODEX.id => {
                 let id = self.resolved_model(&OPENAI_CODEX, model, saved)?;
@@ -814,7 +838,10 @@ impl Runtime {
     }
 
     pub fn key_status(&self) -> Result<Vec<KeyStatus>, RuntimeError> {
-        ACCOUNTS.iter().map(|account| self.read_key(account)).collect()
+        ACCOUNTS
+            .iter()
+            .map(|account| self.read_key(account))
+            .collect()
     }
 
     pub fn set_key(&self, account: &str, raw: &str) -> Result<KeyStatus, RuntimeError> {
@@ -920,7 +947,10 @@ impl Runtime {
 
     /// Every live Starkbot process, this one included.
     pub fn sessions(&self) -> Result<Vec<neo_store::Session>, RuntimeError> {
-        Ok(self.store.presence().sessions(now_ms()?, SESSION_STALE_MS)?)
+        Ok(self
+            .store
+            .presence()
+            .sessions(now_ms()?, SESSION_STALE_MS)?)
     }
 
     /// Leave the roster and drop every lease.
@@ -957,9 +987,7 @@ impl Runtime {
                     .find(|session| session.id == lease.holder);
                 let who = session
                     .as_ref()
-                    .map(|session| {
-                        format!("{} (pid {})", session.kind.label(), session.pid)
-                    })
+                    .map(|session| format!("{} (pid {})", session.kind.label(), session.pid))
                     .unwrap_or_else(|| "another Starkbot".to_owned());
                 let doing = session
                     .and_then(|session| session.activity)
@@ -1082,9 +1110,10 @@ impl Runtime {
     ) -> Result<neo_core::Message, RuntimeError> {
         let (role, kind) = match message.role {
             crate::agent::Role::User => (neo_core::MessageRole::User, neo_core::MessageKind::Text),
-            crate::agent::Role::Assistant => {
-                (neo_core::MessageRole::Assistant, neo_core::MessageKind::Answer)
-            }
+            crate::agent::Role::Assistant => (
+                neo_core::MessageRole::Assistant,
+                neo_core::MessageKind::Answer,
+            ),
             // What an action produced, fed back to the model next step.
             crate::agent::Role::Tool => {
                 (neo_core::MessageRole::Tool, neo_core::MessageKind::Result)
@@ -1465,12 +1494,13 @@ impl Runtime {
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            neo_otel::event(&format!("app_event.{kind}"), vec![("starkbot.event", value)]);
+            neo_otel::event(
+                &format!("app_event.{kind}"),
+                vec![("starkbot.event", value)],
+            );
         }
         let envelope = Envelope {
-            seq: self
-                .seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             at: time::OffsetDateTime::now_utc(),
             event,
         };
@@ -1495,7 +1525,6 @@ impl Runtime {
         });
     }
 }
-
 
 /// A login in progress: the URL to show, and the PKCE material the exchange
 /// needs. Held by a front end between "show the page" and "the user came

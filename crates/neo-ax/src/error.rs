@@ -219,26 +219,48 @@ mod tests {
             (StaleReason::Generation, "generation evicted"),
             (StaleReason::ElementGone, "element gone"),
             (
-                StaleReason::RoleChanged { was: "AXButton".into(), now: "AXGroup".into() },
+                StaleReason::RoleChanged {
+                    was: "AXButton".into(),
+                    now: "AXGroup".into(),
+                },
                 "role changed AXButton -> AXGroup",
             ),
             (
-                StaleReason::LabelChanged { was: "Send".into(), now: "Sending".into() },
+                StaleReason::LabelChanged {
+                    was: "Send".into(),
+                    now: "Sending".into(),
+                },
                 "label changed \"Send\" -> \"Sending\"",
             ),
             (StaleReason::Disabled, "element disabled"),
             (StaleReason::Moved, "element moved"),
-            (StaleReason::NotFrontmost { pid: 812 }, "app not frontmost (pid 812 is)"),
+            (
+                StaleReason::NotFrontmost { pid: 812 },
+                "app not frontmost (pid 812 is)",
+            ),
             (StaleReason::WindowChanged, "focused window changed"),
             (StaleReason::SheetAppeared, "a sheet appeared"),
-            (StaleReason::Occluded { by: "Finder".into() }, "occluded by Finder"),
+            (
+                StaleReason::Occluded {
+                    by: "Finder".into(),
+                },
+                "occluded by Finder",
+            ),
             (StaleReason::ScreenLocked, "screen locked"),
-            (StaleReason::Denied { app: "Terminal".into() }, "Terminal is denied"),
+            (
+                StaleReason::Denied {
+                    app: "Terminal".into(),
+                },
+                "Terminal is denied",
+            ),
         ];
         for (reason, want) in cases {
             let rendered = reason.to_string();
             assert_eq!(rendered, want);
-            assert!(!rendered.contains('\n'), "reason must be one line: {rendered}");
+            assert!(
+                !rendered.contains('\n'),
+                "reason must be one line: {rendered}"
+            );
         }
     }
 

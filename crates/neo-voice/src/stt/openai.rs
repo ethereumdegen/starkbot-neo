@@ -14,7 +14,7 @@ use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
 use url::Url;
 
-use super::{Transcript, Transcriber, wav};
+use super::{Transcriber, Transcript, wav};
 use crate::capture::Utterance;
 use crate::error::VoiceError;
 
@@ -50,17 +50,22 @@ impl OpenAiTranscriber {
                 detail: format!("the built-in base URL is invalid: {e}"),
             })?,
         };
-        let endpoint = base
-            .join("/v1/audio/transcriptions")
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+        let endpoint =
+            base.join("/v1/audio/transcriptions")
+                .map_err(|e| VoiceError::Transport {
+                    detail: e.to_string(),
+                })?;
 
         // The audited credential boundary clippy.toml points at: the secret
         // becomes one `Authorization` header, marked sensitive so it is
         // redacted from any header dump, and nothing else.
         #[allow(clippy::disallowed_methods)]
-        let mut header = HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(
-            |_| VoiceError::Transport { detail: "the OpenAI key is not a valid header value".into() },
-        )?;
+        let mut header =
+            HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| {
+                VoiceError::Transport {
+                    detail: "the OpenAI key is not a valid header value".into(),
+                }
+            })?;
         header.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, header);
@@ -69,7 +74,9 @@ impl OpenAiTranscriber {
             .default_headers(headers)
             .timeout(TIMEOUT)
             .build()
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::Transport {
+                detail: e.to_string(),
+            })?;
         Ok(Self { endpoint, client })
     }
 
@@ -77,7 +84,9 @@ impl OpenAiTranscriber {
         let audio = Part::bytes(wav)
             .file_name("utterance.wav")
             .mime_str("audio/wav")
-            .map_err(|e| VoiceError::Transport { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::Transport {
+                detail: e.to_string(),
+            })?;
         Ok(Form::new()
             .part("file", audio)
             .text("model", MODEL)
@@ -107,7 +116,9 @@ impl Transcriber for OpenAiTranscriber {
                 Err(error) => {
                     // No URL, no header: `reqwest`'s Display can carry the
                     // request URL, and that is all we ever want of it.
-                    last = Some(VoiceError::Transport { detail: error.to_string() });
+                    last = Some(VoiceError::Transport {
+                        detail: error.to_string(),
+                    });
                     continue;
                 }
             };
@@ -118,13 +129,19 @@ impl Transcriber for OpenAiTranscriber {
             }
             let mut detail = body;
             detail.truncate(MAX_ERROR_BODY);
-            let error = VoiceError::Provider { provider: "openai", status: status.as_u16(), detail };
+            let error = VoiceError::Provider {
+                provider: "openai",
+                status: status.as_u16(),
+                detail,
+            };
             if !retryable(status) {
                 return Err(error);
             }
             last = Some(error);
         }
-        Err(last.unwrap_or(VoiceError::Transport { detail: "no attempt was made".into() }))
+        Err(last.unwrap_or(VoiceError::Transport {
+            detail: "no attempt was made".into(),
+        }))
     }
 
     fn name(&self) -> &'static str {
@@ -137,12 +154,18 @@ fn retryable(status: StatusCode) -> bool {
 }
 
 fn parse(body: &str, elapsed: Duration) -> Result<Transcript, VoiceError> {
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| VoiceError::BadResponse { provider: "openai", detail: e.to_string() })?;
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| VoiceError::BadResponse {
+            provider: "openai",
+            detail: e.to_string(),
+        })?;
     let text = value
         .get("text")
         .and_then(serde_json::Value::as_str)
-        .ok_or(VoiceError::BadResponse { provider: "openai", detail: "no `text` field".into() })?;
+        .ok_or(VoiceError::BadResponse {
+            provider: "openai",
+            detail: "no `text` field".into(),
+        })?;
     Ok(Transcript {
         text: text.to_owned(),
         // The endpoint reports logprobs, not a confidence; claiming one would
@@ -211,18 +234,29 @@ mod tests {
             body.contains(r#"name="file"; filename="utterance.wav""#),
             "no named WAV part in the body"
         );
-        assert!(body.contains("Content-Type: audio/wav"), "the part is not typed as WAV");
-        assert!(body.contains("RIFF") && body.contains("WAVE"), "the part is not a WAV file");
+        assert!(
+            body.contains("Content-Type: audio/wav"),
+            "the part is not typed as WAV"
+        );
+        assert!(
+            body.contains("RIFF") && body.contains("WAVE"),
+            "the part is not a WAV file"
+        );
         assert!(body.contains(r#"name="model""#), "no model field");
         assert!(body.contains(MODEL), "the model field is not `{MODEL}`");
-        assert!(body.contains(r#"name="response_format""#), "no response_format field");
+        assert!(
+            body.contains(r#"name="response_format""#),
+            "no response_format field"
+        );
     }
 
     #[tokio::test]
     async fn the_credential_travels_in_the_header_and_never_in_the_url_or_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "ok"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "ok"})),
+            )
             .mount(&server)
             .await;
         transcriber(&server.uri())
@@ -233,7 +267,10 @@ mod tests {
         let requests = server.received_requests().await.unwrap_or_default();
         let request = requests.first().expect("one request");
         assert_eq!(
-            request.headers.get("authorization").and_then(|v| v.to_str().ok()),
+            request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
             Some("Bearer sk-test")
         );
         assert!(!request.url.as_str().contains("sk-test"));
@@ -255,7 +292,11 @@ mod tests {
             .expect_err("429 should surface");
         assert!(matches!(
             error,
-            VoiceError::Provider { provider: "openai", status: 429, .. }
+            VoiceError::Provider {
+                provider: "openai",
+                status: 429,
+                ..
+            }
         ));
     }
 
@@ -273,7 +314,11 @@ mod tests {
             .await
             .expect_err("401 should surface");
         match error {
-            VoiceError::Provider { status: 401, detail, .. } => assert!(detail.contains("bad key")),
+            VoiceError::Provider {
+                status: 401,
+                detail,
+                ..
+            } => assert!(detail.contains("bad key")),
             other => panic!("expected a 401 verdict, got {other}"),
         }
     }
@@ -290,7 +335,13 @@ mod tests {
             .transcribe(&utterance())
             .await
             .expect_err("a shapeless body should surface");
-        assert!(matches!(error, VoiceError::BadResponse { provider: "openai", .. }));
+        assert!(matches!(
+            error,
+            VoiceError::BadResponse {
+                provider: "openai",
+                ..
+            }
+        ));
     }
 
     #[test]

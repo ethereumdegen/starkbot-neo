@@ -93,7 +93,10 @@ impl AxPolicy {
     /// The default policy for this process.
     #[must_use]
     pub fn new(own_pid: i32) -> Self {
-        Self { extra: Vec::new(), own_pid }
+        Self {
+            extra: Vec::new(),
+            own_pid,
+        }
     }
 
     /// Whether the app must never be read or driven.
@@ -103,7 +106,10 @@ impl AxPolicy {
             return true;
         }
         if let Some(bundle) = app.bundle_id.as_deref() {
-            if DENIED_BUNDLE_IDS.iter().any(|d| d.eq_ignore_ascii_case(bundle)) {
+            if DENIED_BUNDLE_IDS
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(bundle))
+            {
                 return true;
             }
             let lower = bundle.to_lowercase();
@@ -170,7 +176,10 @@ mod tests {
             "com.apple.keychainaccess",
             "com.apple.ScriptEditor2",
         ] {
-            assert!(policy.is_denied(&app("x", Some(bundle), 2)), "{bundle} must be denied");
+            assert!(
+                policy.is_denied(&app("x", Some(bundle), 2)),
+                "{bundle} must be denied"
+            );
         }
         assert!(!policy.is_denied(&app("Notes", Some("com.apple.Notes"), 2)));
     }
@@ -178,8 +187,17 @@ mod tests {
     #[test]
     fn a_denied_app_is_refused_by_name_even_with_no_bundle_id() {
         let policy = AxPolicy::new(1);
-        for name in ["Terminal", "iTerm2", "Cursor", "Keychain Access", "System Settings"] {
-            assert!(policy.is_denied(&app(name, None, 2)), "{name} must be denied by name");
+        for name in [
+            "Terminal",
+            "iTerm2",
+            "Cursor",
+            "Keychain Access",
+            "System Settings",
+        ] {
+            assert!(
+                policy.is_denied(&app(name, None, 2)),
+                "{name} must be denied by name"
+            );
         }
         assert!(!policy.is_denied(&app("TextEdit", None, 2)));
     }
@@ -202,8 +220,20 @@ mod tests {
 
     #[test]
     fn chrome_family_is_routed_to_the_web_path() {
-        assert!(AxPolicy::is_chrome_family(&app("Chrome", Some("com.google.Chrome"), 2)));
-        assert!(AxPolicy::is_chrome_family(&app("Arc", Some("company.thebrowser.Browser"), 2)));
-        assert!(!AxPolicy::is_chrome_family(&app("Safari", Some("com.apple.Safari"), 2)));
+        assert!(AxPolicy::is_chrome_family(&app(
+            "Chrome",
+            Some("com.google.Chrome"),
+            2
+        )));
+        assert!(AxPolicy::is_chrome_family(&app(
+            "Arc",
+            Some("company.thebrowser.Browser"),
+            2
+        )));
+        assert!(!AxPolicy::is_chrome_family(&app(
+            "Safari",
+            Some("com.apple.Safari"),
+            2
+        )));
     }
 }

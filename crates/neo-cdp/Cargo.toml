@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Minimal Chrome DevTools Protocol client: launch a managed Chrome, flat sessions, evaluate, input, capture."
+publish = false
 
 [lints]
 workspace = true
@@ -18,3 +19,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 base64.workspace = true
 command-fds.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

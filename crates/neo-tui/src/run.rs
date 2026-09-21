@@ -14,8 +14,9 @@ use neo_agent::agent::{
     AppOptions, BrowserOptions, ChatMessage, ChatRequest, run_app, run_browser,
 };
 use neo_agent::ax::{AxRequest, AxResponse};
+use neo_agent::doctor::DoctorReport;
 use neo_agent::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthProvider};
-use neo_agent::runtime::{LoginHandle, Runtime, RuntimeError};
+use neo_agent::runtime::{Bootstrap, LoginHandle, Runtime, RuntimeError};
 use neo_core::{Envelope, RunId};
 use neo_eval::Selection;
 use neo_voice::{Microphone, Transcriber};
@@ -27,9 +28,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::keys::{Action, KeyMap};
 use crate::runs::RunKind;
-use crate::state::{
-    Command, Login, LoginPhase, NavSpec, SessionRow, State, key_label, plan_title,
-};
+use crate::state::{Command, Login, LoginPhase, NavSpec, SessionRow, State, key_label, plan_title};
 use crate::ui;
 
 /// How often this process refreshes its roster row and its leases. A third of
@@ -47,6 +46,11 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const THREAD_LIMIT: u32 = 200;
 /// How many conversations the switcher lists.
 const SESSION_LIMIT: u32 = 50;
+/// The longest `execute` may keep the frame loop (B3, 16 §0). Anything with a
+/// vendor at the other end is started as a chore instead, and this is
+/// asserted in debug builds so a reintroduced wait fails the moment it is
+/// exercised rather than being felt as a freeze.
+const FRAME_BUDGET: Duration = Duration::from_millis(50);
 
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
@@ -231,6 +235,47 @@ impl Jobs {
     }
 }
 
+/// What a round-trip started from a keystroke left for the frame loop.
+///
+/// The sentence is phrased where the chore is started, not where it lands:
+/// the arm that asked the question is the one that knows how to say the
+/// answer, and re-phrasing it here would fork the wording away from the
+/// command it belongs to. Everything else a variant carries was computed on
+/// the chore's own thread, because reading it is the slow part.
+enum Chore {
+    /// A status line, and nothing else moved.
+    Said(String),
+    /// Everything the core owns, re-read because an account row or a key
+    /// state moved — and a status line, when the answer is not already on
+    /// screen from the sentence that started the reload.
+    Reloaded(Option<String>, Box<Bootstrap>),
+    /// A status line and a fresh readiness report. Every check is local,
+    /// but they are not all cheap: with no OpenAI key stored, the dictation
+    /// row asks macOS three authorisation questions and that costs seconds
+    /// (measured: ~4.6 s), which is a frame loop's whole budget ninety times
+    /// over.
+    Doctored(String, Box<DoctorReport>),
+}
+
+/// Work started from a keystroke and answered later.
+///
+/// [`Jobs`] without the run: a key check is not something the runs pane
+/// should list or `x` should be able to stop, but it is exactly as slow as a
+/// turn — one vendor timeout — and waiting for it on the frame loop froze
+/// the terminal for that whole time (B3).
+struct Chores {
+    settled: mpsc::Receiver<Chore>,
+    sender: mpsc::Sender<Chore>,
+}
+
+impl Chores {
+    fn new() -> Self {
+        // A keystroke starts at most one, and each chore sends exactly once.
+        let (sender, settled) = mpsc::channel(16);
+        Self { settled, sender }
+    }
+}
+
 /// A subscription login in flight (K7).
 ///
 /// The handle is shared, not moved: the loopback wait borrows it, and so does
@@ -344,6 +389,7 @@ impl Drop for TerminalGuard {
 /// Everything the loop owns that is not `State`.
 struct Loop {
     jobs: Jobs,
+    chores: Chores,
     login: Option<LoginWorker>,
     dictation: Option<Dictation>,
     voice: Option<mpsc::Receiver<VoiceUpdate>>,
@@ -372,6 +418,7 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
     let mut last_kill: Option<Instant> = None;
     let mut context = Loop {
         jobs: Jobs::new(),
+        chores: Chores::new(),
         login: None,
         dictation: None,
         voice: None,
@@ -383,8 +430,12 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
 
     loop {
         if state.dirty {
-            terminal.draw(|frame| ui::draw(frame, &state))?;
+            // `y`/`n` only go live once the card's sentence actually reached
+            // a frame, so the renderer reports back what it painted.
+            let mut painted = ui::Painted::default();
+            terminal.draw(|frame| painted = ui::draw(frame, &state))?;
             state.dirty = false;
+            state.painted(painted);
         }
 
         if event::poll(TICK)? {
@@ -408,10 +459,17 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
         }
 
         state.tick(elapsed_ms(context.started));
-        poll_login(runtime, &mut state, &mut context.login)?;
+        poll_login(runtime, &mut state, &mut context.login, &context.chores);
         poll_jobs(&mut state, &mut context.jobs);
+        poll_chores(&mut state, &mut context.chores);
         poll_voice(&mut state, &context.dictation, &mut context.voice);
-        drain(runtime, &mut state, &mut receiver, &mut expected)?;
+        drain(
+            runtime,
+            &mut state,
+            &mut receiver,
+            &mut expected,
+            &context.chores,
+        )?;
         // What this process is doing, in the words another Starkbot will see.
         session.beat(state.activity_line());
 
@@ -563,22 +621,87 @@ fn poll_jobs(state: &mut State, jobs: &mut Jobs) {
     }
 }
 
+/// Start a vendor round-trip and come straight back to the frame.
+///
+/// The status line says what is in flight before the loop is handed back, in
+/// the same words a finished chore will overwrite, so a slow vendor reads as
+/// "still working" rather than as a front end that ignored the key.
+fn spawn_chore<F>(chores: &Chores, state: &mut State, pending: impl Into<String>, work: F)
+where
+    F: Future<Output = Chore> + Send + 'static,
+{
+    state.note(pending);
+    let sender = chores.sender.clone();
+    tokio::spawn(async move {
+        // A closed channel means the front end is gone; the answer is moot.
+        let _ = sender.send(work.await).await;
+    });
+}
+
+/// Re-read everything the core owns, off the frame loop.
+///
+/// All local reads, and one of them is slow: [`Bootstrap`] carries the
+/// doctor report (see [`Chore::Doctored`]). `said` goes up now, because the
+/// caller already knows what happened — the reload only refreshes the panes
+/// that show it.
+fn spawn_reload(
+    runtime: &Arc<Runtime>,
+    state: &mut State,
+    chores: &Chores,
+    said: impl Into<String>,
+) {
+    let handle = Arc::clone(runtime);
+    spawn_chore(chores, state, said, async move {
+        match tokio::task::spawn_blocking(move || handle.bootstrap()).await {
+            Ok(Ok(bootstrap)) => Chore::Reloaded(None, Box::new(bootstrap)),
+            Ok(Err(error)) => Chore::Said(format!("the core could not be re-read: {error}")),
+            Err(error) => Chore::Said(format!("the core could not be re-read: {error}")),
+        }
+    });
+}
+
+/// Pick up whatever finished since the last frame.
+fn poll_chores(state: &mut State, chores: &mut Chores) {
+    loop {
+        // `Chores` owns a sender for the life of the loop, so the channel
+        // cannot disconnect; an empty one and a closed one both mean there
+        // is nothing more to apply this frame.
+        let Ok(chore) = chores.settled.try_recv() else {
+            return;
+        };
+        match chore {
+            Chore::Said(line) => state.note(line),
+            Chore::Reloaded(line, bootstrap) => {
+                state.rebootstrap(*bootstrap);
+                if let Some(line) = line {
+                    state.note(line);
+                }
+            }
+            Chore::Doctored(line, report) => {
+                state.doctor = *report;
+                state.note(line);
+            }
+        }
+    }
+}
+
 /// Move a login forward without blocking the frame: tick the countdown, and
 /// pick up the result the moment a background task produces one.
 fn poll_login(
     runtime: &Arc<Runtime>,
     state: &mut State,
     login: &mut Option<LoginWorker>,
-) -> Result<(), TuiError> {
+    chores: &Chores,
+) {
     let Some(worker) = login.as_mut() else {
-        return Ok(());
+        return;
     };
     match worker.outcome.try_recv() {
         Ok(Ok(account)) => {
             if let Some(overlay) = state.login.as_mut() {
                 overlay.phase = LoginPhase::Done;
             }
-            state.note(format!(
+            let connected = format!(
                 "{} is connected{}",
                 plan_title(worker.provider.id),
                 account
@@ -586,9 +709,11 @@ fn poll_login(
                     .as_deref()
                     .map(|email| format!(" as {email}"))
                     .unwrap_or_default()
-            ));
+            );
             *login = None;
-            state.rebootstrap(runtime.bootstrap()?);
+            // A login is exactly the moment the machine has no key yet, so
+            // re-reading the core here is the slow case: off the loop.
+            spawn_reload(runtime, state, chores, connected);
         }
         Ok(Err(error)) => {
             // Keep the overlay up: the message names what to do next, and the
@@ -615,7 +740,6 @@ fn poll_login(
             state.dirty = true;
         }
     }
-    Ok(())
 }
 
 /// Apply everything the core has published since the last frame.
@@ -631,6 +755,7 @@ fn drain(
     state: &mut State,
     receiver: &mut tokio::sync::broadcast::Receiver<Envelope>,
     expected: &mut Option<u64>,
+    chores: &Chores,
 ) -> Result<(), TuiError> {
     loop {
         match receiver.try_recv() {
@@ -638,8 +763,7 @@ fn drain(
                 let missed = expected.is_some_and(|next| seq > next);
                 *expected = Some(seq + 1);
                 if missed {
-                    rebootstrap(runtime, state)?;
-                    state.note("events were missed — re-bootstrapped");
+                    rebootstrap(runtime, state, chores, "events were missed — re-reading")?;
                 }
                 state.apply(event);
             }
@@ -652,8 +776,12 @@ fn drain(
                 // The next envelope's `seq` reports the gap too; this only
                 // keeps the counter from blaming the following event.
                 *expected = None;
-                rebootstrap(runtime, state)?;
-                state.note(format!("{dropped} events dropped — re-bootstrapped"));
+                rebootstrap(
+                    runtime,
+                    state,
+                    chores,
+                    format!("{dropped} events dropped — re-reading"),
+                )?;
             }
         }
     }
@@ -662,8 +790,17 @@ fn drain(
 /// Re-read everything the core owns, including the thread: a gap may have
 /// swallowed an `AppEvent::Message`, and a thread missing one line is worse
 /// than one read again.
-fn rebootstrap(runtime: &Arc<Runtime>, state: &mut State) -> Result<(), TuiError> {
-    state.rebootstrap(runtime.bootstrap()?);
+///
+/// The thread is read here because a local `SELECT` is frame-cheap; the
+/// bootstrap is not (see [`spawn_reload`]), so it is a chore and the panes
+/// it feeds catch up a frame or two later.
+fn rebootstrap(
+    runtime: &Arc<Runtime>,
+    state: &mut State,
+    chores: &Chores,
+    said: impl Into<String>,
+) -> Result<(), TuiError> {
+    spawn_reload(runtime, state, chores, said);
     if let Some(conversation) = state.conversation {
         let title = state.conversation_title.clone();
         let messages = runtime.thread(conversation, THREAD_LIMIT)?;
@@ -696,8 +833,37 @@ fn steer(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, run: Run
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Apply one command, inside the frame-loop budget.
+///
+/// B3: nothing is redrawn and no key is read while this runs, so anything
+/// `execute` waits for is time the terminal is dead. Everything with a
+/// vendor at the other end is started as a [`Chore`] or a job and answered
+/// on a later frame; what is left is store and Keychain work the loop
+/// already depended on. The budget is asserted rather than hoped for — but
+/// only in debug builds, because a release must not kill a session over a
+/// slow disk.
 fn execute(
+    runtime: &Arc<Runtime>,
+    state: &mut State,
+    context: &mut Loop,
+    command: Command,
+) -> Result<(), TuiError> {
+    // The one command that is *meant* to own the terminal: `claude auth
+    // login` is an interactive CLI this process hands the tty to, so waiting
+    // for it is the feature, not the bug.
+    let hands_over_the_terminal = matches!(command, Command::ConnectSubscription { .. });
+    let started = Instant::now();
+    let outcome = dispatch(runtime, state, context, command);
+    debug_assert!(
+        hands_over_the_terminal || started.elapsed() < FRAME_BUDGET,
+        "a command held the frame loop for {} ms; start it as a chore instead",
+        started.elapsed().as_millis()
+    );
+    outcome
+}
+
+#[allow(clippy::too_many_lines)]
+fn dispatch(
     runtime: &Arc<Runtime>,
     state: &mut State,
     context: &mut Loop,
@@ -711,18 +877,36 @@ fn execute(
         Command::Ax { request } => ax(runtime, state, context, request),
         Command::Eval { selection } => eval(runtime, state, context, selection),
         Command::EvalList => eval_list(state),
-        Command::Doctor => match runtime.doctor() {
-            Ok(report) => {
-                let failures = report
-                    .checks
-                    .iter()
-                    .filter(|check| check.health == neo_agent::doctor::Health::Fail)
-                    .count();
-                state.doctor = report;
-                state.note(format!("doctor re-run · {failures} failing check(s)"));
-            }
-            Err(error) => state.note(format!("doctor: {error}")),
-        },
+        // Every doctor check is local, but "local" is not "instant": with no
+        // OpenAI key stored, the dictation row asks macOS whether the
+        // microphone, Siri dictation and speech recognition are available,
+        // and that answers in seconds. The report is re-read on a blocking
+        // thread and applied when it lands.
+        Command::Doctor => {
+            let handle = Arc::clone(runtime);
+            spawn_chore(
+                &context.chores,
+                state,
+                "doctor — re-running the local checks",
+                async move {
+                    match tokio::task::spawn_blocking(move || handle.doctor()).await {
+                        Ok(Ok(report)) => {
+                            let failures = report
+                                .checks
+                                .iter()
+                                .filter(|check| check.health == neo_agent::doctor::Health::Fail)
+                                .count();
+                            Chore::Doctored(
+                                format!("doctor re-run · {failures} failing check(s)"),
+                                Box::new(report),
+                            )
+                        }
+                        Ok(Err(error)) => Chore::Said(format!("doctor: {error}")),
+                        Err(error) => Chore::Said(format!("doctor: {error}")),
+                    }
+                },
+            );
+        }
         Command::StopRun { run } => {
             context.jobs.cancel(run);
         }
@@ -762,9 +946,7 @@ fn execute(
                     let title = runtime
                         .conversations(SESSION_LIMIT)
                         .ok()
-                        .and_then(|rows| {
-                            rows.into_iter().find(|row| row.id == conversation)
-                        })
+                        .and_then(|rows| rows.into_iter().find(|row| row.id == conversation))
                         .and_then(|row| row.title);
                     state.load_thread(conversation, title, &messages);
                     state.note("switched conversation");
@@ -788,32 +970,57 @@ fn execute(
         },
         // 04 §14's `set_key` contract is store-then-validate: the key is kept
         // either way, and an offline machine leaves it `unchecked` rather than
-        // calling it bad (05 §6).
+        // calling it bad (05 §6). The validation is the vendor's, so it is a
+        // chore: the key is already stored when the frame comes back.
         Command::SetKey { account, raw } => match runtime.set_key(&account, &raw) {
-            Ok(_) => {
-                state.note(format!("{account} key stored — checking"));
-                check_key(runtime, state, &account);
-            }
+            Ok(_) => check_key(
+                runtime,
+                state,
+                &context.chores,
+                &account,
+                format!("{account} key stored — checking"),
+            ),
             Err(error) => state.note(format!("{account} key rejected: {error}")),
         },
         Command::RemoveKey { account } => match runtime.remove_key(&account) {
             Ok(status) => state.note(format!("{account} key is {}", key_label(status.state))),
             Err(error) => state.note(format!("{account} key not removed: {error}")),
         },
-        // A vendor login owns the terminal for as long as it takes (a browser
-        // round-trip, a code paste), so the front end steps aside and comes
-        // back: the alternate screen is left and re-entered around the call.
+        // The only wait left on this loop, and the only one that belongs
+        // here: `claude auth login` is an interactive CLI, so the front end
+        // leaves the alternate screen, hands it the terminal for as long as
+        // the vendor's own prompts take, and comes back. Spawning it would
+        // put two writers on one tty.
         Command::ConnectSubscription { provider } => {
             let outcome = with_terminal_released(|| {
                 tokio::runtime::Handle::current().block_on(connect(runtime, provider))
             });
-            note_account(state, provider, outcome);
-            state.rebootstrap(runtime.bootstrap()?);
+            spawn_reload(
+                runtime,
+                state,
+                &context.chores,
+                account_note(provider, outcome),
+            );
         }
+        // Signing out is not interactive — it is a vendor round-trip like any
+        // other, and it used to freeze the terminal for the whole of it.
         Command::DisconnectSubscription { provider } => {
-            let outcome = tokio::runtime::Handle::current().block_on(disconnect(runtime, provider));
-            note_account(state, provider, outcome);
-            state.rebootstrap(runtime.bootstrap()?);
+            let handle = Arc::clone(runtime);
+            spawn_chore(
+                &context.chores,
+                state,
+                format!("{provider} — signing out"),
+                async move {
+                    let line = account_note(provider, disconnect(&handle, provider).await);
+                    // Re-read here rather than on the frame loop: `bootstrap`
+                    // carries the doctor report, which is the slow part.
+                    match tokio::task::spawn_blocking(move || handle.bootstrap()).await {
+                        Ok(Ok(bootstrap)) => Chore::Reloaded(Some(line), Box::new(bootstrap)),
+                        Ok(Err(error)) => Chore::Said(format!("{line} — not re-read: {error}")),
+                        Err(error) => Chore::Said(format!("{line} — not re-read: {error}")),
+                    }
+                },
+            );
         }
         // Starkbot's own login (K7): no terminal handover. The overlay goes
         // up immediately with the URL, and the wait runs in the background so
@@ -858,15 +1065,40 @@ fn execute(
             state.note("login cancelled");
         }
         Command::RefreshModels { account } => {
-            let outcome =
-                tokio::runtime::Handle::current().block_on(runtime.refresh_models(&account));
-            match outcome {
-                Ok(models) => state.note(format!("{account}: {} models", models.len())),
-                Err(error) => state.note(format!("{account}: {error}")),
+            let handle = Arc::clone(runtime);
+            spawn_chore(
+                &context.chores,
+                state,
+                format!("{account} — refreshing the model list"),
+                async move {
+                    match handle.refresh_models(&account).await {
+                        Ok(models) => Chore::Said(format!("{account}: {} models", models.len())),
+                        Err(error) => Chore::Said(format!("{account}: {error}")),
+                    }
+                },
+            );
+        }
+        Command::CheckKey { account } => {
+            let pending = format!("{account} key — checking");
+            check_key(runtime, state, &context.chores, &account, pending);
+        }
+        Command::ResolveConfirm {
+            confirm,
+            outcome,
+            via,
+        } => {
+            if let Err(error) = runtime.resolve_confirm(confirm, outcome, via) {
+                state.note(format!("that confirm could not be resolved: {error}"));
             }
         }
-        Command::CheckKey { account } => check_key(runtime, state, &account),
-        Command::ReBootstrap => rebootstrap(runtime, state)?,
+        Command::AnswerAsk { ask, answer, via } => {
+            if let Err(error) = runtime.answer_ask(ask, answer, via) {
+                state.note(format!("that answer could not be delivered: {error}"));
+            }
+        }
+        Command::ReBootstrap => {
+            rebootstrap(runtime, state, &context.chores, "re-reading the core")?;
+        }
     }
     Ok(())
 }
@@ -915,7 +1147,7 @@ fn nav(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, spec: NavS
         }
     };
     let mut options = BrowserOptions::unattended(&settings, spec.url.clone(), spec.goal.clone());
-    options.headed = spec.headed;
+    options.headless = spec.headless;
     options.safety_heads = spec.safety_heads;
     options.profile = spec.profile.map(PathBuf::from);
 
@@ -1179,14 +1411,14 @@ async fn disconnect(
     }
 }
 
-fn note_account(
-    state: &mut State,
+/// How an account call ended, in the words the status line shows.
+fn account_note(
     provider: &str,
     outcome: Result<neo_core::ProviderAccount, RuntimeError>,
-) {
+) -> String {
     match outcome {
-        Ok(account) => state.note(format!("{provider} is {:?}", account.status)),
-        Err(error) => state.note(format!("{provider}: {error}")),
+        Ok(account) => format!("{provider} is {:?}", account.status),
+        Err(error) => format!("{provider}: {error}"),
     }
 }
 
@@ -1205,16 +1437,26 @@ fn with_terminal_released<T>(body: impl FnOnce() -> T) -> T {
     outcome
 }
 
-/// Ask the vendor what a stored key is worth. `Runtime::check_key` is async
-/// and this loop is not, so the one await point in the front end lives here,
-/// on the runtime handle the `neo tui` command entered through
-/// `block_in_place`.
-fn check_key(runtime: &Runtime, state: &mut State, account: &str) {
-    let checked = tokio::runtime::Handle::current().block_on(runtime.check_key(account));
-    match checked {
-        Ok(status) => state.note(format!("{account} key is {}", key_label(status.state))),
-        Err(error) => state.note(format!("{account} key not checked: {error}")),
-    }
+/// Ask the vendor what a stored key is worth.
+///
+/// The vendor decides how long this takes, so it is a chore: the key check
+/// that used to hold the frame loop for a full HTTP timeout now leaves
+/// `pending` on the status line and overwrites it with the verdict.
+fn check_key(
+    runtime: &Arc<Runtime>,
+    state: &mut State,
+    chores: &Chores,
+    account: &str,
+    pending: String,
+) {
+    let handle = Arc::clone(runtime);
+    let account = account.to_owned();
+    spawn_chore(chores, state, pending, async move {
+        match handle.check_key(&account).await {
+            Ok(status) => Chore::Said(format!("{account} key is {}", key_label(status.state))),
+            Err(error) => Chore::Said(format!("{account} key not checked: {error}")),
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1275,10 +1517,7 @@ mod tests {
                             return;
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {
-                            assert!(
-                                Instant::now() < deadline,
-                                "the turn never settled in 90 s"
-                            );
+                            assert!(Instant::now() < deadline, "the turn never settled in 90 s");
                             std::thread::sleep(Duration::from_millis(100));
                         }
                         Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1343,5 +1582,233 @@ mod tests {
                 }
             });
         });
+    }
+
+    /// B3: a hung vendor must cost the frame loop nothing.
+    ///
+    /// `CheckKey` ran on `Handle::block_on` inside `execute`, so a vendor
+    /// that accepted the connection and never answered stopped the terminal
+    /// redrawing and reading keys for the whole 10 s HTTP timeout. The key
+    /// bases point at a socket that does exactly that, and the command is
+    /// applied through the real `execute` — including the debug assertion it
+    /// now carries — so the old shape fails here by two hundred times the
+    /// budget.
+    #[test]
+    fn checking_a_key_hands_the_frame_loop_back_before_the_vendor_answers() {
+        let dir = scratch("frame-budget");
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a multi-thread runtime");
+        tokio_runtime.block_on(async {
+            // The frame loop is synchronous code inside `block_in_place`;
+            // the test issues its command from the same place.
+            tokio::task::block_in_place(|| {
+                let (runtime, _listener) = hung_vendor(&dir);
+                runtime
+                    .set_key(OPENAI, "sk-not-a-real-key")
+                    .expect("the file keychain stores a key");
+                let mut state = State::new(runtime.bootstrap().expect("a bootstrap"));
+                let mut context = frame_loop_context();
+
+                let started = Instant::now();
+                execute(
+                    &runtime,
+                    &mut state,
+                    &mut context,
+                    Command::CheckKey {
+                        account: OPENAI.to_owned(),
+                    },
+                )
+                .expect("the command is applied");
+                let held = started.elapsed();
+
+                assert!(
+                    held < FRAME_BUDGET,
+                    "a key check held the frame loop for {} ms",
+                    held.as_millis()
+                );
+                assert_eq!(
+                    state.status.as_deref(),
+                    Some("openai key — checking"),
+                    "the frame that starts a vendor call must say what it is waiting for"
+                );
+            });
+        });
+        // The chore is still waiting on a socket that will never answer, and
+        // the test has what it came for: tear the runtime down rather than
+        // wait out the vendor timeout the frame loop no longer waits out.
+        tokio_runtime.shutdown_background();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same contract for `:doctor`, which is not a vendor call at all.
+    ///
+    /// Every doctor check is local, and one of them is slow: with no OpenAI
+    /// key stored, the dictation row asks macOS three authorisation
+    /// questions, measured here at ~4.6 s. The old arm ran the report on the
+    /// frame loop and had the answer before it returned; the new one hands
+    /// the frame back saying what it started, which is what this pins — a
+    /// status line of "doctor re-run · N failing check(s)" here would mean
+    /// the report was waited for.
+    #[test]
+    fn re_running_the_doctor_hands_the_frame_loop_back_first() {
+        let dir = scratch("doctor-budget");
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a multi-thread runtime");
+        tokio_runtime.block_on(async {
+            tokio::task::block_in_place(|| {
+                // No key is stored, which is the slow case, and the state is
+                // the hand-made fixture so the test does not pay for a
+                // `bootstrap` of its own.
+                let (runtime, _listener) = hung_vendor(&dir);
+                let mut state = State::new(bootstrap());
+                let mut context = frame_loop_context();
+
+                let started = Instant::now();
+                execute(&runtime, &mut state, &mut context, Command::Doctor)
+                    .expect("the command is applied");
+                let held = started.elapsed();
+
+                assert!(
+                    held < FRAME_BUDGET,
+                    "re-running the doctor held the frame loop for {} ms",
+                    held.as_millis()
+                );
+                assert_eq!(
+                    state.status.as_deref(),
+                    Some("doctor — re-running the local checks")
+                );
+            });
+        });
+        tokio_runtime.shutdown_background();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Leaving the frame loop is only half of it: an answer nobody applies
+    /// leaves the status line claiming "checking" for ever, and a report
+    /// nobody stores leaves the Doctor tab showing the old one. This is the
+    /// other half — the poll the loop runs every frame, taking both.
+    #[test]
+    fn a_finished_chore_reaches_the_frame() {
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a multi-thread runtime");
+        tokio_runtime.block_on(async {
+            tokio::task::block_in_place(|| {
+                let mut state = State::new(bootstrap());
+                let mut chores = Chores::new();
+                assert!(state.doctor.checks.is_empty(), "nothing has been read yet");
+
+                spawn_chore(&chores, &mut state, "doctor — re-running", async {
+                    Chore::Doctored(
+                        "doctor re-run · 1 failing check(s)".to_owned(),
+                        Box::new(neo_agent::doctor::DoctorReport {
+                            checks: vec![neo_agent::doctor::Check {
+                                name: "chrome".to_owned(),
+                                health: neo_agent::doctor::Health::Fail,
+                                detail: "not installed".to_owned(),
+                                fix: None,
+                            }],
+                        }),
+                    )
+                });
+
+                // The loop polls; it never awaits.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    poll_chores(&mut state, &mut chores);
+                    if state.status.as_deref() == Some("doctor re-run · 1 failing check(s)") {
+                        assert_eq!(
+                            state.doctor.checks.len(),
+                            1,
+                            "the report the chore carried must replace the old one"
+                        );
+                        return;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "the chore's answer never reached the frame"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+        });
+    }
+
+    /// The smallest bootstrap `State::new` accepts. Nothing here is
+    /// rendered: the goldens own what a frame looks like.
+    fn bootstrap() -> Bootstrap {
+        Bootstrap {
+            bridge_version: neo_agent::runtime::BRIDGE_VERSION,
+            settings: neo_core::Settings::default(),
+            keys: Vec::new(),
+            inference: neo_core::InferenceConnection::None,
+            account: None,
+            accounts: Vec::new(),
+            store: neo_agent::runtime::StoreInfo {
+                path: PathBuf::from("/fixtures/neo/neo.db"),
+                schema_version: 3,
+                application_id: 0,
+            },
+            doctor: DoctorReport { checks: Vec::new() },
+        }
+    }
+
+    /// `neo_keys::ACCOUNT_OPENAI`, which this crate does not depend on.
+    const OPENAI: &str = "openai";
+
+    /// A data directory of this test's own: two runtimes must never share a
+    /// store or a `keys.json`.
+    fn scratch(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default();
+        let dir =
+            std::env::temp_dir().join(format!("neo-tui-{name}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch data directory");
+        dir
+    }
+
+    /// A runtime whose vendor endpoints are a socket that accepts
+    /// connections and answers none of them — a hung vendor, which is the
+    /// case that froze the terminal.
+    ///
+    /// The listener is handed back rather than dropped: closing it turns the
+    /// hang into an instant connection refusal, and the test would then pass
+    /// against the very code it exists to catch. A debug build keeps its
+    /// keys in a file beside the store, so nothing here touches the login
+    /// Keychain.
+    fn hung_vendor(dir: &std::path::Path) -> (Arc<Runtime>, std::net::TcpListener) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let mut bases = neo_agent::providers::KeyBases::hosted();
+        for base in [&mut bases.openai, &mut bases.anthropic, &mut bases.typesafe] {
+            base.set_scheme("http").expect("http is a special scheme");
+            base.set_host(Some("127.0.0.1")).expect("a literal host");
+            base.set_port(Some(port))
+                .expect("a port fits a special scheme");
+        }
+        let runtime = Runtime::with_key_bases(dir, bases).expect("the store opens");
+        (Arc::new(runtime), listener)
+    }
+
+    /// The loop's own state, with nothing in flight.
+    fn frame_loop_context() -> Loop {
+        Loop {
+            jobs: Jobs::new(),
+            chores: Chores::new(),
+            login: None,
+            dictation: None,
+            voice: None,
+            started: Instant::now(),
+        }
     }
 }

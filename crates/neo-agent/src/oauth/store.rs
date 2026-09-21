@@ -116,10 +116,8 @@ impl OauthStore {
         provider: &OauthProvider,
         credential: &OauthCredential,
     ) -> Result<(), OauthError> {
-        let json = serde_json::to_string(credential).map_err(|_| {
-            OauthError::StoredCredential {
-                provider: provider.id,
-            }
+        let json = serde_json::to_string(credential).map_err(|_| OauthError::StoredCredential {
+            provider: provider.id,
         })?;
         // The string is moved into `Secret`, which wipes it on drop.
         let blob = Secret::new(json).map_err(|_| OauthError::StoredCredential {

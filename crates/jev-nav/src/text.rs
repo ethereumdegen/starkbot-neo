@@ -15,6 +15,10 @@ pub enum TextError {
     Request(String),
     #[error("text helper returned no valid field value; nothing typed")]
     Invalid,
+    /// The helper answered `{"text": null}`: the goal does not say what this
+    /// field wants. Not a failure — a question for the user (10 §8).
+    #[error("nothing in the goal says what goes in this field")]
+    Unknown,
 }
 
 pub struct TextValue {
@@ -136,6 +140,12 @@ impl OpenAiTextHelper {
             .ok_or(TextError::Invalid)?;
         let output: Value = serde_json::from_str(content).map_err(|_| TextError::Invalid)?;
         let object = output.as_object().ok_or(TextError::Invalid)?;
+        // `{"text": null}` is the helper's documented way of saying the goal
+        // does not carry this value. It ends the *step*, not the run: the
+        // navigator turns it into a question.
+        if object.len() == 1 && object.get("text") == Some(&Value::Null) {
+            return Err(TextError::Unknown);
+        }
         let text = object
             .get("text")
             .and_then(Value::as_str)

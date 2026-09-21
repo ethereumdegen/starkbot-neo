@@ -167,6 +167,9 @@ async fn main() -> anyhow::Result<()> {
         goal: goal.to_owned(),
         safety_heads: safety,
         confirm_at: 0.4,
+        // A spike has nobody to answer a card, so it runs with no denied
+        // list and simply reports whatever ending it reaches.
+        denied_origins: Vec::new(),
     };
     let mut jev = Vec::new();
     let started = Instant::now();

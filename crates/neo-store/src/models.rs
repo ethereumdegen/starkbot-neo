@@ -200,7 +200,11 @@ fn encode(provider: &str, model: &ModelInfo, _at: i64) -> Result<EncodedModel> {
         id: model.reference.id.clone(),
         use_case,
         capabilities: serde_json::to_string(&model.capabilities)?,
-        price: model.price.as_ref().map(serde_json::to_string).transpose()?,
+        price: model
+            .price
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
         price_source: None,
         hidden: model.deprecated,
     })

@@ -173,9 +173,11 @@ impl ScreenLease {
             // Someone else has it. Read their record for the message, and
             // treat anything unreadable as "held, details unknown" — the
             // refusal does not depend on parsing a foreign write.
-            return Err(read_holder(&self.path).map_or(ScreenBusy::HeldByUnknown, |holder| {
-                ScreenBusy::HeldBy(holder)
-            }));
+            return Err(
+                read_holder(&self.path).map_or(ScreenBusy::HeldByUnknown, |holder| {
+                    ScreenBusy::HeldBy(holder)
+                }),
+            );
         }
 
         let holder = Holder {
@@ -320,7 +322,11 @@ mod tests {
         let first = lease(dir.path(), "neo-tui");
         let second = lease(dir.path(), "neo-desktop");
 
-        drop(first.acquire(RunId::new(), "drive TextEdit").expect("first"));
+        drop(
+            first
+                .acquire(RunId::new(), "drive TextEdit")
+                .expect("first"),
+        );
         second
             .acquire(RunId::new(), "eval suite")
             .expect("the screen is free again");

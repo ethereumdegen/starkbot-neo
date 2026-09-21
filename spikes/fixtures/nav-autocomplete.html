@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Destination lookup — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}label{display:block;margin:10px 0}
+ul{list-style:none;padding:0;margin:4px 0;border:1px solid #bbb;border-radius:6px;max-width:320px}
+ul[hidden]{display:none}li{padding:6px 8px;cursor:pointer}li:hover{background:#eee}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Destination lookup</h1>
+<p>Typing alone does not set the destination: the matching suggestion has to
+be chosen from the list the field owns.</p>
+<label for="dest">Destination</label>
+<input id="dest" role="combobox" aria-expanded="false" aria-controls="suggestions"
+ aria-autocomplete="list" autocomplete="off">
+<ul id="suggestions" role="listbox" aria-label="Destination suggestions" hidden></ul>
+<p id="status" aria-live="polite">No destination chosen.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+const places=['Lisbon, Portugal','Lisbon, Ohio','Lille, France','London, United Kingdom','Porto, Portugal'];
+const field=q('dest'),list=q('suggestions');
+field.addEventListener('input',()=>{
+  const text=field.value.trim().toLowerCase();
+  list.innerHTML='';
+  const hits=text?places.filter(place=>place.toLowerCase().startsWith(text)):[];
+  for (const place of hits){
+    const option=document.createElement('li');
+    option.role='option';option.textContent=place;
+    option.onclick=()=>{
+      field.value=place;list.hidden=true;field.setAttribute('aria-expanded','false');
+      record('destination',place);
+      q('status').textContent=`Destination chosen: ${place}.`;
+    };
+    list.append(option);
+  }
+  list.hidden=hits.length===0;
+  field.setAttribute('aria-expanded',String(hits.length>0));
+});
+</script></body></html>

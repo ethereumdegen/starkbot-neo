@@ -305,9 +305,18 @@ mod tests {
             .float("starkbot.confidence", 0.5)
             .flag("starkbot.json_mode", true)
             .failed("the vendor refused")
-            .finish("0123456789abcdef0123456789abcdef", "0123456789abcdef", None, 7, 9);
+            .finish(
+                "0123456789abcdef0123456789abcdef",
+                "0123456789abcdef",
+                None,
+                7,
+                9,
+            );
 
-        let resource = vec![attribute("service.name", Value::String("starkbot-neo".into()))];
+        let resource = vec![attribute(
+            "service.name",
+            Value::String("starkbot-neo".into()),
+        )];
         let document = document(&resource, vec![span]);
 
         let expected = json!({
@@ -350,7 +359,13 @@ mod tests {
             &attributes(vec![("starkbot.event", json!({ "type": "turn_started" }))]),
             11,
         ));
-        let span = span.finish("a".repeat(32).as_str(), "b".repeat(16).as_str(), Some("c"), 1, 2);
+        let span = span.finish(
+            "a".repeat(32).as_str(),
+            "b".repeat(16).as_str(),
+            Some("c"),
+            1,
+            2,
+        );
 
         assert_eq!(span["parentSpanId"], json!("c"));
         assert_eq!(span["status"], json!({ "code": 1 }));

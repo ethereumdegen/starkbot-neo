@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Microphone capture and speech-to-text: on-device macOS dictation, or OpenAI gpt-transcribe."
+publish = false
 
 [lints]
 workspace = true

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Intake, routing and gates on jev-nav::wire — and the TypeSafe key validator."
+publish = false
 
 [lints]
 workspace = true

@@ -90,8 +90,7 @@ pub struct NewTurn {
 /// The thread read, named so the query-plan test asserts against the query
 /// the repository actually runs. `ORDER BY … DESC` walks `messages_thread`
 /// backwards: newest `limit` rows, no temporary b-tree, reversed in Rust.
-pub(crate) const THREAD_QUERY: &str =
-    "SELECT id, conversation_id, role, source, kind, text, meta, task_id, spoken, created_at \
+pub(crate) const THREAD_QUERY: &str = "SELECT id, conversation_id, role, source, kind, text, meta, task_id, spoken, created_at \
      FROM messages WHERE conversation_id = ?1 ORDER BY created_at DESC, seq DESC LIMIT ?2";
 
 #[derive(Clone)]
@@ -119,7 +118,12 @@ impl ConversationRepository {
             connection.execute(
                 "INSERT INTO conversations(id, title, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4)",
-                params![row.id.to_string(), row.title, row.created_at, row.updated_at],
+                params![
+                    row.id.to_string(),
+                    row.title,
+                    row.created_at,
+                    row.updated_at
+                ],
             )?;
             Ok(())
         })?;
@@ -222,7 +226,11 @@ impl ConversationRepository {
     /// question" — a caller needs no handle, and two processes watching the
     /// same thread agree about which row grew. A message with no `run` in its
     /// `meta` has no such identity and is simply inserted.
-    pub fn upsert_streaming_message(&self, message: &NewMessage, append: &str) -> Result<MessageId> {
+    pub fn upsert_streaming_message(
+        &self,
+        message: &NewMessage,
+        append: &str,
+    ) -> Result<MessageId> {
         let run = message
             .meta
             .as_ref()
@@ -390,10 +398,7 @@ impl ConversationRepository {
     /// null conversation. Deleting a thread that is already gone is fine.
     pub fn delete(&self, id: ConversationId) -> Result<()> {
         self.writer.execute(move |connection| {
-            connection.execute(
-                "DELETE FROM conversations WHERE id = ?1",
-                [id.to_string()],
-            )?;
+            connection.execute("DELETE FROM conversations WHERE id = ?1", [id.to_string()])?;
             Ok(())
         })
     }

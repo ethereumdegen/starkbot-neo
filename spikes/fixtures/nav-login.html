@@ -1,0 +1,37 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Billing portal — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}label{display:block;margin:10px 0}
+[hidden]{display:none}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Billing portal</h1>
+<section id="wall">
+<p>Sign in to see your invoices.</p>
+<label>Email <input id="email" type="email" autocomplete="off"></label>
+<label>Password <input id="password" type="password" autocomplete="off"></label>
+<button id="signin">Sign in</button>
+</section>
+<section id="inside" hidden>
+<p>Signed in as stark@starkbot.test.</p>
+<p>Invoice INV-4417 · 340.00 EUR · issued 2026-09-14.</p>
+<button id="seen">Mark invoice INV-4417 seen</button>
+<p id="status" aria-live="polite">INV-4417 is unseen.</p>
+</section>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+// The wall comes down when the session flag appears — set here by a real sign
+// in, or by whoever is standing in for the human (the eval harness writes the
+// same flag from its own tab, and `storage` fires across tabs of this origin).
+// This is what makes "sign in and I'll pick up where I stopped" testable: the
+// paused run resumes against a page that genuinely changed.
+let session=false;
+const signedIn=()=>{if(session)return true;try{return localStorage.getItem('neo-eval-session')==='open'}catch(e){return false}};
+const apply=()=>{const open=signedIn();q('wall').hidden=open;q('inside').hidden=!open;
+ let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}q('state').value=JSON.stringify(s);};
+q('signin').onclick=()=>{session=true;try{localStorage.setItem('neo-eval-session','open')}catch(e){}apply();};
+q('seen').onclick=()=>{record('seen',{invoice:'INV-4417'});q('status').textContent='INV-4417 is seen.';};
+addEventListener('storage',apply);apply();
+</script></body></html>

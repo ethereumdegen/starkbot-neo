@@ -43,7 +43,7 @@ use objc2_speech::{
     SFSpeechRecognizer,
 };
 
-use super::{Transcript, Transcriber};
+use super::{Transcriber, Transcript};
 use crate::capture::Utterance;
 use crate::error::VoiceError;
 use crate::permission;
@@ -110,7 +110,9 @@ impl Transcriber for AppleTranscriber {
 
         let recognised = tokio::task::spawn_blocking(move || recognise(&samples, rate))
             .await
-            .map_err(|e| VoiceError::Speech { detail: format!("the recognition thread died: {e}") })??;
+            .map_err(|e| VoiceError::Speech {
+                detail: format!("the recognition thread died: {e}"),
+            })??;
 
         Ok(Transcript {
             text: recognised.text,
@@ -237,10 +239,7 @@ fn recognise(samples: &[f32], rate: f64) -> Result<Recognised, VoiceError> {
 
 /// Turn one `(result, error)` callback into an outcome, or `None` for a
 /// non-final partial that carries no verdict.
-fn read_callback(
-    result: *mut SFSpeechRecognitionResult,
-    error: *mut NSError,
-) -> Option<Outcome> {
+fn read_callback(result: *mut SFSpeechRecognitionResult, error: *mut NSError) -> Option<Outcome> {
     if let Some(error) = std::ptr::NonNull::new(error) {
         // SAFETY: a non-null `NSError *` owned by the caller for the duration
         // of the callback; we only read its description and copy it out.
@@ -296,11 +295,16 @@ fn pcm_buffer(samples: &[f32], rate: f64) -> Result<Retained<AVAudioPCMBuffer>, 
 
     // SAFETY: allocating a buffer with the format above; nil means the
     // capacity or format was refused, which the `Option` models.
-    let buffer =
-        unsafe { AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(AVAudioPCMBuffer::alloc(), &format, frames) }
-            .ok_or_else(|| VoiceError::Speech {
-                detail: "AVFAudio refused a PCM buffer for this utterance".into(),
-            })?;
+    let buffer = unsafe {
+        AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+            AVAudioPCMBuffer::alloc(),
+            &format,
+            frames,
+        )
+    }
+    .ok_or_else(|| VoiceError::Speech {
+        detail: "AVFAudio refused a PCM buffer for this utterance".into(),
+    })?;
 
     // SAFETY: `floatChannelData` is non-null for a float32 PCM buffer, and
     // points at an array of one channel pointer because the format above
@@ -374,7 +378,9 @@ mod tests {
     fn reports_what_the_system_says_about_on_device_dictation() {
         eprintln!("speech authorisation: {:?}", permission::speech_status());
         match AppleTranscriber::new() {
-            Ok(transcriber) => eprintln!("on-device dictation ready, locale {}", transcriber.locale()),
+            Ok(transcriber) => {
+                eprintln!("on-device dictation ready, locale {}", transcriber.locale())
+            }
             Err(error) => eprintln!("on-device dictation unavailable: {error}"),
         }
     }
@@ -398,7 +404,10 @@ mod tests {
             }
         }
         let utterance = mic.stop().expect("stop");
-        eprintln!("captured {:.2}s, peak {peak:.3}", utterance.duration.as_secs_f32());
+        eprintln!(
+            "captured {:.2}s, peak {peak:.3}",
+            utterance.duration.as_secs_f32()
+        );
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -411,7 +420,10 @@ mod tests {
             "heard: {:?} (confidence {:?}, {} ms)",
             transcript.text, transcript.confidence, transcript.duration_ms
         );
-        assert!(!transcript.text.trim().is_empty(), "the recogniser returned nothing");
+        assert!(
+            !transcript.text.trim().is_empty(),
+            "the recogniser returned nothing"
+        );
     }
 
     /// The recogniser proof that needs neither a person nor a quiet room:
@@ -438,7 +450,10 @@ mod tests {
 
         let mut reader = hound::WavReader::open(&path).expect("open the fixture");
         let spec = reader.spec();
-        let pcm16: Vec<i16> = reader.samples::<i16>().map(|s| s.expect("sample")).collect();
+        let pcm16: Vec<i16> = reader
+            .samples::<i16>()
+            .map(|s| s.expect("sample"))
+            .collect();
         let utterance = Utterance {
             duration: Duration::from_secs_f64(pcm16.len() as f64 / f64::from(spec.sample_rate)),
             sample_rate: spec.sample_rate,

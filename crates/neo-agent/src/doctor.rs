@@ -216,6 +216,15 @@ fn navigator_check(keys: &[neo_core::KeyStatus]) -> Check {
 ///
 /// Three separate gates, each with its own fix, because "voice does not work"
 /// is useless to a user who has to know *which* switch is off.
+///
+/// The three answers are asked **once per process**. Each is a macOS
+/// authorisation query that takes over a second on a machine where nothing
+/// has warmed the frameworks, and `Bootstrap` embeds this report — so a fresh
+/// install, which is exactly the path with no OpenAI key and therefore no
+/// early return, paid ~4.6 s before `neo tui` could draw its first frame. The
+/// values are also stable for a process's life in every way that matters: a
+/// user who flips a System Settings switch mid-session has already been told
+/// which switch to flip, and re-running the app re-asks.
 fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
     use neo_voice::{MicrophoneAuth, SpeechAuth};
 
@@ -226,7 +235,8 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
             "openai gpt-transcribe · on-device available as a fallback",
         );
     }
-    match neo_voice::microphone_status() {
+    let (microphone, dictation, speech) = *VOICE_AUTHORISATION;
+    match microphone {
         MicrophoneAuth::Denied => {
             return Check::new("dictation", Health::Fail, "microphone access is denied")
                 .with_fix(neo_voice::MICROPHONE_SETTINGS_URL);
@@ -240,7 +250,7 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         }
         MicrophoneAuth::Authorized => {}
     }
-    if !neo_voice::dictation_enabled() {
+    if !dictation {
         // Starkbot never flips this itself: it is the user's System Settings.
         return Check::new(
             "dictation",
@@ -249,14 +259,12 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         )
         .with_fix(neo_voice::DICTATION_SETTINGS_URL);
     }
-    match neo_voice::speech_status() {
+    match speech {
         SpeechAuth::Authorized => {
             Check::new("dictation", Health::Ok, "on-device · no key, no network")
         }
-        SpeechAuth::Denied => {
-            Check::new("dictation", Health::Fail, "speech recognition is denied")
-                .with_fix(neo_voice::SPEECH_SETTINGS_URL)
-        }
+        SpeechAuth::Denied => Check::new("dictation", Health::Fail, "speech recognition is denied")
+            .with_fix(neo_voice::SPEECH_SETTINGS_URL),
         SpeechAuth::NotDetermined => Check::new(
             "dictation",
             Health::Unknown,
@@ -264,6 +272,22 @@ fn dictation_check(keys: &[neo_core::KeyStatus]) -> Check {
         ),
     }
 }
+
+/// The three macOS voice answers, asked once and kept.
+///
+/// See [`dictation_check`] for why this is cached rather than probed per
+/// report.
+static VOICE_AUTHORISATION: std::sync::LazyLock<(
+    neo_voice::MicrophoneAuth,
+    bool,
+    neo_voice::SpeechAuth,
+)> = std::sync::LazyLock::new(|| {
+    (
+        neo_voice::microphone_status(),
+        neo_voice::dictation_enabled(),
+        neo_voice::speech_status(),
+    )
+});
 
 /// Speech is OpenAI-API-key only (K6), so a subscription-only user is
 /// typed-only until they add one. That is a warning, never a failure.
@@ -296,15 +320,18 @@ fn subscription_check(account: &neo_core::ProviderAccount) -> Check {
     let name = format!("subscription ({})", account.provider.as_str());
     let plan = account.plan_type.as_deref().unwrap_or("plan unknown");
     match account.status {
-        ProviderAccountStatus::Connected => Check::new(&name, Health::Ok, format!("connected · {plan}")),
+        ProviderAccountStatus::Connected => {
+            Check::new(&name, Health::Ok, format!("connected · {plan}"))
+        }
         ProviderAccountStatus::RateLimited => {
             Check::new(&name, Health::Warn, format!("rate limited · {plan}"))
         }
-        ProviderAccountStatus::SignedOut => Check::new(&name, Health::Warn, "signed out")
-            .with_fix(format!(
+        ProviderAccountStatus::SignedOut => {
+            Check::new(&name, Health::Warn, "signed out").with_fix(format!(
                 "`neo account --provider {} login`",
                 account.provider.as_str()
-            )),
+            ))
+        }
         ProviderAccountStatus::Unavailable => {
             Check::new(&name, Health::Warn, "the helper is unavailable")
         }

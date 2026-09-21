@@ -15,6 +15,9 @@ s7-render.workspace = true
 tokio.workspace = true
 image.workspace = true
 
+# `macOSPrivateApi: true` in this spike's tauri.conf.json needs the matching
+# cargo feature, and it is a macOS capability, so it is requested per-target
+# rather than in the workspace dep (plan 16 §8.2, seam 4). macOS is unchanged.
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
 objc2-app-kit.workspace = true

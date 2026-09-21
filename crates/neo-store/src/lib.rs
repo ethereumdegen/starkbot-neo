@@ -4,8 +4,8 @@ mod accounts;
 mod actor;
 mod connection;
 mod conversations;
-mod presence;
 mod models;
+mod presence;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -14,8 +14,8 @@ pub use accounts::ProviderAccountRepository;
 pub use actor::{ReadPool, Writer};
 pub use connection::{APPLICATION_ID, SCHEMA_VERSION, migrations, open_read_only};
 pub use conversations::{ConversationRepository, NewMessage, NewTurn};
-pub use presence::{Lease, PresenceRepository, Resource, Session, SessionKind};
 pub use models::{CachedModel, GLOBAL_SCOPE, ModelRepository};
+pub use presence::{Lease, PresenceRepository, Resource, Session, SessionKind};
 pub use settings::SettingsRepository;
 
 use actor::{ReadPool as Pool, Writer as Actor};

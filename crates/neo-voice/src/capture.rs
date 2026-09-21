@@ -153,9 +153,10 @@ impl Microphone {
             .default_input_device()
             .and_then(|device| device.id().ok())
             .map(|id| id.id().to_owned());
-        let devices = host
-            .input_devices()
-            .map_err(|e| VoiceError::Device { call: "input_devices", detail: e.to_string() })?;
+        let devices = host.input_devices().map_err(|e| VoiceError::Device {
+            call: "input_devices",
+            detail: e.to_string(),
+        })?;
         Ok(devices
             .filter_map(|device| {
                 let id = device.id().ok()?.id().to_owned();
@@ -176,7 +177,9 @@ impl Microphone {
         let host = cpal::default_host();
         match device {
             None => {
-                let device = host.default_input_device().ok_or(VoiceError::NoInputDevice)?;
+                let device = host
+                    .default_input_device()
+                    .ok_or(VoiceError::NoInputDevice)?;
                 Ok(Self {
                     device_id: None,
                     name: device.to_string(),
@@ -241,11 +244,18 @@ impl Microphone {
                 // microphone mid-recording; the samples die with it.
                 let _ = done_tx.send(outcome);
             })
-            .map_err(|e| VoiceError::CaptureThread { detail: e.to_string() })?;
+            .map_err(|e| VoiceError::CaptureThread {
+                detail: e.to_string(),
+            })?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => {
-                self.session = Some(Session { stop, level, done: done_rx, thread });
+                self.session = Some(Session {
+                    stop,
+                    level,
+                    done: done_rx,
+                    thread,
+                });
                 Ok(())
             }
             Ok(Err(error)) => {
@@ -286,7 +296,9 @@ impl Microphone {
             );
         }
         if captured.overflowed {
-            return Err(VoiceError::TooLong { limit: MAX_UTTERANCE });
+            return Err(VoiceError::TooLong {
+                limit: MAX_UTTERANCE,
+            });
         }
         Utterance::from_mono(&captured.samples, captured.sample_rate)
     }
@@ -330,7 +342,12 @@ fn capture(
             return Err(error);
         }
     };
-    let Started { stream, mut consumer, sample_rate, overflows } = started;
+    let Started {
+        stream,
+        mut consumer,
+        sample_rate,
+        overflows,
+    } = started;
 
     let mut accumulator = Accumulator::new(sample_rate, MAX_UTTERANCE);
     let mut peak = 0.0f32;
@@ -373,20 +390,27 @@ struct Started {
 fn open_stream(device_id: Option<&str>) -> Result<Started, VoiceError> {
     let host = cpal::default_host();
     let device = match device_id {
-        None => host.default_input_device().ok_or(VoiceError::NoInputDevice)?,
+        None => host
+            .default_input_device()
+            .ok_or(VoiceError::NoInputDevice)?,
         Some(wanted) => host
             .input_devices()
-            .map_err(|e| VoiceError::Device { call: "input_devices", detail: e.to_string() })?
+            .map_err(|e| VoiceError::Device {
+                call: "input_devices",
+                detail: e.to_string(),
+            })?
             .find(|device| device.id().ok().is_some_and(|id| id.id() == wanted))
             .ok_or_else(|| VoiceError::UnknownDevice {
                 requested: wanted.to_owned(),
                 available: Vec::new(),
             })?,
     };
-    let supported = device.default_input_config().map_err(|e| VoiceError::Device {
-        call: "default_input_config",
-        detail: e.to_string(),
-    })?;
+    let supported = device
+        .default_input_config()
+        .map_err(|e| VoiceError::Device {
+            call: "default_input_config",
+            detail: e.to_string(),
+        })?;
     let sample_rate = supported.sample_rate();
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
@@ -399,13 +423,21 @@ fn open_stream(device_id: Option<&str>) -> Result<Started, VoiceError> {
         SampleFormat::I16 => build::<i16>(&device, &config, producer, &overflows),
         SampleFormat::I32 => build::<i32>(&device, &config, producer, &overflows),
         SampleFormat::U16 => build::<u16>(&device, &config, producer, &overflows),
-        other => Err(VoiceError::UnsupportedFormat { format: other.to_string() }),
+        other => Err(VoiceError::UnsupportedFormat {
+            format: other.to_string(),
+        }),
     }?;
-    stream
-        .play()
-        .map_err(|e| VoiceError::Device { call: "stream.play", detail: e.to_string() })?;
+    stream.play().map_err(|e| VoiceError::Device {
+        call: "stream.play",
+        detail: e.to_string(),
+    })?;
 
-    Ok(Started { stream, consumer, sample_rate, overflows })
+    Ok(Started {
+        stream,
+        consumer,
+        sample_rate,
+        overflows,
+    })
 }
 
 fn build<T>(
@@ -438,7 +470,10 @@ where
             },
             None,
         )
-        .map_err(|e| VoiceError::Device { call: "build_input_stream", detail: e.to_string() })
+        .map_err(|e| VoiceError::Device {
+            call: "build_input_stream",
+            detail: e.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -459,7 +494,11 @@ mod tests {
 
         assert!(!accumulator.push(1.0), "the cap did not hold");
         assert!(accumulator.overflowed);
-        assert_eq!(accumulator.samples.len(), 1_000, "it kept growing past the cap");
+        assert_eq!(
+            accumulator.samples.len(),
+            1_000,
+            "it kept growing past the cap"
+        );
 
         // Still refusing, still not growing.
         for _ in 0..10_000 {
@@ -528,7 +567,12 @@ mod tests {
     fn lists_the_real_input_devices() {
         let devices = Microphone::devices().expect("enumerate");
         for device in &devices {
-            eprintln!("{}{} [{}]", if device.is_default { "* " } else { "  " }, device.name, device.id);
+            eprintln!(
+                "{}{} [{}]",
+                if device.is_default { "* " } else { "  " },
+                device.name,
+                device.id
+            );
         }
         assert!(!devices.is_empty());
     }

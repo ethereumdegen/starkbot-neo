@@ -4,12 +4,20 @@
 //!
 //! * `AppleTranscriber` — macOS `Speech.framework` with
 //!   `requiresOnDeviceRecognition`, so the audio never leaves the machine.
-//!   Free, offline, no credential. This is the default.
+//!   Free, offline, no credential. This is the default on macOS.
 //! * `OpenAiTranscriber` — `gpt-transcribe` over the audio transcriptions
 //!   endpoint, used when an OpenAI key exists.
 //!
-//! Capture and the two backends land in this module tree over the next few
-//! commits; the DSP chain and the error surface are here already.
+//! # Platforms
+//!
+//! Capture is portable: `cpal` speaks CoreAudio on macOS and ALSA/PulseAudio
+//! on Linux, and the DSP chain is plain Rust. Only the Apple attachments are
+//! macOS-only — `Speech.framework`, the two TCC gates in `permission`, and
+//! the `Info.plist` that `build.rs` embeds into test binaries. Off macOS
+//! [`BACKENDS`] therefore has exactly one entry, and naming the on-device
+//! backend is a [`VoiceError::BackendUnavailable`] pointing at `openai` —
+//! not a panic, and not a silent switch of where the audio goes (plan 16
+//! §8.2, seam 3).
 
 #![deny(missing_docs)]
 
@@ -26,7 +34,9 @@ pub use permission::{
     SpeechAuth, dictation_enabled, microphone_status, speech_status,
 };
 pub use resample::TARGET_RATE;
-pub use stt::{OpenAiTranscriber, Transcriber, Transcript, transcriber};
+pub use stt::{
+    BACKENDS, Backend, OpenAiTranscriber, Transcriber, Transcript, transcriber, transcriber_for,
+};
 
 #[cfg(target_os = "macos")]
 pub use stt::AppleTranscriber;

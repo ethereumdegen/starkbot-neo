@@ -37,6 +37,17 @@ http = "1"
 bytes = "1"
 zeroize = "1"
 security-framework = "3"
+# Linux secret storage (`neo-keys`): the Secret Service D-Bus API that
+# gnome-keyring and KWallet both implement. Chosen over `keyring`, which would
+# pull this same crate plus its own abstraction layer, and over `libsecret-sys`,
+# which needs libsecret/libdbus headers at build time. `rt-async-io-crypto-rust`
+# keeps the tree pure Rust (no OpenSSL) and its blocking API off tokio's
+# executor; `crypto-rust` gives the DH-encrypted session, so a secret never
+# crosses the bus in clear text.
+secret-service = { version = "5", default-features = false, features = ["rt-async-io-crypto-rust"] }
+# Named directly only so `neo-keys` can tell "no Secret Service is running" —
+# a `ServiceUnknown` D-Bus reply — apart from every other transport failure.
+zbus = { version = "5", default-features = false }
 # `flock` for the screen lease, through a safe API: the workspace denies
 # `unsafe_code`, which rules out calling libc directly for it.
 rustix = { version = "1", features = ["fs"] }
@@ -72,6 +83,14 @@ neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
 spice-framework = "0.2"
 metalcraft = { version = "1.2.0", features = ["rig"] }
+# `macos-private-api` is re-added per-crate under a macOS target block: the
+# feature does not exist on Linux and would poison the build graph there.
+# `macos-private-api` stays here rather than behind a macOS target
+# section in each member: `tauri-build` validates the feature list
+# against `tauri.conf.json`'s `macOSPrivateApi` by reading the plain
+# `[dependencies]` table, so a target-gated feature reads as absent and
+# fails the build on macOS. It costs a Linux build nothing — it toggles
+# `tauri-runtime`/`tauri-runtime-wry` cfgs and pulls in no crates.
 tauri = { version = "2.11.0", default-features = false, features = ["wry", "macos-private-api"] }
 tauri-build = "2.5.6"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }

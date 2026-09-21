@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Headless command-line interface for Starkbot Neo."
+publish = false
 
 [[bin]]
 name = "neo"

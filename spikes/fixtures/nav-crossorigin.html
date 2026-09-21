@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shipment desk — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:680px}
+iframe{width:100%;height:110px;border:1px solid #bbb;border-radius:8px}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Shipment desk</h1>
+<p>The notice below lives in a panel served by a different host, so it is a
+cross-origin frame. Acknowledging it can only be done inside the panel.</p>
+<iframe id="panel" title="Delivery notice panel"></iframe>
+<p id="status" aria-live="polite">Notice 8841 is pending.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+// `localhost` and `127.0.0.1` are the same fixture server and different
+// origins, which is how this stays a no-network fixture and still produces a
+// real out-of-process frame. Opened straight off disk there is no server, so
+// the page says so instead of loading nothing.
+if (location.protocol==='http:') q('panel').src=`http://localhost:${location.port}/nav-frame.html`;
+else q('status').textContent='Serve this fixture over HTTP to load the cross-origin panel.';
+addEventListener('message',event=>{
+  if (event.data?.fixture!=='nav-frame') return;
+  record('notice',{id:event.data.notice,state:event.data.state});
+  q('status').textContent=`Notice ${event.data.notice} ${event.data.state}.`;
+});
+</script></body></html>

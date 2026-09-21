@@ -1,0 +1,56 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: frame
+---
+Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
+1  Conversation    2  Runs (0/0 live)    3  Activity (1)
+Ask Starkbot to do something in an app or on the web.
+i or a starts typing · Enter sends · : runs a command
+
+
+
+
+
+
+
+              ┌ Confirm ─────────────────────────────────────────────────────────────┐
+              │`Pay $42.00 now` says “pay”.                                          │
+              │                                                                      │
+              │where Checkout — https://shop.test/cart                               │
+              │why   safety:spends                                                   │
+              │                                                                      │
+              │[y] yes   [n] no                                                      │
+              └ y approves · n denies · Enter is not an answer ──────────────────────┘
+
+
+
+
+
+
+
+
+                                                                                              ▼ live
+> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Conversation
+fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=NONE  >
+fg=DarkGray bg=Reset mod=NONE  1
+fg=DarkGray bg=Reset mod=NONE  2  Runs (0/0 live)    3  Activity (1)
+fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+fg=DarkGray bg=Reset mod=NONE  i or a starts typing · Enter sends · : runs a command
+fg=DarkGray bg=Reset mod=NONE  where
+fg=DarkGray bg=Reset mod=NONE  why
+fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
+fg=DarkGray bg=Reset mod=NONE  ▼ live
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=Green bg=Reset mod=NONE  [y]
+fg=Red bg=Reset mod=NONE  [n]
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=White bg=Reset mod=BOLD  `Pay $42.00 now` says “pay”.
+fg=Yellow bg=Reset mod=NONE  CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+fg=Yellow bg=Reset mod=NONE  │
+fg=Yellow bg=Reset mod=NONE  ┌ Confirm ─────────────────────────────────────────────────────────────┐
+fg=Yellow bg=Reset mod=NONE  └ y approves · n denies · Enter is not an answer ──────────────────────┘

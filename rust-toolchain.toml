@@ -1,5 +1,10 @@
 [toolchain]
 channel = "1.91.0"
 components = ["clippy", "rustfmt"]
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Exactly the two hosts CI compiles on: the macos-14 runner (arm64) and the
+# ubuntu-latest runner (x86_64). x86_64-apple-darwin was declared and never
+# built by anything — a target nobody compiles is a claim nobody checks (16
+# §8.3, A-Q8). Listing both here also means either machine can
+# `cargo check --target` the other for the crates without C dependencies.
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 profile = "minimal"

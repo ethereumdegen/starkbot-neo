@@ -24,6 +24,27 @@ The first authenticated run exposed a real text-helper failure: it entered `Casa
 
 Conclusion at this stage: the minimal Rust CDP → snapshot → one multi-head TypeSafe request per step → guarded action loop worked on the representative local fixture. The 2.5-second hotel-fixture target was met by 241 ms in this run. The expanded parity spike below supersedes the earlier persistent-profile and live-site limitations.
 
+### Yes/no head wire format — resolved 2026-09-21
+
+The *(verify)* in [10-navigator §3](10-navigator.md) is closed. One live
+request to `https://api.typesafe.ai/v1/systemone` asking two `noul` heads
+over a one-sentence checkout page answered:
+
+```json
+{"model":"jev-1.13.0",
+ "answers":{"spends":{"type":"noul","noul":0.93},
+            "outward":{"type":"noul","noul":0.84}},
+ "usage":{"input_tokens":345,"output_tokens":38}}
+```
+
+So the probability is the `noul` field of the head's own object, which is the
+field `wire::Evaluation::noul` reads — the client was right, but it was right
+by accident, and a mismatch would have silently returned no probability for
+every safety head and left every run ungated. That failure mode is now
+impossible: an absent or mis-shaped head is `WireError::Invalid`, and a
+guarded run refuses the step rather than scoring the unknown as safe
+(A-Q7, [16-quality §3](16-quality.md)).
+
 ### Browser parity extension
 
 `s1-nav --bin parity` now runs a deterministic Chrome fixture suite with independent DOM assertions and no model calls. One run covered:

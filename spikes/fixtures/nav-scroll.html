@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Warehouse rows — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+.scroller{height:96px;overflow-y:auto;border:1px solid #777;border-radius:6px}
+.row{height:40px;padding:8px;border-bottom:1px solid #eee}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Warehouse rows</h1>
+<p>Only the last row can be picked, and it sits inside the list's own
+scrollport — the page itself does not scroll.</p>
+<div class="scroller" aria-label="Warehouse rows" id="list"></div>
+<p id="status" aria-live="polite">No row picked.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+const list=q('list');
+for (let i=1;i<=12;i++){
+  const row=document.createElement('div');row.className='row';
+  row.textContent=`Row ${i} · pallet ${1000+i}`;
+  if (i===12){const pick=document.createElement('button');pick.textContent='Pick pallet 1012';
+    pick.onclick=()=>{record('picked',{row:12,pallet:1012});q('status').textContent='Picked pallet 1012.';};
+    row.textContent=`Row 12 · `;row.append(pick);}
+  list.append(row);
+}
+</script></body></html>

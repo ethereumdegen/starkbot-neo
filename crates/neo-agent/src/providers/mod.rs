@@ -19,7 +19,7 @@ pub use anthropic_oauth::AnthropicOauthInference;
 pub use anthropic_oauth_model::ClaudeSubscription;
 pub use catalog::{Catalog, classify_all};
 pub use codex_oauth::CodexOauthInference;
+pub(crate) use key_check::required_model;
 pub use key_check::{KeyBases, model_list_state};
 pub use openai::OpenAiKeyValidator;
 pub use turn::Turn;
-pub(crate) use key_check::required_model;

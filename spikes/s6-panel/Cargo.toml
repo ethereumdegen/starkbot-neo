@@ -9,16 +9,22 @@ tauri-build.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-block2.workspace = true
-core-graphics.workspace = true
 neo-cdp.workspace = true
-objc2-app-kit.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+# This spike is the macOS NSPanel probe: AppKit, WebKit, CGEvent and the
+# `tauri-nspanel` git dep are all macOS-only. Kept per-target so a
+# Linux resolve of the workspace never pulls them (plan 16 §8.2, seam 4);
+# macOS gets exactly the same set as before.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+core-graphics.workspace = true
+objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 objc2-web-kit.workspace = true
 tauri-nspanel.workspace = true
-tempfile.workspace = true
-tokio.workspace = true

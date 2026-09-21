@@ -328,7 +328,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
             &provider,
             GLOBAL_SCOPE,
             vec![
-                model("gpt-5.6-sol", vec![ModelUseCase::Inference, ModelUseCase::TextHelper]),
+                model(
+                    "gpt-5.6-sol",
+                    vec![ModelUseCase::Inference, ModelUseCase::TextHelper],
+                ),
                 model("gpt-transcribe", vec![ModelUseCase::SpeechToText]),
             ],
             1_000,
@@ -342,7 +345,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
             &provider,
             GLOBAL_SCOPE,
             vec![
-                model("gpt-5.6-sol", vec![ModelUseCase::Inference, ModelUseCase::TextHelper]),
+                model(
+                    "gpt-5.6-sol",
+                    vec![ModelUseCase::Inference, ModelUseCase::TextHelper],
+                ),
                 model("gpt-5.7-luna", vec![ModelUseCase::TextHelper]),
             ],
             2_000,
@@ -359,7 +365,10 @@ fn the_registry_cache_replaces_a_catalog_and_keeps_first_seen() {
     assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.7-luna"]);
 
     let sol = &cached[0];
-    assert_eq!(sol.first_seen, 1_000, "a surviving id keeps its first sighting");
+    assert_eq!(
+        sol.first_seen, 1_000,
+        "a surviving id keeps its first sighting"
+    );
     assert_eq!(sol.last_seen, 2_000);
     assert_eq!(
         sol.info.use_cases,
@@ -493,9 +502,15 @@ fn a_streaming_answer_grows_one_row() {
         .unwrap_or_else(|error| panic!("{error}"));
 
     let growing = |at| {
-        NewMessage::new(thread.id, MessageRole::Assistant, MessageSource::System, "", at)
-            .with_kind(MessageKind::Answer)
-            .with_meta(json!({"run": "run-1"}))
+        NewMessage::new(
+            thread.id,
+            MessageRole::Assistant,
+            MessageSource::System,
+            "",
+            at,
+        )
+        .with_kind(MessageKind::Answer)
+        .with_meta(json!({"run": "run-1"}))
     };
     let first = conversations
         .upsert_streaming_message(&growing(1_100), "Posted ")
@@ -600,9 +615,10 @@ fn the_thread_read_walks_its_index_instead_of_sorting() {
                 "EXPLAIN QUERY PLAN {}",
                 crate::conversations::THREAD_QUERY
             ))?;
-            let rows = statement.query_map(rusqlite::params![ConversationId::new().to_string(), 10_i64], |row| {
-                row.get::<_, String>(3)
-            })?;
+            let rows = statement.query_map(
+                rusqlite::params![ConversationId::new().to_string(), 10_i64],
+                |row| row.get::<_, String>(3),
+            )?;
             let mut lines = Vec::new();
             for row in rows {
                 lines.push(row?);
@@ -711,7 +727,9 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
 
     let store =
         Store::open(&path, temp.path().join("backups")).unwrap_or_else(|error| panic!("{error}"));
-    let id: ConversationId = conversation.parse().unwrap_or_else(|error| panic!("{error}"));
+    let id: ConversationId = conversation
+        .parse()
+        .unwrap_or_else(|error| panic!("{error}"));
     let threads = store
         .conversations()
         .list(10)
@@ -720,7 +738,10 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
     assert_eq!(threads[0].id, id);
     assert_eq!(threads[0].title.as_deref(), Some("yesterday"));
     assert_eq!(threads[0].created_at, 1_000, "started_at became created_at");
-    assert_eq!(threads[0].updated_at, 9_000, "updated_at seeded from ended_at");
+    assert_eq!(
+        threads[0].updated_at, 9_000,
+        "updated_at seeded from ended_at"
+    );
 
     let messages = store
         .conversations()
@@ -750,14 +771,23 @@ fn a_v3_database_upgrades_without_losing_its_thread() {
             )?)
         })
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(hits, 1, "search still finds a message written before the upgrade");
+    assert_eq!(
+        hits, 1,
+        "search still finds a message written before the upgrade"
+    );
 
     // And the upgraded database takes new work.
     store
         .conversations()
         .append_message(
-            NewMessage::new(id, MessageRole::Assistant, MessageSource::System, "More.", 9_500)
-                .with_kind(MessageKind::Answer),
+            NewMessage::new(
+                id,
+                MessageRole::Assistant,
+                MessageSource::System,
+                "More.",
+                9_500,
+            )
+            .with_kind(MessageKind::Answer),
         )
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(

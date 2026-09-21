@@ -7,6 +7,13 @@
 //!
 //! `id` is a dense index into the actor's element store. Nothing outside the
 //! actor thread ever resolves it.
+//!
+//! Off macOS only the walker that fills these nodes is gated away
+//! (`cfg(target_os = "macos")`), so the type and its text helpers look unused
+//! there. They stay compiled with `mapping.rs` and `table.rs`, whose tests
+//! build `RawNode`s by hand: that spec is worth running on the Linux lane,
+//! and the lane denies warnings.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::types::Rect;
 
@@ -59,13 +66,17 @@ impl RawNode {
     /// A node with only a role, for tests and for placeholder roots.
     #[cfg(test)]
     pub(crate) fn new(id: u32, role: &str) -> Self {
-        Self { id, role: role.to_owned(), enabled: true, ..Self::default() }
+        Self {
+            id,
+            role: role.to_owned(),
+            enabled: true,
+            ..Self::default()
+        }
     }
 
     /// Whether this node is a secure text field. Its value is never exposed.
     pub(crate) fn is_secure(&self) -> bool {
-        self.role == "AXSecureTextField"
-            || self.subrole.as_deref() == Some("AXSecureTextField")
+        self.role == "AXSecureTextField" || self.subrole.as_deref() == Some("AXSecureTextField")
     }
 
     /// Label precedence: title, description, placeholder, help, then value for

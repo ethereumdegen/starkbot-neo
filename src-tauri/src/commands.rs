@@ -15,8 +15,9 @@ use neo_agent::agent::{
 use neo_agent::oauth::OauthProvider;
 use neo_agent::{Runtime, RuntimeError};
 use neo_core::{
-    AppEvent, ConversationId, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI,
-    PROVIDER_OPENAI_CODEX, ProviderAccount, RunId,
+    AppEvent, AskId, ConfirmId, ConversationId, GateOutcome, PROVIDER_ANTHROPIC,
+    PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, ProviderAccount,
+    ResolutionVia, RunId,
 };
 use neo_eval::Selection;
 use serde_json::{Value, json};
@@ -283,7 +284,10 @@ pub async fn cancel_login(state: State<'_, Desktop>, provider: String) -> Result
 
 /// Forget one subscription credential.
 #[tauri::command]
-pub async fn disconnect(state: State<'_, Desktop>, provider: String) -> Result<ConnectionRow, UiError> {
+pub async fn disconnect(
+    state: State<'_, Desktop>,
+    provider: String,
+) -> Result<ConnectionRow, UiError> {
     let provider = provider_by_id(&provider)?;
     state.cancel_login(provider);
     let runtime = state.runtime();
@@ -356,10 +360,11 @@ pub async fn set_inference_runtime(
     model: Option<String>,
 ) -> Result<InferenceView, UiError> {
     if !SELECTABLE_RUNTIMES.contains(&provider.as_str()) {
-        return Err(
-            UiError::new("unknown_runtime", format!("`{provider}` is not an inference runtime"))
-                .with_fix(Fix::ChooseRuntime),
-        );
+        return Err(UiError::new(
+            "unknown_runtime",
+            format!("`{provider}` is not an inference runtime"),
+        )
+        .with_fix(Fix::ChooseRuntime));
     }
     let runtime = state.runtime();
     let accounts = stored_rows(Arc::clone(&runtime)).await?;
@@ -368,7 +373,10 @@ pub async fn set_inference_runtime(
         blocking(move || {
             let settings = runtime.settings()?;
             let id = model.unwrap_or_else(|| settings.models.inference.id.clone());
-            runtime.patch_settings("models", json!({ "inference": { "provider": provider, "id": id } }))?;
+            runtime.patch_settings(
+                "models",
+                json!({ "inference": { "provider": provider, "id": id } }),
+            )?;
             runtime.bootstrap()
         })
         .await?
@@ -412,7 +420,10 @@ pub async fn list_models(
 
 /// Re-read one API-key runtime's catalogue from the vendor.
 #[tauri::command]
-pub async fn refresh_models(state: State<'_, Desktop>, account: String) -> Result<Vec<ModelRow>, UiError> {
+pub async fn refresh_models(
+    state: State<'_, Desktop>,
+    account: String,
+) -> Result<Vec<ModelRow>, UiError> {
     let account = known_account(&account)?;
     let runtime = state.runtime();
     let models = runtime.refresh_models(account).await?;
@@ -573,6 +584,55 @@ pub async fn stop_run(state: State<'_, Desktop>, run: RunId) -> Result<bool, UiE
     Ok(state.runs().stop(run))
 }
 
+/// The window's answer to a confirm card.
+///
+/// Nothing is published here: the run that raised the card publishes
+/// `ConfirmResolved` with the outcome it actually used, and a command that
+/// announced its own would have the thread showing an approval the run never
+/// acted on.
+#[tauri::command]
+pub async fn resolve_confirm(
+    state: State<'_, Desktop>,
+    id: ConfirmId,
+    outcome: GateOutcome,
+    via: ResolutionVia,
+) -> Result<(), UiError> {
+    // No `blocking` hop: answering a card is a oneshot send to the waiting
+    // run, not a store round trip, and a card is what a person is sitting
+    // in front of waiting on.
+    state
+        .runtime()
+        .resolve_confirm(id, outcome, via)
+        .map_err(card_error)
+}
+
+/// The window's answer to a question.
+#[tauri::command]
+pub async fn answer_ask(
+    state: State<'_, Desktop>,
+    id: AskId,
+    answer: String,
+    via: ResolutionVia,
+) -> Result<(), UiError> {
+    state
+        .runtime()
+        .answer_ask(id, answer, via)
+        .map_err(card_error)
+}
+
+/// A card nobody is waiting on any more gets its own code.
+///
+/// Both front ends can be showing the same card and a voice answer can beat
+/// them both, so losing the race is the ordinary case, not a fault: the
+/// window says something else answered first rather than painting a failure
+/// over an action that did happen.
+fn card_error(error: RuntimeError) -> UiError {
+    if matches!(error, RuntimeError::NoSuchCard(_)) {
+        return UiError::new("no_such_card", error.to_string());
+    }
+    UiError::from(error)
+}
+
 /// Drive a web page to a goal, as `neo nav` does. Returns the run id at once;
 /// progress is `NavStep`, and the end is `TurnFinished`/`TurnFailed`.
 ///
@@ -584,7 +644,7 @@ pub async fn run_nav(
     state: State<'_, Desktop>,
     url: String,
     goal: String,
-    headed: bool,
+    headless: bool,
     profile: Option<PathBuf>,
     attach: Option<Vec<PathBuf>>,
     safety: bool,
@@ -596,7 +656,7 @@ pub async fn run_nav(
         blocking(move || {
             let settings = runtime.settings()?;
             let mut options = BrowserOptions::unattended(&settings, url, goal);
-            options.headed = headed;
+            options.headless = headless;
             options.safety_heads = safety;
             options.profile = profile;
             options.attach = attach.unwrap_or_default();
@@ -767,7 +827,12 @@ fn known_account(account: &str) -> Result<&'static str, UiError> {
         .iter()
         .copied()
         .find(|known| *known == account)
-        .ok_or_else(|| UiError::new("unknown_account", format!("`{account}` is not a Starkbot key")))
+        .ok_or_else(|| {
+            UiError::new(
+                "unknown_account",
+                format!("`{account}` is not a Starkbot key"),
+            )
+        })
 }
 
 fn no_login(provider: &'static OauthProvider) -> UiError {

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Agent runtimes and provider process bridges for Starkbot Neo."
+publish = false
 
 [lints]
 workspace = true

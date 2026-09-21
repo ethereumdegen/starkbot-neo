@@ -64,7 +64,9 @@ impl From<RuntimeError> for UiError {
                     account: account.clone(),
                 }),
             ),
-            RuntimeError::RuntimeUnavailable(_) => ("runtime_unavailable", Some(Fix::ChooseRuntime)),
+            RuntimeError::RuntimeUnavailable(_) => {
+                ("runtime_unavailable", Some(Fix::ChooseRuntime))
+            }
             // Another Starkbot on this laptop holds the keyboard, an app or
             // the managed profile. Its own code because it is not a failure
             // of the request: the screen says who has it and the user either
@@ -79,9 +81,7 @@ impl From<RuntimeError> for UiError {
             RuntimeError::Store(
                 StoreError::InvalidSettings(_) | StoreError::InvalidSettingsShape,
             ) => ("validation", None),
-            RuntimeError::Store(StoreError::UnknownSettingsSection(_)) => {
-                ("unknown_section", None)
-            }
+            RuntimeError::Store(StoreError::UnknownSettingsSection(_)) => ("unknown_section", None),
             RuntimeError::Store(_) => ("store", None),
             _ => ("runtime", None),
         };
@@ -110,18 +110,27 @@ impl From<ToolError> for UiError {
     fn from(error: ToolError) -> Self {
         match error {
             ToolError::Cancelled(CoreError::Cancelled) => Self::new(CANCELLED, error.to_string()),
-            ToolError::MissingJevKey => Self::new("missing_key", error.to_string()).with_fix(
-                Fix::SetKey {
+            ToolError::MissingJevKey => {
+                Self::new("missing_key", error.to_string()).with_fix(Fix::SetKey {
                     account: JEV_ACCOUNT.to_owned(),
-                },
-            ),
-            ToolError::NotTrusted => Self::new("not_trusted", error.to_string()).with_fix(
-                Fix::Manual {
+                })
+            }
+            ToolError::NotTrusted => {
+                Self::new("not_trusted", error.to_string()).with_fix(Fix::Manual {
                     detail: neo_ax::ACCESSIBILITY_SETTINGS_URL.to_owned(),
-                },
-            ),
+                })
+            }
             ToolError::ScreenBusy(ref busy) => screen_busy(busy),
             ToolError::Runtime(inner) => Self::from(*inner),
+            // The user has no runtime that can write a field value, which is
+            // a settings choice they can make from this window: point at the
+            // setting rather than at a shell command the desktop app has no
+            // terminal for.
+            ToolError::NoTextHelper => {
+                Self::new("no_text_helper", error.to_string()).with_fix(Fix::Manual {
+                    detail: "Settings → Models → inference runtime".to_owned(),
+                })
+            }
             ToolError::Browser(_) | ToolError::App { .. } | ToolError::Cancelled(_) => {
                 Self::new("tool", error.to_string())
             }
@@ -141,10 +150,11 @@ impl From<AgentError> for UiError {
             // selected path needs is not stored, and the Connections screen
             // is one press away. Everything else is the model or the graph
             // failing, which no control here can repair.
-            AgentError::NoKey(account) => Self::new("missing_key", error.to_string())
-                .with_fix(Fix::SetKey {
+            AgentError::NoKey(account) => {
+                Self::new("missing_key", error.to_string()).with_fix(Fix::SetKey {
                     account: (*account).to_owned(),
-                }),
+                })
+            }
             AgentError::Request(_) | AgentError::Graph(_) | AgentError::Core(_) => {
                 Self::new("agent", error.to_string())
             }

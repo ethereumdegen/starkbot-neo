@@ -139,8 +139,14 @@ fn the_runs_pane_shows_a_running_and_a_failed_run() {
     // Elapsed keeps moving while a run is live and freezes when it settles:
     // 23 s for the nav that started at 0, 15 s for the turn that started at
     // 4 s and failed at 19 s.
-    assert!(frame.contains("0:23"), "the live run's elapsed is not ticking");
-    assert!(frame.contains("0:15"), "the failed run's elapsed did not freeze");
+    assert!(
+        frame.contains("0:23"),
+        "the live run's elapsed is not ticking"
+    );
+    assert!(
+        frame.contains("0:15"),
+        "the failed run's elapsed did not freeze"
+    );
     insta::assert_snapshot!("runs_pane", frame);
 }
 
@@ -189,7 +195,10 @@ fn the_mind_pane_traces_the_selected_run_through_nav_decision_display() {
         "the pane rendered the pre-rendered line instead of NavDecision::Display"
     );
     assert!(frame.contains("CLICK"), "no operation in the trace");
-    assert!(frame.contains("outward=0.08"), "no safety head in the trace");
+    assert!(
+        frame.contains("outward=0.08"),
+        "no safety head in the trace"
+    );
     insta::assert_snapshot!("mind_pane_nav_decision", frame);
 }
 
@@ -326,11 +335,7 @@ fn the_status_line_reports_the_running_turn() {
 #[test]
 fn the_session_picker_lists_conversations() {
     let mut state = common::state();
-    state.load_thread(
-        common::conversation_id(1),
-        Some("launch week".into()),
-        &[],
-    );
+    state.load_thread(common::conversation_id(1), Some("launch week".into()), &[]);
     state.show_sessions(vec![
         SessionRow {
             id: common::conversation_id(1),
@@ -493,5 +498,135 @@ fn a_fresh_install_opens_on_connections() {
     assert!(
         row.is_some_and(|row| !row.heading),
         "the cursor must start on something actionable"
+    );
+}
+
+/// The four widths every page is checked at (14 §6).
+const WIDTHS: [(u16, u16); 4] = [(120, 40), (100, 30), (80, 24), (60, 20)];
+
+/// A card on screen at `width`×`height`, armed the way the loop arms it: the
+/// frame carries the sentence, then the debounce elapses. What comes back is
+/// the frame a user would actually be answering.
+fn armed_card(seq: usize, width: u16, height: u16) -> String {
+    let mut state = common::state();
+    state.apply(common::envelope(seq));
+    common::paint(&mut state, width, height);
+    state.tick(neo_tui::CARD_ARM_MS);
+    common::render(&state, width, height)
+}
+
+/// The confirm card, at every width the TUI supports (16 §5.5).
+///
+/// The sentence is the whole point, so it is asserted present in full rather
+/// than only snapshotted: a card that truncated "`Pay $42.00 now` says
+/// “pay”." into "`Pay $42.00 now`…" would still match a blessed golden while
+/// telling the user something else entirely.
+#[test]
+fn the_confirm_card_is_legible_at_every_width() {
+    for (width, height) in WIDTHS {
+        let frame = armed_card(1, width, height);
+        for fragment in [
+            "Pay $42.00 now",
+            "says “pay”.",
+            "shop.test/cart",
+            "safety:spends",
+            "[y] yes",
+            "[n] no",
+        ] {
+            assert!(
+                frame.contains(fragment),
+                "{width}x{height} lost {fragment:?}:\n{frame}"
+            );
+        }
+        // Q2 cannot remember an allow, so the card must not offer to.
+        assert!(
+            !frame.contains("[r]"),
+            "{width}x{height} offered to remember an allow:\n{frame}"
+        );
+        insta::assert_snapshot!(format!("confirm_card_{width}x{height}"), frame);
+    }
+}
+
+/// The free-text question, at every width. It says how to answer it — `i`
+/// opens the one overlay that can take the keyboard back off a card — and it
+/// offers no `y`, because there is nothing to say yes to.
+#[test]
+fn the_free_text_ask_card_is_legible_at_every_width() {
+    for (width, height) in WIDTHS {
+        let frame = armed_card(5, width, height);
+        for fragment in ["Invoice number", "I'll carry on.", "[i] type your answer"] {
+            assert!(
+                frame.contains(fragment),
+                "{width}x{height} lost {fragment:?}:\n{frame}"
+            );
+        }
+        assert!(
+            !frame.contains("[y]"),
+            "{width}x{height} offered yes to a question:\n{frame}"
+        );
+        insta::assert_snapshot!(format!("ask_card_{width}x{height}"), frame);
+    }
+}
+
+/// Before the debounce elapses the card says so rather than advertising keys
+/// that do nothing: an inert binding that is on screen reads as a broken one.
+#[test]
+fn a_card_inside_the_debounce_offers_no_keys() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    let frame = common::paint(&mut state, 100, 30);
+    assert!(frame.contains("reading…"), "no reading state:\n{frame}");
+    assert!(
+        !frame.contains("[y] yes"),
+        "keys offered too early:\n{frame}"
+    );
+}
+
+/// An options ask numbers its answers and shows which one `y` would send, so
+/// the keystroke is never a guess. `j` moves that mark: a highlight the
+/// keyboard cannot move is worse than no highlight at all.
+#[test]
+fn an_options_ask_shows_its_answers_and_moves_the_highlight() {
+    let mut state = common::state();
+    state.apply(common::envelope(8));
+    common::paint(&mut state, 100, 30);
+    state.tick(neo_tui::CARD_ARM_MS);
+
+    let frame = common::render(&state, 100, 30);
+    assert!(
+        frame.contains(" 1 ▸ andrew@stark.test"),
+        "the first answer is not marked:\n{frame}"
+    );
+    assert!(
+        frame.contains(" 2   ops@stark.test"),
+        "the second answer is not numbered:\n{frame}"
+    );
+
+    press(&mut state, KeyCode::Char('j'));
+    let moved = common::render(&state, 100, 30);
+    assert!(
+        moved.contains(" 2 ▸ ops@stark.test") && moved.contains(" 1   andrew@stark.test"),
+        "j did not move the highlight:\n{moved}"
+    );
+}
+
+/// A gate waiting its turn is counted on the card in front of it: a user who
+/// approves one thing needs to know another question is coming, not discover
+/// it when the screen changes under them.
+#[test]
+fn a_queued_gate_is_counted_on_the_card_in_front_of_it() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    let alone = common::paint(&mut state, 100, 30);
+    assert!(
+        !alone.contains("waiting behind"),
+        "nothing is queued yet:\n{alone}"
+    );
+
+    state.apply(common::envelope(7));
+    let queued = common::render(&state, 100, 30);
+    assert!(
+        queued.contains("1 more waiting behind this one"),
+        "the queued gate is invisible:\n{queued}"
     );
 }

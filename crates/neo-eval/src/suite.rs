@@ -91,6 +91,11 @@ pub struct Selection {
     /// count a front end shows is the count that runs.
     pub filter: Option<String>,
     /// Any-of over case tags (`browser`, `spreadsheet`, `known-gap`, …).
+    ///
+    /// [`cases::REVIEW_TAG`] is the release gate's own tag and
+    /// [`cases::LIVE_TAG`] the three real-site cases; they are deliberately
+    /// disjoint, because any-of has no way to exclude a tag and a gate that
+    /// could not be run without the network would not be a gate (16 §6.2).
     pub tags: Vec<String>,
     /// One run per case instead of the [`cases::CONSENSUS_RUNS`] consensus.
     /// A quick look, never evidence that a case passes.
@@ -109,13 +114,7 @@ impl Selection {
     pub fn apply(&self, cases: Vec<Case>) -> Vec<Case> {
         cases
             .into_iter()
-            .filter(|case| {
-                self.matches(
-                    &case.test.id,
-                    case.test.name.as_deref(),
-                    &case.test.tags,
-                )
-            })
+            .filter(|case| self.matches(&case.test.id, case.test.name.as_deref(), &case.test.tags))
             .map(|mut case| {
                 if self.once {
                     case.test.consensus_runs = None;
@@ -451,7 +450,10 @@ mod tests {
     #[allow(dead_code)]
     fn the_suite_future_is_send() {
         fn require_send<T: Send>(_: T) {}
-        let _ = |runtime: &Arc<Runtime>, selection: Selection, run: RunId, cancel: &CancellationToken| {
+        let _ = |runtime: &Arc<Runtime>,
+                 selection: Selection,
+                 run: RunId,
+                 cancel: &CancellationToken| {
             require_send(run_suite(runtime, selection, run, cancel));
         };
     }
@@ -521,8 +523,7 @@ mod tests {
         let both = selection(Some("read-a"), &["spreadsheet"], false).apply(cases::all());
         assert!(!both.is_empty(), "the composition must not empty the set");
         assert!(both.iter().all(|case| {
-            case.test.id.contains("read-a")
-                && case.test.tags.iter().any(|tag| tag == "spreadsheet")
+            case.test.id.contains("read-a") && case.test.tags.iter().any(|tag| tag == "spreadsheet")
         }));
         assert!(
             ids(&both).contains(&"read-a-calc-cell"),
@@ -593,7 +594,12 @@ mod tests {
             None,
             run,
             &CancellationToken::new(),
-            &|event| events.lock().unwrap_or_else(|error| error.into_inner()).push(event),
+            &|event| {
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event)
+            },
         )
         .await
         .expect("a report");
@@ -609,7 +615,9 @@ mod tests {
                 .any(|test| test.test_id == "fails" && !test.passed)
         );
 
-        let seen = events.into_inner().unwrap_or_else(|error| error.into_inner());
+        let seen = events
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner());
         let states: Vec<(String, EvalCaseState)> = seen
             .into_iter()
             .filter_map(|event| match event {
@@ -626,16 +634,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(matches!(
-            states.as_slice(),
-            [
-                (first, EvalCaseState::Started),
-                (_, EvalCaseState::Passed { .. }),
-                (_, EvalCaseState::Started),
-                (_, EvalCaseState::Failed { .. }),
-                (last, EvalCaseState::Skipped { .. }),
-            ] if first.as_str() == "passes" && last.as_str() == "absent"
-        ), "unexpected progress: {states:?}");
+        assert!(
+            matches!(
+                states.as_slice(),
+                [
+                    (first, EvalCaseState::Started),
+                    (_, EvalCaseState::Passed { .. }),
+                    (_, EvalCaseState::Started),
+                    (_, EvalCaseState::Failed { .. }),
+                    (last, EvalCaseState::Skipped { .. }),
+                ] if first.as_str() == "passes" && last.as_str() == "absent"
+            ),
+            "unexpected progress: {states:?}"
+        );
     }
 
     /// Cancelling stops at the next case boundary and says so, rather than
@@ -658,7 +669,10 @@ mod tests {
             Err(EvalError::Cancelled { completed, total }) => {
                 assert_eq!((completed, total), (0, 1));
             }
-            other => panic!("expected a cancellation, got {:?}", other.map(|_| "a report")),
+            other => panic!(
+                "expected a cancellation, got {:?}",
+                other.map(|_| "a report")
+            ),
         }
     }
 

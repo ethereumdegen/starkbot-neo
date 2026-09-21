@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Secret and credential vocabulary for Starkbot Neo."
+publish = false
 
 [lints]
 workspace = true
@@ -13,10 +14,18 @@ workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-security-framework.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 zeroize.workspace = true
+
+# The OS secret store is the one platform-specific part of this crate; the
+# `Secret` type, redaction and the `expose()` audit points are shared.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service.workspace = true
+zbus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

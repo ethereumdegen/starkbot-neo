@@ -4,6 +4,7 @@ pub mod agent;
 pub mod ax;
 pub mod claude;
 pub mod codex;
+pub mod confirm;
 pub mod doctor;
 pub mod nav;
 pub mod oauth;

@@ -248,13 +248,7 @@ impl PendingLogin {
     /// still waiting.
     pub async fn wait_for_code(&self, timeout: Duration) -> Result<AuthCode, OauthError> {
         let listener = callback::bind(self.provider.callback_port)?;
-        callback::wait_for_code(
-            listener,
-            self.provider.callback_path,
-            &self.state,
-            timeout,
-        )
-        .await
+        callback::wait_for_code(listener, self.provider.callback_path, &self.state, timeout).await
     }
 
     /// The paste-the-URL fallback for a browser that cannot reach this
@@ -301,7 +295,10 @@ mod tests {
         assert_eq!(url.path(), "/oauth/authorize");
 
         let params = params(&url);
-        assert_eq!(params.get("response_type").map(String::as_str), Some("code"));
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
         assert_eq!(
             params.get("client_id").map(String::as_str),
             Some("9d1c250a-e61b-44d9-88ed-5944d1962f5e")
@@ -328,7 +325,8 @@ mod tests {
         assert_eq!(params.get("state").map(String::as_str), Some(login.state()));
         // Scopes must be space separated, not the `+`-as-plus of a form.
         assert!(
-            url.as_str().contains("scope=org%3Acreate_api_key+user%3Aprofile"),
+            url.as_str()
+                .contains("scope=org%3Acreate_api_key+user%3Aprofile"),
             "unexpected scope encoding in {url}"
         );
     }
@@ -444,10 +442,7 @@ mod tests {
         assert!(page.contains("close this tab"));
 
         #[allow(clippy::expect_used)]
-        let code = serving
-            .await
-            .expect("listener task")
-            .expect("code arrives");
+        let code = serving.await.expect("listener task").expect("code arrives");
         assert_eq!(format!("{code:?}"), "AuthCode(••••)");
         assert!(
             code_is(&code, "ac_loopback"),
@@ -481,13 +476,8 @@ mod tests {
     async fn the_loopback_listener_gives_up_on_time() {
         #[allow(clippy::expect_used)]
         let listener = callback::bind(0).expect("binds a loopback port");
-        let outcome = callback::wait_for_code(
-            listener,
-            "/callback",
-            "st_1",
-            Duration::from_millis(50),
-        )
-        .await;
+        let outcome =
+            callback::wait_for_code(listener, "/callback", "st_1", Duration::from_millis(50)).await;
         assert!(matches!(outcome, Err(OauthError::Timeout { .. })));
     }
 

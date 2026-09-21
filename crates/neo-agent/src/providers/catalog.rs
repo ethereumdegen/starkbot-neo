@@ -34,10 +34,7 @@ impl KeyBases {
         secret: &Secret,
     ) -> Result<Catalog, ValidationError> {
         let (provider, ids) = match account {
-            ACCOUNT_OPENAI => (
-                neo_core::PROVIDER_OPENAI,
-                self.openai_ids(secret).await?,
-            ),
+            ACCOUNT_OPENAI => (neo_core::PROVIDER_OPENAI, self.openai_ids(secret).await?),
             ACCOUNT_ANTHROPIC => (
                 neo_core::PROVIDER_ANTHROPIC,
                 self.anthropic_ids(secret).await?,

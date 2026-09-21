@@ -27,7 +27,9 @@ pub enum ClaudeError {
     Protocol(String),
     #[error("the Claude Code CLI failed: {0}")]
     Failed(String),
-    #[error("no Claude subscription is connected; run `neo account --provider claude-subscription login`")]
+    #[error(
+        "no Claude subscription is connected; run `neo account --provider claude-subscription login`"
+    )]
     SignedOut,
     #[error("the Claude Code CLI did not answer within {0:?}")]
     Timeout(Duration),
@@ -233,10 +235,7 @@ impl ClaudeCode {
         .collect()
     }
 
-    fn command<'a>(
-        &self,
-        args: impl IntoIterator<Item = &'a str>,
-    ) -> Result<Command, ClaudeError> {
+    fn command<'a>(&self, args: impl IntoIterator<Item = &'a str>) -> Result<Command, ClaudeError> {
         if !self.config.executable.is_file() && self.config.executable.components().count() > 1 {
             return Err(ClaudeError::Missing(self.config.executable.clone()));
         }
@@ -384,7 +383,9 @@ async fn read_turn(stdout: tokio::process::ChildStdout) -> Result<ClaudeTurn, Cl
 
 fn copy_safe_environment(command: &mut Command) {
     // `PATH` is needed because the CLI shells out to its own node runtime.
-    for name in ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "USER", "LOGNAME"] {
+    for name in [
+        "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "USER", "LOGNAME",
+    ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }

@@ -65,7 +65,11 @@ pub async fn run(data_dir: Option<PathBuf>, options: EvalOptions) -> Result<()> 
     // and the terminal disagree about the same failure.
     let report = neo_eval::run_suite(&runtime, selection, RunId::new(), &cancel).await?;
 
-    render(&report, options.report.as_deref(), options.baseline.as_deref());
+    render(
+        &report,
+        options.report.as_deref(),
+        options.baseline.as_deref(),
+    );
 
     if report.failed > 0 {
         anyhow::bail!(
@@ -82,7 +86,11 @@ pub async fn run(data_dir: Option<PathBuf>, options: EvalOptions) -> Result<()> 
 /// `run_suite` deliberately returns the report rather than printing it, so
 /// every decision about a terminal is made here.
 #[allow(clippy::print_stdout)]
-fn render(report: &SuiteReport, save_to: Option<&std::path::Path>, baseline: Option<&std::path::Path>) {
+fn render(
+    report: &SuiteReport,
+    save_to: Option<&std::path::Path>,
+    baseline: Option<&std::path::Path>,
+) {
     report.print_console();
 
     if let Some(path) = save_to

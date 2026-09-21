@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { MessageView } from "../bridge/api";
+import { AskCard, ConfirmCard } from "../components/GateCard";
 import { RunSteps } from "../components/RunTrace";
+import { frontGate } from "../store/gates";
 import { useStore } from "../store/store";
 import { currentChatRun, elapsedMs, type RunRecord } from "../store/runs";
 import { modelId } from "../store/settings";
@@ -75,6 +77,9 @@ export function Chat() {
   const rename = useStore((state) => state.renameConversation);
   const model = useStore((state) => modelId(state.settings));
   const setScreen = useStore((state) => state.setScreen);
+  const gates = useStore((state) => state.gates);
+  const resolveConfirm = useStore((state) => state.resolveConfirm);
+  const answerAsk = useStore((state) => state.answerAsk);
 
   const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -86,6 +91,11 @@ export function Chat() {
     () => currentChatRun(runs, activeId),
     [runs, activeId],
   );
+
+  // One card at a time, and the oldest first: two questions side by side
+  // ask the user to answer for two runs at once, and the one they read is
+  // whichever happened to render on top.
+  const gate = useMemo(() => frontGate(gates), [gates]);
 
   const live = current !== null && current.status === "running";
   const liveRun = live && current !== null ? current.run : null;
@@ -144,9 +154,12 @@ export function Chat() {
     return () => window.removeEventListener("keydown", onKey);
   }, [liveRun, stop]);
 
+  // A card raised below a long thread is a card nobody sees, and the run
+  // waits for it — so it scrolls itself into view like the rest of the tail.
+  const gateId = gate === null ? null : gate.kind === "confirm" ? gate.confirm.id : gate.ask.id;
   useEffect(() => {
     tail.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, current?.steps.length, current?.stream]);
+  }, [messages.length, current?.steps.length, current?.stream, gateId]);
 
   const active = conversations.find((row) => row.id === activeId) ?? null;
 
@@ -283,6 +296,26 @@ export function Chat() {
                   </button>
                 )}
               </li>
+            )}
+            {/* Last in the thread and never scrolled past: a card is a run
+                standing still, so it sits below everything the turn has
+                said, where the eye already is and where the next thing to
+                do belongs. */}
+            {gate?.kind === "confirm" && (
+              <ConfirmCard
+                key={gate.confirm.id}
+                confirm={gate.confirm}
+                pending={gates.pending[gate.confirm.id] === true}
+                onResolve={(outcome) => void resolveConfirm(gate.confirm.id, outcome)}
+              />
+            )}
+            {gate?.kind === "ask" && (
+              <AskCard
+                key={gate.ask.id}
+                ask={gate.ask}
+                pending={gates.pending[gate.ask.id] === true}
+                onAnswer={(answer) => void answerAsk(gate.ask.id, answer)}
+              />
             )}
           </ul>
           <div ref={tail} />

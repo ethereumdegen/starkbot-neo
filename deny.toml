@@ -1,13 +1,22 @@
 [graph]
+# The triples CI actually compiles, and only those: cargo-deny runs on the
+# macOS lane but must judge the Linux graph too, because that is where
+# alsa-sys and the Secret Service stack enter (16 §8.3).
 targets = [
   { triple = "aarch64-apple-darwin" },
-  { triple = "x86_64-apple-darwin" },
+  { triple = "x86_64-unknown-linux-gnu" },
 ]
 all-features = true
 
 [advisories]
 version = 2
 yanked = "deny"
+# Only advisories against crates this workspace depends on *directly* are
+# actionable; the transitive ones (tauri's unic-* and proc-macro-error, the
+# latter reachable only through gtk3-macros in the Linux graph) can be fixed
+# by nobody here but upstream, and a check that is always red is a check
+# nobody reads (16 §8.3).
+unmaintained = "workspace"
 
 [licenses]
 version = 2
@@ -23,10 +32,17 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.8
+# Nothing here is published, so the spikes carry no `license` field; a licence
+# check on a crate that never leaves the repo is noise. Third-party licences
+# are still checked, which is the point of the section.
+private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
+# Aimed at registry dependencies pinned to `*`. Every intra-workspace `path`
+# dependency is a wildcard by construction, which is not the hazard.
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 deny = [
   { name = "reqwest", deny-multiple-versions = true },

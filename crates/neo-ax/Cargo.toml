@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "macOS Accessibility actor: reads and drives native apps for the Jev navigator."
+publish = false
 
 [lints]
 workspace = true

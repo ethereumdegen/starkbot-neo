@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Receipt 5120 — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:560px}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Receipt 5120</h1>
+<p>Coffee subscription · 12.00 EUR · paid 2026-09-02.</p>
+<button id="read">Mark receipt 5120 read</button>
+<p id="status" aria-live="polite">Unread.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+let mem={};
+const record=(key,value)=>{let s=mem;try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+ s[key]=value;mem=s;try{localStorage.setItem('neo-eval',JSON.stringify(s))}catch(e){}
+ q('state').value=JSON.stringify(s);};
+q('read').onclick=()=>{record('receipt',{id:5120,state:'read'});q('status').textContent='Read.';};
+</script></body></html>

@@ -163,12 +163,15 @@ impl OauthClient {
                     .body(body.finish())
             }
         };
-        let response = request.send().await.map_err(|error| OauthError::Transport {
-            stage,
-            // `reqwest`'s message names the endpoint and the failure kind; a
-            // request body never appears in it.
-            detail: error.without_url().to_string(),
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| OauthError::Transport {
+                stage,
+                // `reqwest`'s message names the endpoint and the failure kind; a
+                // request body never appears in it.
+                detail: error.without_url().to_string(),
+            })?;
         let status = response.status();
         let body = response
             .text()
@@ -240,10 +243,7 @@ impl TokenResponse {
         let expires_in = self.expires_in.unwrap_or(DEFAULT_EXPIRES_IN);
         OauthCredential {
             access_token: self.access_token,
-            refresh_token: self
-                .refresh_token
-                .or(previous_refresh)
-                .unwrap_or_default(),
+            refresh_token: self.refresh_token.or(previous_refresh).unwrap_or_default(),
             expires_at_ms: now_ms.saturating_add(expires_in.saturating_mul(1000)),
             account_id,
             email,
@@ -343,7 +343,9 @@ mod tests {
             .and(path("/oauth/token"))
             .and(header("anthropic-beta", "oauth-2025-04-20"))
             .and(header("content-type", "application/json"))
-            .and(body_string_contains("\"grant_type\":\"authorization_code\""))
+            .and(body_string_contains(
+                "\"grant_type\":\"authorization_code\"",
+            ))
             .and(body_string_contains("\"code_verifier\""))
             .and(body_string_contains("\"state\""))
             .and(body_string_contains(
@@ -382,10 +384,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
-            .and(header(
-                "content-type",
-                "application/x-www-form-urlencoded",
-            ))
+            .and(header("content-type", "application/x-www-form-urlencoded"))
             .and(body_string_contains("grant_type=authorization_code"))
             .and(body_string_contains("code_verifier="))
             .and(body_string_contains(
@@ -525,9 +524,7 @@ mod tests {
     async fn an_unreadable_answer_never_quotes_the_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(r#"{"token":"at_leaked"}"#),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"at_leaked"}"#))
             .mount(&server)
             .await;
 

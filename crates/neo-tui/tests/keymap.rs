@@ -9,8 +9,8 @@ use neo_core::AppEvent;
 use neo_eval::Selection;
 use neo_tui::state::PromptKind;
 use neo_tui::{
-    Action, Card, Command, KeyMap, Mode, NavSpec, Pane, RunKind, RunState, Section, SessionRow,
-    State, View,
+    Action, CARD_ARM_MS, Command, KeyMap, Mode, NavSpec, Pane, RunKind, RunState, Section,
+    SessionRow, State, View,
 };
 
 fn press(code: KeyCode) -> KeyEvent {
@@ -90,6 +90,11 @@ fn quitting_is_explicit() {
     assert!(state.quit);
 }
 
+/// The rule, now that a card can really arrive: no keystroke resolves a
+/// confirm whose sentence is not on the screen and has not been there long
+/// enough to read (04 §13, 14 §3). The card here comes from the shared
+/// corpus and is armed by drawing a real frame, so this is the runtime path
+/// rather than a hand-set pair of flags.
 #[test]
 fn no_key_resolves_a_confirm_that_is_not_on_screen() {
     let mut state = common::state();
@@ -99,28 +104,29 @@ fn no_key_resolves_a_confirm_that_is_not_on_screen() {
         assert_eq!(KeyMap.resolve(press(code), &state), Action::None);
     }
 
-    // A card that has been raised but not yet rendered and armed: still nothing.
-    state.card = Some(Card {
-        id: "c1".into(),
-        sentence: "Click Post on x.com".into(),
-        armed: false,
-        rendered: false,
-    });
-    state.mode = Mode::Card;
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('y')), &state), Action::None);
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('n')), &state), Action::None);
+    // Raised but never drawn: still nothing.
+    state.apply(common::envelope(1));
+    assert_eq!(state.mode, Mode::Card);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('n')), &state),
+        Action::None
+    );
 
-    // Rendered but inside the arming debounce: still nothing.
-    if let Some(card) = state.card.as_mut() {
-        card.rendered = true;
-    }
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('y')), &state), Action::None);
+    // Drawn, but inside the arming debounce: still nothing.
+    common::paint(&mut state, 100, 30);
+    state.tick(CARD_ARM_MS - 1);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
 
-    // Rendered and armed: now, and only now, `y` resolves — and `Enter` never
+    // Drawn and armed: now, and only now, `y` resolves — and `Enter` never
     // does, so a stray composer return cannot approve anything.
-    if let Some(card) = state.card.as_mut() {
-        card.armed = true;
-    }
+    state.tick(CARD_ARM_MS);
     assert_eq!(
         KeyMap.resolve(press(KeyCode::Char('y')), &state),
         Action::ResolveConfirm { approve: true }
@@ -129,6 +135,81 @@ fn no_key_resolves_a_confirm_that_is_not_on_screen() {
     assert_eq!(
         KeyMap.resolve(press(KeyCode::Esc), &state),
         Action::UnfocusCard
+    );
+}
+
+/// A card the frame never carried cannot be answered by a keystroke, however
+/// long it has been pending: below the minimum size the TUI draws one line
+/// and the card is not on it, so the gate stays open rather than being
+/// approved by a user who is looking at "terminal too small".
+#[test]
+fn a_card_that_did_not_reach_the_frame_cannot_be_resolved() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+
+    let frame = common::paint(&mut state, 59, 19);
+    assert!(
+        frame.contains("too small"),
+        "not the too-small frame:\n{frame}"
+    );
+    assert!(
+        !frame.contains("says"),
+        "the sentence reached a frame it should not have"
+    );
+    state.tick(10_000);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
+
+    // Arm it on a terminal that fits, then shrink: the sentence has left the
+    // screen, so the keys go dead again.
+    common::paint(&mut state, 100, 30);
+    state.tick(11_000);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::ResolveConfirm { approve: true }
+    );
+    common::paint(&mut state, 59, 19);
+    state.tick(20_000);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None
+    );
+}
+
+/// The help overlay covers the card, so while it is up the sentence is not
+/// on screen in the sense the rule means — and the overlay owns the keyboard
+/// anyway, which is the same answer from the other direction.
+#[test]
+fn an_overlay_over_the_card_disarms_it() {
+    let mut state = common::state();
+    state.apply(common::envelope(1));
+    common::paint(&mut state, 100, 30);
+    state.tick(CARD_ARM_MS);
+
+    state.help = true;
+    common::paint(&mut state, 100, 30);
+    state.tick(CARD_ARM_MS * 4);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None,
+        "a covered card was resolvable"
+    );
+
+    // Uncovered, the sentence is on screen again — and the debounce starts
+    // over, because this is a new sighting of it.
+    state.help = false;
+    common::paint(&mut state, 100, 30);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::None,
+        "a card the user has only just seen again was already live"
+    );
+    state.tick(CARD_ARM_MS * 5);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('y')), &state),
+        Action::ResolveConfirm { approve: true }
     );
 }
 
@@ -185,7 +266,10 @@ fn setting_a_key_is_masked_and_produces_one_set_key_command() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
     // The masked buffer is never exposed, even to a caller holding the state.
-    assert_eq!(state.prompt.as_ref().map(neo_tui::Prompt::visible), Some(""));
+    assert_eq!(
+        state.prompt.as_ref().map(neo_tui::Prompt::visible),
+        Some("")
+    );
 
     let command = feed(&mut state, press(KeyCode::Enter));
     assert_eq!(
@@ -259,30 +343,34 @@ fn nav_parses_the_url_the_goal_and_every_flag() {
     assert_eq!(
         run_line(
             &mut state,
-            "nav https://x.com --headed post the launch note --profile /tmp/p --no-safety"
+            "nav https://x.com --headless post the launch note --profile /tmp/p --no-safety"
         ),
         Some(Command::Nav {
             options: NavSpec {
                 url: "https://x.com".into(),
                 goal: "post the launch note".into(),
-                headed: true,
+                headless: true,
                 profile: Some("/tmp/p".into()),
                 safety_heads: false,
             }
         })
     );
 
-    // Safety heads are on unless turned off, matching `neo nav`'s default.
+    // Safety heads are on unless turned off, matching `neo nav`'s default —
+    // and so is the window: headed is what a user watching it needs (Q1.1).
     let Some(Command::Nav { options }) = run_line(&mut state, "nav https://x.com read it") else {
         panic!("a bare :nav did not produce a run");
     };
     assert!(options.safety_heads);
-    assert!(!options.headed);
+    assert!(!options.headless);
 
     // A goal-less nav is refused with the usage, not sent as an empty goal.
     assert_eq!(run_line(&mut state, "nav https://x.com"), None);
     assert!(
-        state.status.as_deref().is_some_and(|line| line.contains("--headed")),
+        state
+            .status
+            .as_deref()
+            .is_some_and(|line| line.contains("--headless")),
         "{:?}",
         state.status
     );
@@ -309,12 +397,7 @@ fn ax_reaches_every_request_shape() {
     for (line, expected) in [
         ("ax trusted", AxRequest::Trusted),
         ("ax apps", AxRequest::Apps),
-        (
-            "ax table Mail",
-            AxRequest::Table {
-                app: "Mail".into(),
-            },
-        ),
+        ("ax table Mail", AxRequest::Table { app: "Mail".into() }),
         (
             "ax press Mail 12",
             AxRequest::Press {
@@ -373,7 +456,10 @@ fn ax_reaches_every_request_shape() {
 fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
     let mut state = common::state();
     assert_eq!(
-        run_line(&mut state, "eval --filter numbers --tag browser --tag known-gap --once"),
+        run_line(
+            &mut state,
+            "eval --filter numbers --tag browser --tag known-gap --once"
+        ),
         Some(Command::Eval {
             selection: Selection {
                 filter: Some("numbers".into()),
@@ -403,7 +489,10 @@ fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
 #[test]
 fn x_stops_the_selected_run_and_is_honest_about_what_it_cannot_reclaim() {
     let mut state = common::state();
-    assert_eq!(KeyMap.resolve(press(KeyCode::Char('x')), &state), Action::StopRun);
+    assert_eq!(
+        KeyMap.resolve(press(KeyCode::Char('x')), &state),
+        Action::StopRun
+    );
     // Nothing running: `x` says so and sends nothing.
     assert_eq!(feed(&mut state, press(KeyCode::Char('x'))), None);
     assert_eq!(state.status.as_deref(), Some("nothing is running"));
@@ -470,7 +559,10 @@ fn conversations_are_reachable_from_the_keyboard_and_the_command_line() {
         feed(&mut state, press(KeyCode::Char('t'))),
         Some(Command::ListConversations)
     );
-    assert_eq!(run_line(&mut state, "sessions"), Some(Command::ListConversations));
+    assert_eq!(
+        run_line(&mut state, "sessions"),
+        Some(Command::ListConversations)
+    );
     assert_eq!(
         run_line(&mut state, "rename launch week"),
         Some(Command::RenameConversation {
@@ -545,7 +637,10 @@ fn every_settings_section_has_editable_rows() {
     state.view = View::Settings;
     for section in Section::ALL {
         assert!(
-            state.rows().iter().any(|row| row.section == section && !row.heading),
+            state
+                .rows()
+                .iter()
+                .any(|row| row.section == section && !row.heading),
             "{section:?} has no rows"
         );
     }
@@ -565,7 +660,10 @@ fn every_settings_section_has_editable_rows() {
     assert_eq!(feed(&mut state, press(KeyCode::Enter)), None);
     // The prompt opens pre-filled with the stored value, so an edit that
     // replaces it clears first — Ctrl-U, the same key the composer uses.
-    assert_eq!(state.prompt.as_ref().map(neo_tui::Prompt::visible), Some("0.4"));
+    assert_eq!(
+        state.prompt.as_ref().map(neo_tui::Prompt::visible),
+        Some("0.4")
+    );
     feed(&mut state, control(KeyCode::Char('u')));
     for character in "0.25".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
@@ -701,7 +799,10 @@ fn a_message_typed_into_a_running_turn_steers_it() {
         })
     );
     // On screen immediately, marked as having reached a turn in flight.
-    let row = state.thread.last().unwrap_or_else(|| panic!("no steered row"));
+    let row = state
+        .thread
+        .last()
+        .unwrap_or_else(|| panic!("no steered row"));
     assert_eq!(row.text, "use the other account");
     assert!(row.steered);
     // The composer is cleared and still editable — nothing is locked.
@@ -763,7 +864,10 @@ fn esc_stops_a_live_run_and_otherwise_asks_to_quit() {
             run: common::run_id(1)
         })
     );
-    assert!(!state.quit_prompt, "the interrupt must not raise the quit prompt");
+    assert!(
+        !state.quit_prompt,
+        "the interrupt must not raise the quit prompt"
+    );
     // Stopping, not stopped: the token still has to reach the run.
     assert_eq!(
         state.runs.first().map(|run| run.state.clone()),

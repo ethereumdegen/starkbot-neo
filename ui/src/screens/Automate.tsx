@@ -17,7 +17,7 @@ export function Automate() {
 
   const [url, setUrl] = useState("");
   const [navGoal, setNavGoal] = useState("");
-  const [headed, setHeaded] = useState(true);
+  const [headless, setHeadless] = useState(false);
   const [profile, setProfile] = useState("");
   const [attach, setAttach] = useState("");
   const [safety, setSafety] = useState(true);
@@ -38,7 +38,7 @@ export function Automate() {
             void startNav({
               url: url.trim(),
               goal: navGoal.trim(),
-              headed,
+              headless,
               profile,
               attach: attach
                 .split("\n")
@@ -90,10 +90,10 @@ export function Automate() {
             <label className={panes.check}>
               <input
                 type="checkbox"
-                checked={headed}
-                onChange={(event) => setHeaded(event.target.checked)}
+                checked={headless}
+                onChange={(event) => setHeadless(event.target.checked)}
               />
-              Headed — show the window
+              Headless — no window, throwaway profile
             </label>
             <label className={panes.check}>
               <input

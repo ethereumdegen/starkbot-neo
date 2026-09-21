@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-mod fetch_codex;
 mod eval;
+mod fetch_codex;
 mod nav;
 
 use std::io::{IsTerminal, Read};
@@ -73,16 +73,17 @@ enum CommandKind {
     Nav {
         url: String,
         goal: String,
-        /// Show the browser window instead of running headless.
+        /// Run without a window, in a profile that dies with the run. The
+        /// default is the app's own Chrome, headed, where logins persist.
         #[arg(long)]
-        headed: bool,
+        headless: bool,
         /// Ask no safety heads. Fixtures only: nothing can trip the gate.
         #[arg(long)]
         no_safety: bool,
         /// A file a file input may be given. Repeatable.
         #[arg(long, value_name = "PATH")]
         attach: Vec<PathBuf>,
-        /// Reuse a Chrome profile directory, so a login survives runs.
+        /// Use this Chrome profile directory instead of the app's own.
         #[arg(long, value_name = "PATH")]
         profile: Option<PathBuf>,
     },
@@ -116,7 +117,7 @@ enum CommandKind {
         #[arg(long)]
         filter: Option<String>,
         /// Only cases with any of these tags (`browser`, `app`, `spreadsheet`,
-        /// `media`, `smoke`, `known-gap`).
+        /// `media`, `smoke`, `known-gap`, `nav-review`, `nav-review-live`).
         #[arg(long)]
         tag: Vec<String>,
         /// Run each case once instead of the five-run consensus, for a quick
@@ -157,10 +158,7 @@ enum AxCommand {
         app: String,
     },
     /// Press one row of the current table.
-    Press {
-        app: String,
-        index: u16,
-    },
+    Press { app: String, index: u16 },
     /// Put text into one row of the current table.
     Set {
         app: String,
@@ -316,7 +314,7 @@ async fn run(
         CommandKind::Nav {
             url,
             goal,
-            headed,
+            headless,
             no_safety,
             attach,
             profile,
@@ -327,7 +325,7 @@ async fn run(
                 nav::NavOptions {
                     url,
                     goal,
-                    headed,
+                    headless,
                     no_safety,
                     attach,
                     profile,
@@ -354,15 +352,20 @@ async fn run(
             report,
             baseline,
             list,
-        } => eval::run(data_dir, eval::EvalOptions {
-            filter,
-            tags: tag,
-            once,
-            report,
-            baseline,
-            list,
-        })
-        .await,
+        } => {
+            eval::run(
+                data_dir,
+                eval::EvalOptions {
+                    filter,
+                    tags: tag,
+                    once,
+                    report,
+                    baseline,
+                    list,
+                },
+            )
+            .await
+        }
         CommandKind::Models { command } => run_models(data_dir, command).await,
     }
 }
@@ -377,18 +380,16 @@ async fn run_settings(data_dir: Option<PathBuf>, command: SettingsCommand) -> Re
             print_json(&settings)
         }
         SettingsCommand::Patch { section, patch } => {
-            let patch: serde_json::Value = serde_json::from_str(&patch)
-                .context("the patch must be a JSON value")?;
-            let settings =
-                tokio::task::block_in_place(|| runtime.patch_settings(&section, patch))?;
+            let patch: serde_json::Value =
+                serde_json::from_str(&patch).context("the patch must be a JSON value")?;
+            let settings = tokio::task::block_in_place(|| runtime.patch_settings(&section, patch))?;
             print_json(&settings)
         }
         SettingsCommand::UseRuntime { provider, id } => {
             let patch = serde_json::json!({
                 "inference": { "provider": provider, "id": id }
             });
-            let settings =
-                tokio::task::block_in_place(|| runtime.patch_settings("models", patch))?;
+            let settings = tokio::task::block_in_place(|| runtime.patch_settings("models", patch))?;
             print_json(&settings.models)
         }
     }

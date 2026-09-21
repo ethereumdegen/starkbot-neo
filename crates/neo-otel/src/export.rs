@@ -220,7 +220,10 @@ impl Task {
                 // request being wrong, so it retries on the same ladder.
                 Err(error) => {
                     if attempt + 1 == ATTEMPTS {
-                        eprintln!("neo-otel: {count} span(s) not delivered to {}: {error}", self.url);
+                        eprintln!(
+                            "neo-otel: {count} span(s) not delivered to {}: {error}",
+                            self.url
+                        );
                         return;
                     }
                     tokio::time::sleep(backoff(attempt)).await;
@@ -292,7 +295,11 @@ pub(crate) fn traces_url(endpoint: &str) -> String {
 /// exporter down: one bad header should not cost a user their traces.
 pub(crate) fn parse_headers(raw: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    for pair in raw.split(',').map(str::trim).filter(|pair| !pair.is_empty()) {
+    for pair in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+    {
         let Some((key, value)) = pair.split_once('=') else {
             eprintln!("neo-otel: ignoring OTLP header `{pair}`, which has no `=`");
             continue;
@@ -318,8 +325,14 @@ mod tests {
 
     #[test]
     fn the_signal_path_is_appended_once() {
-        assert_eq!(traces_url("http://localhost:4318"), "http://localhost:4318/v1/traces");
-        assert_eq!(traces_url("http://localhost:4318/"), "http://localhost:4318/v1/traces");
+        assert_eq!(
+            traces_url("http://localhost:4318"),
+            "http://localhost:4318/v1/traces"
+        );
+        assert_eq!(
+            traces_url("http://localhost:4318/"),
+            "http://localhost:4318/v1/traces"
+        );
         assert_eq!(
             traces_url("http://localhost:4318/v1/traces"),
             "http://localhost:4318/v1/traces"
@@ -329,8 +342,14 @@ mod tests {
     #[test]
     fn headers_come_from_the_documented_comma_separated_form() {
         let headers = parse_headers("x-api-key=secret, x-tenant=neo");
-        assert_eq!(headers.get("x-api-key").map(|value| value.as_bytes()), Some(&b"secret"[..]));
-        assert_eq!(headers.get("x-tenant").map(|value| value.as_bytes()), Some(&b"neo"[..]));
+        assert_eq!(
+            headers.get("x-api-key").map(|value| value.as_bytes()),
+            Some(&b"secret"[..])
+        );
+        assert_eq!(
+            headers.get("x-tenant").map(|value| value.as_bytes()),
+            Some(&b"neo"[..])
+        );
         assert_eq!(parse_headers("nonsense").len(), 0);
     }
 

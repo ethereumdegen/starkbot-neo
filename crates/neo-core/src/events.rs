@@ -202,7 +202,11 @@ impl fmt::Display for ActionSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             ActionKind::Browse | ActionKind::App => {
-                let verb = if self.kind == ActionKind::Browse { "browse" } else { "app" };
+                let verb = if self.kind == ActionKind::Browse {
+                    "browse"
+                } else {
+                    "app"
+                };
                 let target = self.target.as_deref().unwrap_or("?");
                 let goal = self.goal.as_deref().unwrap_or("?");
                 write!(formatter, "{verb} {target} — {goal}")

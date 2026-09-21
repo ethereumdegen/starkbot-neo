@@ -91,7 +91,9 @@ pub enum Action {
     /// Clear the whole buffer. A prompt that pre-fills — a model id, a
     /// settings field — is otherwise only editable one backspace at a time.
     PromptDeleteLine,
-    ResolveConfirm { approve: bool },
+    ResolveConfirm {
+        approve: bool,
+    },
     ToggleRemember,
     ShowMe,
     AnswerAsk(u8),
@@ -334,7 +336,7 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
             Action::Unavailable("the queue worker is not built yet — nothing to pause")
         }
         KeyCode::Char('o' | 'O') => {
-            Action::Unavailable("no long-lived managed Chrome yet — `:nav <url> <goal> --headed`")
+            Action::Unavailable("no long-lived managed Chrome yet — `:nav <url> <goal>`")
         }
         KeyCode::Char('g') if state.pending_g => Action::SelectFirst,
         KeyCode::Char('g') => Action::PendingG,

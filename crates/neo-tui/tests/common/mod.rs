@@ -8,10 +8,10 @@ use std::path::PathBuf;
 
 use neo_agent::runtime::{BRIDGE_VERSION, Bootstrap, StoreInfo};
 use neo_core::{
-    ActionKind, ActionSummary, ConversationId, InferenceConnection, KeyState, KeyStatus,
-    NavDecision, NavSurface, PROVIDER_ANTHROPIC, PROVIDER_OPENAI, RunId, Settings,
+    ActionKind, ActionSummary, AppEvent, ConversationId, Envelope, InferenceConnection, KeyState,
+    KeyStatus, NavDecision, NavSurface, PROVIDER_ANTHROPIC, PROVIDER_OPENAI, RunId, Settings,
 };
-use neo_tui::State;
+use neo_tui::{Painted, State};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -69,7 +69,10 @@ pub fn decision() -> NavDecision {
         text_ms: 0,
         act_ms: 22,
         elapsed_ms: 1_284,
-        safety: vec![("outward".to_owned(), 0.08), ("destructive".to_owned(), 0.01)],
+        safety: vec![
+            ("outward".to_owned(), 0.08),
+            ("destructive".to_owned(), 0.01),
+        ],
     }
 }
 
@@ -116,10 +119,63 @@ pub fn render(state: &State, width: u16, height: u16) -> String {
         Ok(terminal) => terminal,
         Err(error) => panic!("test backend refused a terminal: {error}"),
     };
-    if let Err(error) = terminal.draw(|frame| neo_tui::draw(frame, state)) {
+    // The renderer's report is what the loop folds back into the state; a
+    // snapshot only wants the cells, so `paint` is the one that keeps it.
+    if let Err(error) = terminal.draw(|frame| {
+        neo_tui::draw(frame, state);
+    }) {
         panic!("draw failed: {error}");
     }
     dump(terminal.backend().buffer())
+}
+
+/// Draw a frame the way the event loop does: the renderer's report goes back
+/// into the state, so `Card::rendered` — and therefore the arming rule —
+/// behaves here exactly as it does at runtime (04 §13).
+pub fn paint(state: &mut State, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => panic!("test backend refused a terminal: {error}"),
+    };
+    let mut painted = Painted::default();
+    let frame_state = &*state;
+    if let Err(error) = terminal.draw(|frame| painted = neo_tui::draw(frame, frame_state)) {
+        panic!("draw failed: {error}");
+    }
+    state.painted(painted);
+    dump(terminal.backend().buffer())
+}
+
+/// The shared card corpus (16 §5.5): one JSONL of envelopes that drives both
+/// these goldens and the webview's reducer tests, so the two front ends
+/// cannot drift apart without one of the two suites failing.
+pub fn corpus() -> Vec<AppEvent> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/cards/envelopes.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => panic!("the card corpus is missing at {}: {error}", path.display()),
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| match serde_json::from_str::<Envelope>(line) {
+            Ok(envelope) => envelope.event,
+            Err(error) => {
+                panic!("the card corpus has a line this front end cannot read: {error}\n{line}")
+            }
+        })
+        .collect()
+}
+
+/// One envelope from the corpus by its `seq`, which is how the two suites
+/// name the same case without copying its contents into either of them.
+pub fn envelope(seq: usize) -> AppEvent {
+    let mut events = corpus();
+    if seq == 0 || seq > events.len() {
+        panic!("the card corpus has no envelope {seq}");
+    }
+    events.remove(seq - 1)
 }
 
 /// The frame as text plus a style legend, so a style-plumbing regression fails
@@ -128,7 +184,11 @@ pub fn dump(buffer: &Buffer) -> String {
     let mut out = String::new();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
-            out.push_str(buffer.cell((x, y)).map_or(" ", ratatui::buffer::Cell::symbol));
+            out.push_str(
+                buffer
+                    .cell((x, y))
+                    .map_or(" ", ratatui::buffer::Cell::symbol),
+            );
         }
         while out.ends_with(' ') {
             out.pop();

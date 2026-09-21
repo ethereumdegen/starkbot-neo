@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Shared, I/O-free domain vocabulary for Starkbot Neo."
+publish = false
 
 [lints]
 workspace = true

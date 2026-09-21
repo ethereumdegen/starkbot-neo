@@ -169,7 +169,14 @@ async fn key_rows_carry_state_only() {
         .await
         .expect("key status is readable");
     let json = serde_json::to_string(&rows).expect("rows serialise");
-    let fields: Vec<&str> = vec!["account", "label", "state", "source", "required", "refreshable"];
+    let fields: Vec<&str> = vec![
+        "account",
+        "label",
+        "state",
+        "source",
+        "required",
+        "refreshable",
+    ];
     let value: serde_json::Value = serde_json::from_str(&json).expect("rows are objects");
     for row in value.as_array().expect("an array of rows") {
         for key in row.as_object().expect("an object row").keys() {
@@ -542,14 +549,21 @@ fn a_stale_webview_is_refused_by_name() {
         .expect_err("a UI from another protocol is refused");
     assert_eq!(error.code, "bridge_version");
     assert!(
-        error.message.contains(&format!("v{}", neo_agent::BRIDGE_VERSION + 1))
-            && error.message.contains(&format!("v{}", neo_agent::BRIDGE_VERSION)),
+        error
+            .message
+            .contains(&format!("v{}", neo_agent::BRIDGE_VERSION + 1))
+            && error
+                .message
+                .contains(&format!("v{}", neo_agent::BRIDGE_VERSION)),
         "both versions belong in the message: {}",
         error.message
     );
     match error.fix {
         Some(crate::view::Fix::Manual { detail }) => {
-            assert!(detail.contains("npm run build"), "the fix names it: {detail}");
+            assert!(
+                detail.contains("npm run build"),
+                "the fix names it: {detail}"
+            );
         }
         other => panic!("a mismatch is fixed by rebuilding the UI, not by {other:?}"),
     }

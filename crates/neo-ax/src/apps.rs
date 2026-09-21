@@ -58,7 +58,10 @@ fn all_pids() -> Vec<i32> {
 
 fn info_of(app: &NSRunningApplication) -> AppInfo {
     AppInfo {
-        name: app.localizedName().map(|n| (*n).to_string()).unwrap_or_default(),
+        name: app
+            .localizedName()
+            .map(|n| (*n).to_string())
+            .unwrap_or_default(),
         bundle_id: app.bundleIdentifier().map(|b| (*b).to_string()),
         pid: app.processIdentifier(),
         // Owning the menu bar *is* being frontmost, and unlike
@@ -77,7 +80,10 @@ fn regular_app(pid: i32) -> Option<objc2::rc::Retained<NSRunningApplication>> {
 
 /// Every regular running application, read live.
 pub(crate) fn running() -> Vec<AppInfo> {
-    all_pids().into_iter().filter_map(|pid| regular_app(pid).map(|a| info_of(&a))).collect()
+    all_pids()
+        .into_iter()
+        .filter_map(|pid| regular_app(pid).map(|a| info_of(&a)))
+        .collect()
 }
 
 /// The app that owns the menu bar right now.
@@ -144,8 +150,7 @@ pub(crate) fn launch(name: &str) -> bool {
 )]
 pub(crate) fn launch_bundle_id(bundle_id: &str) -> bool {
     let workspace = NSWorkspace::sharedWorkspace();
-    let Some(url) =
-        workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
+    let Some(url) = workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
     else {
         return false;
     };
@@ -164,7 +169,10 @@ mod tests {
     #[test]
     fn running_apps_are_listed_with_pids_and_one_menu_bar_owner() {
         let apps = running();
-        assert!(!apps.is_empty(), "at least one regular app is always running");
+        assert!(
+            !apps.is_empty(),
+            "at least one regular app is always running"
+        );
         assert!(apps.iter().all(|a| a.pid > 0));
         assert!(apps.iter().all(|a| !a.name.is_empty()));
         assert!(

@@ -51,12 +51,15 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 pub mod apps;
+pub mod cards;
 pub mod cases;
 pub mod fixture;
+pub mod pages;
 pub mod probe;
 pub mod suite;
 
 pub use apps::{App, availability};
+pub use cards::Cards;
 pub use fixture::Fixture;
 pub use probe::{Probe, run_probe};
 pub use spice_framework::report::{SuiteReport, TestReport};
@@ -106,7 +109,17 @@ impl NeoAgent {
 /// [`AgentUnderTest::available_tools`], so the test that guards the surface
 /// reads the same list the agent reports. Asserting against a second copy
 /// would only ever prove the copy right.
-pub const ACTIONS: [&str; 6] = ["browse", "app", "answer", "ask", "probe", "fixture"];
+///
+/// Three of these are the agent's registered tools and come from
+/// `neo_agent::agent::metal::registry` — `browse`, `app`, `ax` — plus
+/// `answer`, the terminal action every turn ends on. The remaining three are
+/// the harness's own synthetic calls: `fixture` (the known starting state),
+/// `probe` (the app's state read back) and `cards` (the confirm and ask cards
+/// the run published, and what the person watching answered). A judge told
+/// about a tool that is not registered marks a run down for "not using" it,
+/// which is why this list must be the true surface and not the aspirational
+/// one.
+pub const ACTIONS: [&str; 7] = ["browse", "app", "ax", "answer", "fixture", "probe", "cards"];
 
 #[async_trait]
 impl AgentUnderTest for NeoAgent {
@@ -131,7 +144,7 @@ impl AgentUnderTest for NeoAgent {
         // "failed".
         let mut prelude: Vec<Turn> = Vec::new();
         if let Some(fixture) = Fixture::from_config(config) {
-            match fixture::apply(&fixture).await {
+            match fixture::apply(&self.runtime, &fixture).await {
                 Ok(applied) => prelude.push(Turn {
                     index: 0,
                     output_text: Some("fixture applied".to_owned()),
@@ -158,7 +171,8 @@ impl AgentUnderTest for NeoAgent {
             }
         }
 
-        let mut request = ChatRequest::new(self.conversation, vec![ChatMessage::user(user_message)]);
+        let mut request =
+            ChatRequest::new(self.conversation, vec![ChatMessage::user(user_message)]);
         request.max_steps = EVAL_MAX_STEPS;
         request.cancel = self.cancel.clone();
 
@@ -169,7 +183,16 @@ impl AgentUnderTest for NeoAgent {
         // than inside `chat`. The trace is not decoration: assertions such as
         // `ExpectToolArg("browse", "url", …)` are scored against it, and a
         // turn that errors keeps the steps it got through.
-        let steps = Collector::attach(self.runtime.subscribe(), request.run);
+        //
+        // The same subscription answers the run's cards. A confirm or an ask
+        // is published *while* `chat` is still awaiting it, so there is
+        // nobody else who could: a drain afterwards would find a run that had
+        // already timed out (16 §5.3).
+        let stand = cards::Stand::new(
+            Arc::clone(&self.runtime),
+            Cards::from_config(config).unwrap_or_default(),
+        );
+        let steps = Collector::attach(self.runtime.subscribe(), request.run, stand.clone());
         let outcome = self.runtime.chat(request).await;
         let collected = steps.finish().await;
 
@@ -182,21 +205,48 @@ impl AgentUnderTest for NeoAgent {
 
         let offset = prelude.len();
         let mut turns: Vec<Turn> = prelude;
-        turns.extend(collected.steps.into_iter().enumerate().map(|(index, step)| {
-            let observation = step.observation.unwrap_or_else(|| step.thought.clone());
-            Turn {
-                index: index + offset,
-                output_text: Some(observation.clone()),
+        turns.extend(
+            collected
+                .steps
+                .into_iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    let observation = step.observation.unwrap_or_else(|| step.thought.clone());
+                    Turn {
+                        index: index + offset,
+                        output_text: Some(observation.clone()),
+                        tool_calls: vec![ToolCall {
+                            id: format!("step-{index}"),
+                            name: step.name,
+                            arguments: step.arguments,
+                        }],
+                        tool_results: vec![json!({ "observation": observation })],
+                        stop_reason: None,
+                        duration: step.duration,
+                    }
+                }),
+        );
+
+        // What the run asked the person watching, and what they said. It goes
+        // in before the probe, in the order it happened: the approval is what
+        // the probe then finds the consequence of.
+        let published = stand.published();
+        if Cards::from_config(config).is_some() || !published.is_empty() {
+            let described = published.describe();
+            let index = turns.len();
+            turns.push(Turn {
+                index,
+                output_text: None,
                 tool_calls: vec![ToolCall {
-                    id: format!("step-{index}"),
-                    name: step.name,
-                    arguments: step.arguments,
+                    id: "cards".to_owned(),
+                    name: "cards".to_owned(),
+                    arguments: described.clone(),
                 }],
-                tool_results: vec![json!({ "observation": observation })],
-                stop_reason: None,
-                duration: step.duration,
-            }
-        }));
+                tool_results: vec![described],
+                stop_reason: Some("cards".to_owned()),
+                duration: Duration::ZERO,
+            });
+        }
 
         // The probe: read the application's own state back, and attach it as a
         // tool call whose arguments *are* the observation. This is what makes
@@ -234,7 +284,12 @@ impl AgentUnderTest for NeoAgent {
             tools_called,
             duration: started.elapsed(),
             error,
-            usage: Some(collected.usage.as_ref().map_or_else(Usage::default, usage_of)),
+            usage: Some(
+                collected
+                    .usage
+                    .as_ref()
+                    .map_or_else(Usage::default, usage_of),
+            ),
         })
     }
 
@@ -310,7 +365,7 @@ struct Collector {
 }
 
 impl Collector {
-    fn attach(mut events: broadcast::Receiver<Envelope>, run: RunId) -> Self {
+    fn attach(mut events: broadcast::Receiver<Envelope>, run: RunId, stand: cards::Stand) -> Self {
         let stop = CancellationToken::new();
         let signal = stop.clone();
         let task = tokio::spawn(async move {
@@ -326,6 +381,23 @@ impl Collector {
                     },
                     () = signal.cancelled() => break,
                 };
+                // A card is answered on the spot rather than absorbed: the
+                // run is parked inside `chat` waiting for it, so nothing else
+                // is arriving meanwhile and an answer deferred to the end of
+                // the turn is an answer that never comes. Cards carry a task
+                // id rather than a run id, and the suite drives one case at a
+                // time (`suite::execute`), so a card in flight is this run's.
+                match &envelope.event {
+                    AppEvent::ConfirmRequest { confirm } => {
+                        stand.confirm(confirm);
+                        continue;
+                    }
+                    AppEvent::AskRequest { ask } => {
+                        stand.ask(ask).await;
+                        continue;
+                    }
+                    _ => {}
+                }
                 if absorb(&mut collected, run, envelope.event) {
                     return collected;
                 }
@@ -444,10 +516,9 @@ impl Judge for NeoJudge {
             .ask_json(&prompt, &schema, None)
             .await
             .map_err(|error| SpiceError::AgentError(error.to_string()))?;
-        let score = value
-            .get("score")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| SpiceError::AgentError("the judge answered without a score".to_owned()))?;
+        let score = value.get("score").and_then(Value::as_f64).ok_or_else(|| {
+            SpiceError::AgentError("the judge answered without a score".to_owned())
+        })?;
         // The runner applies `threshold`; a judge only reports.
         Ok(JudgeVerdict::new(
             score,
@@ -536,7 +607,11 @@ mod tests {
                 run,
                 step: 1,
                 thought: "open the page".to_owned(),
-                action: summary(ActionKind::Browse, Some("https://example.com"), Some("read it")),
+                action: summary(
+                    ActionKind::Browse,
+                    Some("https://example.com"),
+                    Some("read it")
+                ),
             }
         ));
         assert!(!absorb(
@@ -575,7 +650,10 @@ mod tests {
         ));
 
         let step = collected.steps.first().expect("one step");
-        assert_eq!(step.observation.as_deref(), Some("the page shows $29 per seat"));
+        assert_eq!(
+            step.observation.as_deref(),
+            Some("the page shows $29 per seat")
+        );
         assert_eq!(step.duration, Duration::from_millis(1_200));
         assert_eq!(collected.steps.len(), 1);
         let usage = usage_of(&collected.usage.expect("the turn reported usage"));
@@ -605,7 +683,10 @@ mod tests {
             ..Default::default()
         };
         let trace = trace_of(&output);
-        assert!(trace.contains("Blocked"), "the failure must reach the judge");
+        assert!(
+            trace.contains("Blocked"),
+            "the failure must reach the judge"
+        );
         assert!(trace.contains("LibreOffice"));
     }
 
@@ -622,5 +703,41 @@ mod tests {
                 "`{forbidden}` must not be an action (P3)"
             );
         }
+    }
+
+    /// Source of truth for the tool half of [`ACTIONS`]:
+    /// `crates/neo-agent/src/agent/metal.rs` `registry()`, which registers
+    /// `Browse` ("browse"), `App` ("app") and `Inspect` ("ax") — nothing
+    /// else. It cannot be read from here: `registry` and the three tool
+    /// structs are private, and widening neo-agent's API for a test would be
+    /// a worse trade than this assertion.
+    ///
+    /// The loop half is cross-checked for real: every [`ActionKind`] a
+    /// production step can carry is run through [`describe`], because that
+    /// name is what lands in the judge's trace, and a name in the trace that
+    /// the judge was never told about reads as an off-surface action.
+    ///
+    /// This drifted once: `ask` was advertised for a tool that is not
+    /// registered (it arrives with the card path), while `ax` — which is
+    /// registered, and which no `ActionKind` names, so nothing else here
+    /// mentions it — was missing.
+    #[test]
+    fn every_action_the_judge_is_told_about_is_one_the_agent_can_take() {
+        for kind in [ActionKind::Browse, ActionKind::App, ActionKind::Answer] {
+            let (name, _) = describe(&summary(kind, Some("Numbers"), Some("set A1 to 42")));
+            assert!(
+                ACTIONS.contains(&name.as_str()),
+                "`{name}` reaches the trace but is not advertised"
+            );
+        }
+        assert!(
+            ACTIONS.contains(&"ax"),
+            "`ax` is a registered tool (metal.rs registry) the judge must know about"
+        );
+        assert!(
+            !ACTIONS.contains(&"ask"),
+            "`ask` is not a registered tool yet; advertising it invites the \
+             judge to mark a run down for not using something it cannot call"
+        );
     }
 }

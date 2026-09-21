@@ -67,6 +67,10 @@ pub(crate) fn to_pcm16(samples: &[f32]) -> Vec<i16> {
 /// Unpack signed 16-bit PCM back to normalised floats.
 ///
 /// Used by the on-device backend, which hands AVFoundation an `f32` buffer.
+/// That backend is macOS-only, so off macOS this would be dead code and the
+/// workspace denies warnings; the `test` arm keeps the round-trip test — the
+/// thing that would catch a scaling bug — running on every platform.
+#[cfg(any(target_os = "macos", test))]
 #[must_use]
 pub(crate) fn from_pcm16(pcm16: &[i16]) -> Vec<f32> {
     pcm16
@@ -167,7 +171,10 @@ mod tests {
     #[test]
     fn matching_rate_is_a_passthrough() {
         let input = sine(440.0, TARGET_RATE, 0.1, 0.3);
-        assert_eq!(resample_to_target(&input, TARGET_RATE).expect("resample"), input);
+        assert_eq!(
+            resample_to_target(&input, TARGET_RATE).expect("resample"),
+            input
+        );
     }
 
     #[test]

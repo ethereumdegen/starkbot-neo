@@ -33,16 +33,16 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
 use metalcraft::rig::client::CompletionClient as _;
+use metalcraft::rig::providers::chatgpt;
 use metalcraft::rig::providers::openai;
 use metalcraft::{
     AgentMessage, AgentOptions, AgentState, AgentUpdate, Executor, GraphError, LlmResponseHook,
     LlmResponseSnapshot, LlmUsage, Mailbox, RunEvent, RunOutcome, Tool, ToolRegistry, UserInput,
     create_react_agent_with_options,
 };
-use metalcraft::rig::providers::chatgpt;
 use neo_core::{
-    ActionKind, ActionSummary, AppEvent, ConversationId, CoreError, Message, MessageId, MessageKind,
-    MessageRole, MessageSource, ProviderId, RunId, Settings, TimestampMs, TurnUsage,
+    ActionKind, ActionSummary, AppEvent, ConversationId, CoreError, Message, MessageId,
+    MessageKind, MessageRole, MessageSource, ProviderId, RunId, Settings, TimestampMs, TurnUsage,
 };
 use serde_json::{Value, json};
 use url::Url;
@@ -486,7 +486,11 @@ impl Reporter {
             Err(_) => None,
         };
         let text = self.said();
-        let steps = self.records.lock().map(|records| records.clone()).unwrap_or_default();
+        let steps = self
+            .records
+            .lock()
+            .map(|records| records.clone())
+            .unwrap_or_default();
         neo_otel::annotate(vec![
             ("starkbot.steps", json!(steps.len())),
             ("starkbot.exhausted", json!(exhausted)),
@@ -558,10 +562,7 @@ impl Reporter {
         if pending.is_empty() {
             return;
         }
-        match self
-            .runtime
-            .grow_agent_answer(&self.answer_row(), &pending)
-        {
+        match self.runtime.grow_agent_answer(&self.answer_row(), &pending) {
             Ok(id) => {
                 if let Ok(mut answer) = self.answer.lock() {
                     answer.flushed = upto;
@@ -688,7 +689,8 @@ impl Tool for Browse {
             // threshold from settings — an agent turn has no confirm card, so
             // the safety gate must fail closed exactly as `neo nav` does (A9).
             let options = BrowserOptions::unattended(&self.settings, &url, &goal);
-            let run = run_browser(self.reporter.runtime(), &options, self.run, &self.cancel).await?;
+            let run =
+                run_browser(self.reporter.runtime(), &options, self.run, &self.cancel).await?;
             Ok(run.observation)
         })
         .await
@@ -877,7 +879,9 @@ async fn observed(
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
         Ok(observation) => {
-            reporter.step_done(step, &summary, &observation, duration_ms).await;
+            reporter
+                .step_done(step, &summary, &observation, duration_ms)
+                .await;
             Ok(Value::String(observation))
         }
         Err(ToolError::Cancelled(_)) => {
@@ -889,7 +893,9 @@ async fn observed(
         }
         Err(error) => {
             let observation = format!("that failed: {error}");
-            reporter.step_done(step, &summary, &observation, duration_ms).await;
+            reporter
+                .step_done(step, &summary, &observation, duration_ms)
+                .await;
             Ok(Value::String(observation))
         }
     }
@@ -954,7 +960,10 @@ fn describe_surface(app: &str, response: &crate::ax::AxResponse) -> String {
         }
         // `ax` is asked for a table and answers with one; the other variants
         // exist for the hand-driven CLI surface.
-        other => format!("{app}: {}", serde_json::to_string(other).unwrap_or_default()),
+        other => format!(
+            "{app}: {}",
+            serde_json::to_string(other).unwrap_or_default()
+        ),
     }
 }
 
@@ -1313,10 +1322,14 @@ fn finish(
 
 /// The last thing the model said, whether or not it finished saying it.
 fn last_assistant(state: &AgentState) -> Option<&str> {
-    state.messages.iter().rev().find_map(|message| match message {
-        AgentMessage::Assistant(text) => Some(text.as_str()),
-        _ => None,
-    })
+    state
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::Assistant(text) => Some(text.as_str()),
+            _ => None,
+        })
 }
 
 /// What a turn that ran out of budget tells the user.
@@ -1422,12 +1435,15 @@ async fn claude_model(
     // Not `AgentError::NoKey`: that one says `neo keys set`, and no key will
     // ever fix this. A subscription is connected by signing in, and the user
     // who selected this runtime has to be told which command does that.
-    runtime.oauth_token(&ANTHROPIC_OAUTH).await.map_err(|error| {
-        AgentError::Request(format!(
-            "the Claude subscription is not connected ({error}) — run \
+    runtime
+        .oauth_token(&ANTHROPIC_OAUTH)
+        .await
+        .map_err(|error| {
+            AgentError::Request(format!(
+                "the Claude subscription is not connected ({error}) — run \
              `neo account --provider anthropic-oauth login` and try again"
-        ))
-    })?;
+            ))
+        })?;
     let model = ClaudeSubscription::new(
         runtime.anthropic_base(),
         runtime.token_source(&ANTHROPIC_OAUTH),
@@ -1523,9 +1539,9 @@ fn unsupported(provider: &str) -> String {
 fn inference_base(base: &Url) -> Result<Url, AgentError> {
     let mut url = base.clone();
     {
-        let mut segments = url
-            .path_segments_mut()
-            .map_err(|()| AgentError::Request("the OpenAI base URL cannot have a path".to_owned()))?;
+        let mut segments = url.path_segments_mut().map_err(|()| {
+            AgentError::Request("the OpenAI base URL cannot have a path".to_owned())
+        })?;
         segments.pop_if_empty().push("v1");
     }
     Ok(url)
@@ -1626,7 +1642,11 @@ impl Tally {
 
     /// Write the row, and hand back what to publish. `None` when the run
     /// never reached the model, in which case there is nothing to record.
-    pub(crate) fn record(&self, runtime: &Runtime, conversation: ConversationId) -> Option<TurnUsage> {
+    pub(crate) fn record(
+        &self,
+        runtime: &Runtime,
+        conversation: ConversationId,
+    ) -> Option<TurnUsage> {
         if self.usage.requests == 0 {
             return None;
         }
@@ -1811,10 +1831,7 @@ mod tests {
         fn new(cancel: CancellationToken) -> Self {
             let directory = tempfile::tempdir().expect("a temporary data directory");
             let runtime = Arc::new(Runtime::open(directory.path()).expect("the store opens"));
-            let conversation = runtime
-                .new_conversation(None)
-                .expect("a conversation")
-                .id;
+            let conversation = runtime.new_conversation(None).expect("a conversation").id;
             let settings = runtime.settings().expect("settings");
             let events = runtime.subscribe();
             Self {
@@ -1947,7 +1964,10 @@ mod tests {
         assert!(position("make the deck say Q3") < said);
         // `write hello` is the call's own goal — the app name also appears in
         // the system preamble, which is the first message of every request.
-        assert!(said < position("write hello"), "before the call: {second:?}");
+        assert!(
+            said < position("write hello"),
+            "before the call: {second:?}"
+        );
         assert!(
             said < position("Done · typed hello"),
             "before the tool result: {second:?}"
@@ -2015,8 +2035,10 @@ mod tests {
             .collect();
         assert_eq!(answers, vec!["Retitled it to Q3."]);
         assert!(
-            thread.iter().any(|message| message.role == MessageRole::Tool
-                && message.text == "Done · the deck now reads Q3"),
+            thread
+                .iter()
+                .any(|message| message.role == MessageRole::Tool
+                    && message.text == "Done · the deck now reads Q3"),
             "the observation is in the thread: {thread:?}"
         );
         // Every row a turn writes says which run wrote it, so a front end
@@ -2090,9 +2112,11 @@ mod tests {
             "the message is announced as landing in the turn: {seen:?}"
         );
         assert!(
-            fixture.thread().iter().any(|message| message.role
-                == MessageRole::User
-                && message.text == "actually, do it in Pages"),
+            fixture
+                .thread()
+                .iter()
+                .any(|message| message.role == MessageRole::User
+                    && message.text == "actually, do it in Pages"),
             "and it is in the thread"
         );
 
@@ -2176,9 +2200,11 @@ mod tests {
         );
 
         assert!(
-            fixture.thread().iter().any(|message| message.role
-                == MessageRole::Assistant
-                && message.text == "Working on it"),
+            fixture
+                .thread()
+                .iter()
+                .any(|message| message.role == MessageRole::Assistant
+                    && message.text == "Working on it"),
             "the partial answer survives in the thread"
         );
     }
@@ -2291,7 +2317,10 @@ mod tests {
         let untouched = Tally::new(&settings, 1_700_000_000_000);
         assert_eq!(untouched.record(&runtime, conversation), None);
         assert_eq!(
-            runtime.turns(conversation, 10).expect("the turns read").len(),
+            runtime
+                .turns(conversation, 10)
+                .expect("the turns read")
+                .len(),
             1
         );
     }
@@ -2323,7 +2352,10 @@ mod tests {
                 "the ChatGPT subscription is not connected",
             ),
             (neo_core::PROVIDER_ANTHROPIC, "choose one of those three"),
-            (neo_core::PROVIDER_CHATGPT_CODEX, "choose one of those three"),
+            (
+                neo_core::PROVIDER_CHATGPT_CODEX,
+                "choose one of those three",
+            ),
             (
                 neo_core::PROVIDER_CLAUDE_SUBSCRIPTION,
                 "keeps its tools inside its own sandbox",

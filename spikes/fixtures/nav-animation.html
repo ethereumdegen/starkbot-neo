@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shipment status — fixture</title>
+<style>body{font:16px system-ui;margin:24px;max-width:640px}
+#badge{width:120px;padding:6px 10px;border:1px solid #888;border-radius:14px;text-align:center}
+output{display:block;margin-top:12px;font:13px ui-monospace,monospace;color:#333}</style></head>
+<body><h1>Shipment status</h1>
+<div id="badge">In transit</div>
+<p>Shipment 4471 is with the carrier. This page cannot change it: there is no
+control here that marks anything delivered.</p>
+<button id="refresh">Refresh status</button>
+<p id="status">Shipment 4471 is in transit.</p>
+<output id="state"></output>
+<script>
+const q=id=>document.getElementById(id);
+// The only thing that ever changes on this page: a badge that moves. No text,
+// no control state, no URL and no control value changes with it, which is
+// exactly what the no-progress tripwire must see through — a fingerprint that
+// carried rects reported progress on this shape forever (16 §1.3).
+//
+// A timer rather than a CSS animation: a managed Chrome runs with
+// `--disable-background-timer-throttling`, so this keeps moving in a headless
+// suite run, where a compositor-driven animation may never tick at all.
+let at=0;
+setInterval(()=>{at=(at+20)%240;q('badge').style.transform=`translateX(${at}px)`;},100);
+// Deliberately inert: clicking it changes nothing a snapshot can see, so three
+// clicks in a row have to be caught as no progress rather than as work.
+q('refresh').onclick=()=>{};
+let s={};try{s=JSON.parse(localStorage.getItem('neo-eval')||'{}')}catch(e){}
+q('state').value=JSON.stringify(s);
+</script></body></html>

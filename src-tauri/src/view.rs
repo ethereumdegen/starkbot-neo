@@ -194,7 +194,12 @@ impl InferenceView {
     }
 }
 
-fn runtime_option(provider: &str, kind: &'static str, selected: &str, usable: bool) -> RuntimeOption {
+fn runtime_option(
+    provider: &str,
+    kind: &'static str,
+    selected: &str,
+    usable: bool,
+) -> RuntimeOption {
     RuntimeOption {
         display_name: display_name(provider).to_owned(),
         kind,
@@ -212,7 +217,11 @@ fn connected(accounts: &[ProviderAccount], provider: &str) -> bool {
 
 fn present(keys: &[KeyStatus], account: &str) -> bool {
     keys.iter().any(|key| {
-        key.account == account && matches!(key.state, KeyState::Present | KeyState::Limited | KeyState::Unchecked)
+        key.account == account
+            && matches!(
+                key.state,
+                KeyState::Present | KeyState::Limited | KeyState::Unchecked
+            )
     })
 }
 
@@ -254,10 +263,7 @@ fn fix_for(check: &Check) -> Option<Fix> {
             account: "openai".to_owned(),
         }),
         "inference" => Some(Fix::ChooseRuntime),
-        "chrome" => check
-            .fix
-            .clone()
-            .map(|detail| Fix::Manual { detail }),
+        "chrome" => check.fix.clone().map(|detail| Fix::Manual { detail }),
         name => subscription_provider(name).map(|provider| {
             if SUBSCRIPTIONS.iter().any(|known| known.id == provider) {
                 Fix::SignIn {
@@ -265,7 +271,10 @@ fn fix_for(check: &Check) -> Option<Fix> {
                 }
             } else {
                 Fix::Manual {
-                    detail: format!("{} is signed in with its own vendor CLI.", display_name(provider)),
+                    detail: format!(
+                        "{} is signed in with its own vendor CLI.",
+                        display_name(provider)
+                    ),
                 }
             }
         }),
@@ -536,12 +545,30 @@ impl CaseListingView {
 pub enum AxRequestView {
     Trusted,
     Apps,
-    Table { app: String },
-    Press { app: String, index: u16 },
-    Set { app: String, index: u16, text: String },
-    Menu { app: String, path: String },
-    Type { app: String, text: String },
-    Key { app: String, key: String },
+    Table {
+        app: String,
+    },
+    Press {
+        app: String,
+        index: u16,
+    },
+    Set {
+        app: String,
+        index: u16,
+        text: String,
+    },
+    Menu {
+        app: String,
+        path: String,
+    },
+    Type {
+        app: String,
+        text: String,
+    },
+    Key {
+        app: String,
+        key: String,
+    },
 }
 
 impl From<AxRequestView> for AxRequest {

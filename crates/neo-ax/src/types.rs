@@ -219,7 +219,13 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self { enabled: true, focused: false, selected: false, expanded: false, checked: None }
+        Self {
+            enabled: true,
+            focused: false,
+            selected: false,
+            expanded: false,
+            checked: None,
+        }
     }
 }
 
@@ -628,8 +634,14 @@ mod tests {
         assert!(AppSel::Pid(812).matches(&mail));
         assert!(!AppSel::Pid(813).matches(&mail));
         assert!(AppSel::BundleId("COM.APPLE.MAIL".into()).matches(&mail));
-        assert!(!AppSel::BundleId("com.apple.mai".into()).matches(&mail), "bundle id is exact");
-        assert!(AppSel::Name("ai".into()).matches(&mail), "name is a substring");
+        assert!(
+            !AppSel::BundleId("com.apple.mai".into()).matches(&mail),
+            "bundle id is exact"
+        );
+        assert!(
+            AppSel::Name("ai".into()).matches(&mail),
+            "name is a substring"
+        );
         assert!(AppSel::Name("MAIL".into()).matches(&mail));
         assert!(!AppSel::Name("Notes".into()).matches(&mail));
         assert!(!AppSel::Frontmost.matches(&mail));
@@ -654,25 +666,60 @@ mod tests {
 
     #[test]
     fn rect_geometry() {
-        let a = Rect { x: 0.0, y: 0.0, w: 100.0, h: 50.0 };
-        let b = Rect { x: 99.0, y: 49.0, w: 10.0, h: 10.0 };
-        let far = Rect { x: 200.0, y: 0.0, w: 10.0, h: 10.0 };
+        let a = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 50.0,
+        };
+        let b = Rect {
+            x: 99.0,
+            y: 49.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let far = Rect {
+            x: 200.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
         assert!(a.intersects(&b));
         assert!(!a.intersects(&far));
         assert_eq!(a.center(), (50.0, 25.0));
         assert!(a.is_visible_size());
         assert!(!Rect::default().is_visible_size());
         // Moving less than its own size is not a stale move.
-        assert!(!a.moved_more_than_itself(&Rect { x: 40.0, y: 10.0, w: 100.0, h: 50.0 }));
-        assert!(a.moved_more_than_itself(&Rect { x: 400.0, y: 0.0, w: 100.0, h: 50.0 }));
+        assert!(!a.moved_more_than_itself(&Rect {
+            x: 40.0,
+            y: 10.0,
+            w: 100.0,
+            h: 50.0
+        }));
+        assert!(a.moved_more_than_itself(&Rect {
+            x: 400.0,
+            y: 0.0,
+            w: 100.0,
+            h: 50.0
+        }));
     }
 
     #[test]
     fn action_target_and_name() {
-        let r = Ref { generation: 3, index: 7 };
+        let r = Ref {
+            generation: 3,
+            index: 7,
+        };
         assert_eq!(AxAction::Press { target: r }.target(), Some(r));
         assert_eq!(AxAction::TypeText { text: "hi".into() }.target(), None);
-        assert_eq!(AxAction::Scroll { direction: ScrollDir::Up, target: None }.target(), None);
+        assert_eq!(
+            AxAction::Scroll {
+                direction: ScrollDir::Up,
+                target: None
+            }
+            .target(),
+            None
+        );
         assert_eq!(AxAction::SelectMenu { path: vec![] }.name(), "select_menu");
     }
 }
