@@ -48,6 +48,13 @@ pub(crate) struct RawNode {
     pub actions: Vec<String>,
     /// Whether `AXValue` is settable.
     pub settable_value: bool,
+    /// Whether the backend can put the caret in this node itself, even though its value is
+    /// not settable. AT-SPI's `Component.GrabFocus` plus the virtual keyboard is such a path,
+    /// and WebKitGTK needs it: it implements no `EditableText`, so every text field in a
+    /// Tauri window reports `settable_value == false` and only the one the page happened to
+    /// autofocus would otherwise be typeable — the rest would carry no operation at all and
+    /// be unreachable. Always false on macOS, where a settable `AXValue` is the path.
+    pub focusable_text: bool,
     /// Enumerable choices, when the control exposes them while closed.
     pub options: Vec<String>,
     /// Children in reading order, already tunnelled through by the walker only

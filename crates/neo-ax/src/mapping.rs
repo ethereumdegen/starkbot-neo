@@ -314,8 +314,16 @@ pub(crate) fn operations(node: &RawNode, is_menu_leaf: bool) -> Vec<Operation> {
     }
 
     let editable_web = role == "AXWebArea" && node.settable_value;
-    if (TEXT_ROLES.contains(&role) || editable_web) && (node.settable_value || node.focused) {
+    let typeable = node.settable_value || node.focused || node.focusable_text;
+    if (TEXT_ROLES.contains(&role) || editable_web) && typeable {
         ops.push(Operation::TypeText);
+    }
+
+    // A text field the backend can focus is also worth a CLICK even when it advertises no
+    // action: clicking is how a navigator puts the caret somewhere before typing, and a row
+    // with no operation at all is a row it cannot reach.
+    if TEXT_ROLES.contains(&role) && node.focusable_text && !ops.contains(&Operation::Click) {
+        ops.push(Operation::Click);
     }
 
     // SELECT only when the choices are already known: a pop-up button that

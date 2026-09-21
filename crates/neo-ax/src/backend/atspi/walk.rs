@@ -171,6 +171,10 @@ impl<'a> Walker<'a> {
             settable_value: shallow.interfaces.contains(Interface::EditableText)
                 || (shallow.interfaces.contains(Interface::Value)
                     && shallow.states.contains(State::Editable)),
+            // `Component.GrabFocus` reaches any focusable node, which is what makes a
+            // WebKitGTK `<input>` typeable at all — it implements no `EditableText`.
+            focusable_text: shallow.states.contains(State::Focusable)
+                && shallow.interfaces.contains(Interface::Component),
             options: Vec::new(),
             children: Vec::new(),
         }
