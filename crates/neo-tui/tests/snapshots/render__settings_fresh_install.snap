@@ -2,12 +2,12 @@
 source: crates/neo-tui/tests/render.rs
 expression: "common::render(&state, 120, 40)"
 ---
-Stark  ○ NO MIC YET  v dictates  NO VOICE OUT   Esc chat · , settings · : commands · ? keys
+Stark  ○ NO MIC YET  v dictates  NO VOICE OUT   Esc/q chat  settings
 ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │── Connections & keys                                                                                                 │
 │  active inference          none — add a key or sign in                                                               │
 │                            Enter selects · s sets a key · x removes · K checks · c signs in                          │
-│▸ (a) OpenAI API key        missing · selected                                                                        │
+│  (a) OpenAI API key        missing · selected                                                                        │
 │  (b) Claude Pro/Max        signed out                                                                                │
 │  (c) Anthropic API key     missing                                                                                   │
 │  (d) ChatGPT Plus/Pro      signed out                                                                                │
@@ -24,7 +24,7 @@ Stark  ○ NO MIC YET  v dictates  NO VOICE OUT   Esc chat · , settings · : co
 │  sol_effort                low                                                                                       │
 │  live transcription        off                                                                                       │
 │  stt_live.model            openai/gpt-live-transcribe                                                                │
-│                            ids are typed, not picked — `:models refresh` re-reads the catalogue                      │
+│                            ids are typed, not picked — `/model refresh` re-reads the catalogue                       │
 │── Identity                                                                                                           │
 │  name                      Stark                                                                                     │
 │── Listening                                                                                                          │
@@ -40,10 +40,10 @@ Stark  ○ NO MIC YET  v dictates  NO VOICE OUT   Esc chat · , settings · : co
 │  keep recordings           off                                                                                       │
 │── Intake                                                                                                             │
 │  enqueue at                0.70                                                                                      │
-└ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
-NORMAL │ setup: s adds a key · c signs in to a subscription · Enter selects the runtime │ /fixtures/neo/neo.db v3
+└ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
+NORMAL │ setup needed — /login opens connections and keys │ /fixtures/neo/neo.db v3
 --- styles ---
-fg=Cyan bg=Reset mod=BOLD  , settings
+fg=Cyan bg=Reset mod=BOLD  settings
 fg=Cyan bg=Reset mod=BOLD  ── Connections & keys
 fg=Cyan bg=Reset mod=BOLD  ── Identity
 fg=Cyan bg=Reset mod=BOLD  ── Intake
@@ -51,15 +51,15 @@ fg=Cyan bg=Reset mod=BOLD  ── Listening
 fg=Cyan bg=Reset mod=BOLD  ── Models
 fg=Cyan bg=Reset mod=BOLD  ── Voice
 fg=Cyan bg=Reset mod=NONE  │
-fg=Cyan bg=Reset mod=NONE  │▸
 fg=Cyan bg=Reset mod=NONE  ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-fg=Cyan bg=Reset mod=NONE  └ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
+fg=Cyan bg=Reset mod=NONE  └ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  (a) OpenAI API key
 fg=DarkGray bg=Reset mod=NONE  (b) Claude Pro/Max
 fg=DarkGray bg=Reset mod=NONE  (c) Anthropic API key
 fg=DarkGray bg=Reset mod=NONE  (d) ChatGPT Plus/Pro
 fg=DarkGray bg=Reset mod=NONE  (e) Claude via CLI
 fg=DarkGray bg=Reset mod=NONE  (f) ChatGPT via Codex
-fg=DarkGray bg=Reset mod=NONE  Esc chat ·
+fg=DarkGray bg=Reset mod=NONE  Esc/q chat
 fg=DarkGray bg=Reset mod=NONE  active inference
 fg=DarkGray bg=Reset mod=NONE  addressing
 fg=DarkGray bg=Reset mod=NONE  duplex
@@ -80,12 +80,10 @@ fg=DarkGray bg=Reset mod=NONE  text_helper
 fg=DarkGray bg=Reset mod=NONE  tts
 fg=DarkGray bg=Reset mod=NONE  typesafe key
 fg=DarkGray bg=Reset mod=NONE  voice
-fg=DarkGray bg=Reset mod=NONE  · : commands · ? keys
 fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
-fg=Reset bg=Reset mod=BOLD  (a) OpenAI API key
 fg=Reset bg=Reset mod=BOLD  Stark
 fg=Yellow bg=Reset mod=BOLD  NO VOICE OUT
-fg=Yellow bg=Reset mod=NONE  NORMAL │ setup: s adds a key · c signs in to a subscription · Enter selects the runtime │ /fixtures/neo/neo.db v3
+fg=Yellow bg=Reset mod=NONE  NORMAL │ setup needed — /login opens connections and keys │ /fixtures/neo/neo.db v3
 fg=Yellow bg=Reset mod=NONE  missing
 fg=Yellow bg=Reset mod=NONE  missing · selected
 fg=Yellow bg=Reset mod=NONE  signed out

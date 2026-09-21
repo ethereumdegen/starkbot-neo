@@ -1,0 +1,53 @@
+---
+source: crates/neo-tui/tests/render.rs
+expression: detail
+---
+Stark  ○ NO MIC YET  v dictates   Esc/q chat  projects
+┌ Project · Q4 Launch ─────────────────────────────────────────────────────────────────────────────┐
+│Q4 Launch                                                                                         │
+│/fixtures/projects/q4-launch                                                                      │
+│                                                                                                  │
+│Project settings                                                                                  │
+│▸ Run automatically        on                                                                     │
+│  Every (seconds)         14400                                                                   │
+│  When a gate appears     Hold                                                                    │
+│                                                                                                  │
+│Files                                                                                             │
+│  soul.md                  edit in $EDITOR                                                        │
+│    Use the Northstar launch name.                                                                │
+│  heartbeat.md             edit in $EDITOR                                                        │
+│    Review launch blockers.                                                                       │
+│                                                                                                  │
+│Actions                                                                                           │
+│  Run heartbeat now                                                                               │
+│                                                                                                  │
+│Recent activity                                                                                   │
+│j/k moves · Enter changes or opens · Backspace/← index · Esc/q chat                               │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                            ▼ live│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+--- styles ---
+fg=Cyan bg=Reset mod=BOLD  Q4 Launch
+fg=Cyan bg=Reset mod=BOLD  projects
+fg=Cyan bg=Reset mod=BOLD  ▸ Run automatically        on
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  │    Review launch blockers.
+fg=DarkGray bg=Reset mod=NONE  │    Use the Northstar launch name.
+fg=DarkGray bg=Reset mod=NONE  │/fixtures/projects/q4-launch
+fg=DarkGray bg=Reset mod=NONE  │j/k moves · Enter changes or opens · Backspace/← index · Esc/q chat
+fg=DarkGray bg=Reset mod=NONE  ┌ Project · Q4 Launch ─────────────────────────────────────────────────────────────────────────────┐
+fg=DarkGray bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  ▼ live│
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc/q chat
+fg=Reset bg=Reset mod=BOLD  Actions
+fg=Reset bg=Reset mod=BOLD  Files
+fg=Reset bg=Reset mod=BOLD  Project settings
+fg=Reset bg=Reset mod=BOLD  Recent activity
+fg=Reset bg=Reset mod=BOLD  Stark
+fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic

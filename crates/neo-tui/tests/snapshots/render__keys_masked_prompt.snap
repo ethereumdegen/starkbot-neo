@@ -2,7 +2,7 @@
 source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
-Stark  ○ NO MIC YET  v dictates   Esc chat · , settings · : commands · ? keys
+Stark  ○ NO MIC YET  v dictates   Esc/q chat  settings
 ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │── Connections & keys                                                                                                 │
 │  active inference          OpenAI API key                                                                            │
@@ -23,7 +23,7 @@ Stark  ○ NO MIC YET  v dictates   Esc chat · , settings · : commands · ? ke
 │  sol_effort                low                                                                                       │
 │  live transcription      ┌ Paste the openai key ──────────────────────────────────────────┐                          │
 │  stt_live.model          │••••••••••••••••••••••••••                                      │                          │
-│                          └ paste only · echoes ••• · Enter saves · Esc cancels ───────────┘ogue                      │
+│                          └ paste only · echoes ••• · Enter saves · Esc cancels ───────────┘gue                       │
 │── Identity                                                                                                           │
 │  name                      Stark                                                                                     │
 │── Listening                                                                                                          │
@@ -40,10 +40,10 @@ Stark  ○ NO MIC YET  v dictates   Esc chat · , settings · : commands · ? ke
 │── Intake                                                                                                             │
 │  enqueue at                0.70                                                                                      │
 │  offer at                  0.40                                                                                      │
-└ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
+└ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
 NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
 --- styles ---
-fg=Cyan bg=Reset mod=BOLD  , settings
+fg=Cyan bg=Reset mod=BOLD  settings
 fg=Cyan bg=Reset mod=BOLD  ── Connections & keys
 fg=Cyan bg=Reset mod=BOLD  ── Identity
 fg=Cyan bg=Reset mod=BOLD  ── Intake
@@ -53,7 +53,7 @@ fg=Cyan bg=Reset mod=BOLD  ── Voice
 fg=Cyan bg=Reset mod=NONE  │
 fg=Cyan bg=Reset mod=NONE  │▸
 fg=Cyan bg=Reset mod=NONE  ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-fg=Cyan bg=Reset mod=NONE  └ Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ────────────────────────────┘
+fg=Cyan bg=Reset mod=NONE  └ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
 fg=DarkGray bg=Reset mod=NONE  (b) Claude Pro/Max
 fg=DarkGray bg=Reset mod=NONE  (c) Anthropic API key
 fg=DarkGray bg=Reset mod=NONE  (d) ChatGPT Plus/Pro
@@ -80,8 +80,7 @@ fg=DarkGray bg=Reset mod=NONE  text_helper
 fg=DarkGray bg=Reset mod=NONE  tts
 fg=DarkGray bg=Reset mod=NONE  typesafe key
 fg=DarkGray bg=Reset mod=NONE  voice
-fg=DarkGray bg=Reset mod=NONE  · : commands · ? keys
-fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc chat ·
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc/q chat
 fg=Green bg=Reset mod=NONE  present
 fg=Green bg=Reset mod=NONE  present · selected
 fg=Reset bg=Reset mod=BOLD  (a) OpenAI API key

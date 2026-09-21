@@ -41,6 +41,22 @@ pub fn conversation_id(nth: u8) -> ConversationId {
         .unwrap_or_else(|error| panic!("fixture conversation id {nth} is not a uuid: {error}"))
 }
 
+pub fn project() -> neo_core::Project {
+    neo_core::Project {
+        slug: "q4-launch".into(),
+        name: "Q4 Launch".into(),
+        root: "/fixtures/projects/q4-launch".into(),
+        heartbeat_enabled: true,
+        heartbeat_every_seconds: 14_400,
+        on_gate: neo_core::HeartbeatGate::Hold,
+        last_tick_at: Some(1_780_000_000_000),
+        next_due_at: Some(1_780_014_400_000),
+        consecutive_failures: 0,
+        created_at: 1_779_000_000_000,
+        updated_at: 1_780_000_000_000,
+    }
+}
+
 /// What the model says it is about to do, in the shape `TurnStep` carries.
 pub fn browse(target: &str, goal: &str) -> ActionSummary {
     ActionSummary {

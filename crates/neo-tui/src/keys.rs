@@ -27,16 +27,10 @@ pub enum Action {
     KillSwitch,
     /// `x`: cancel the run the Mind pane is tracing.
     StopRun,
-    FocusPane(Pane),
-    FocusNext,
-    FocusPrevious,
-    ShrinkSplit,
-    GrowSplit,
     ToggleFollow,
     EnterInsert,
     LeaveInsert,
     EnterCommand,
-    EnterSearch,
     ComposerChar(char),
     ComposerNewline,
     ComposerBackspace,
@@ -48,12 +42,8 @@ pub enum Action {
     LineComplete,
     LineSubmit,
     LineCancel,
-    OpenSettings,
     OpenProject,
-    RunProjectHeartbeat,
-    ToggleProjectHeartbeat,
-    EditProjectHeartbeat,
-    EditProjectSoul,
+    ProjectBack,
     SelectNext,
     SelectPrevious,
     SelectFirst,
@@ -153,8 +143,6 @@ impl KeyMap {
                 _ => Action::None,
             };
         }
-        // The session picker is a list overlay: it owns motion while it is up,
-        // so `j` cannot scroll the conversation behind it.
         if state.sessions.is_some() {
             return session_key(key, control);
         }
@@ -162,7 +150,7 @@ impl KeyMap {
             return card_key(key, state);
         }
         match state.mode {
-            Mode::Command | Mode::Search => line_key(key, control),
+            Mode::Command => line_key(key, control),
             Mode::Insert => insert_key(key, control, state),
             // `Card` without a card is not reachable through any binding; treat
             // it as normal so a stray state can still be driven.
@@ -271,6 +259,7 @@ fn insert_key(key: KeyEvent, control: bool, state: &State) -> Action {
         KeyCode::Char('j') if control => Action::ComposerNewline,
         KeyCode::Enter => Action::ComposerSubmit,
         KeyCode::Backspace => Action::ComposerBackspace,
+        KeyCode::Char('/') if state.composer.is_empty() => Action::EnterCommand,
         KeyCode::Char('v') if control => Action::ToggleDictation,
         KeyCode::Char('n') if control => Action::NewConversation,
         KeyCode::Char('w') if control => Action::ComposerDeleteWord,
@@ -314,13 +303,15 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
     if control && key.code == KeyCode::Char('n') {
         return Action::NewConversation;
     }
+    if state.focus != Pane::Conversation && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        return Action::CloseOverlay;
+    }
     if state.focus == Pane::Projects {
         match key.code {
             KeyCode::Enter => return Action::OpenProject,
-            KeyCode::Char('r') => return Action::RunProjectHeartbeat,
-            KeyCode::Char('t') => return Action::ToggleProjectHeartbeat,
-            KeyCode::Char('e') => return Action::EditProjectHeartbeat,
-            KeyCode::Char('E') => return Action::EditProjectSoul,
+            KeyCode::Backspace | KeyCode::Left if state.project_detail.is_some() => {
+                return Action::ProjectBack;
+            }
             _ => {}
         }
     }
@@ -328,38 +319,16 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
         return action;
     }
     match key.code {
-        KeyCode::Char('1') => Action::FocusPane(Pane::Conversation),
-        KeyCode::Char('2') => Action::FocusPane(Pane::Runs),
-        KeyCode::Char('3') => Action::FocusPane(Pane::Mind),
-        KeyCode::Char('4') => Action::FocusPane(Pane::Projects),
-        KeyCode::Tab => Action::FocusNext,
-        KeyCode::BackTab => Action::FocusPrevious,
-        KeyCode::Char('<') => Action::ShrinkSplit,
-        KeyCode::Char('>') => Action::GrowSplit,
         KeyCode::Char('i' | 'a') => Action::EnterInsert,
-        KeyCode::Char(':') => Action::EnterCommand,
-        KeyCode::Char('/') => Action::EnterSearch,
+        KeyCode::Char('/') => Action::EnterCommand,
         KeyCode::Char('f') => Action::ToggleFollow,
-        // `v` dictates: press once to start, again to stop. A terminal cannot
-        // observe a held key, so push-to-talk is a toggle (02 §listen states).
         KeyCode::Char('v') => Action::ToggleDictation,
         KeyCode::Char('?') => Action::ToggleHelp,
-        KeyCode::Char(',') => Action::OpenSettings,
-        KeyCode::Char('t') => Action::OpenSessions,
         KeyCode::Char('x') => Action::StopRun,
         KeyCode::Char('m') => Action::ToggleListen,
-        KeyCode::Char('p') => {
-            Action::Unavailable("the queue worker is not built yet — nothing to pause")
-        }
-        KeyCode::Char('o' | 'O') => {
-            Action::Unavailable("no long-lived managed Chrome yet — `:nav <url> <goal>`")
-        }
         KeyCode::Char('g') if state.pending_g => Action::SelectFirst,
         KeyCode::Char('g') => Action::PendingG,
         KeyCode::Char('G') => Action::SelectLast,
-        // The interrupt. `x` still stops the selected run, but `Esc` is the
-        // key a hand goes to, and while a run is live that is what it has to
-        // mean: the quit prompt is `q`, and `Ctrl-Q` quits outright.
         KeyCode::Esc if state.has_live_run() => Action::StopRun,
         KeyCode::Char('q') | KeyCode::Esc => Action::CloseOverlay,
         _ => Action::None,

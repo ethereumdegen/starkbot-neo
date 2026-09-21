@@ -26,10 +26,9 @@ fn feed(state: &mut State, key: KeyEvent) -> Option<Command> {
     state.apply_action(action)
 }
 
-/// Type `line` on the `:` line and run it, the way a user does — through the
-/// keymap, so a binding that stopped reaching COMMAND mode fails here too.
+/// Type `line` on the slash line and run it through the real keymap.
 fn run_line(state: &mut State, line: &str) -> Option<Command> {
-    feed(state, press(KeyCode::Char(':')));
+    feed(state, press(KeyCode::Char('/')));
     assert_eq!(state.mode, Mode::Command);
     for character in line.chars() {
         feed(state, press(KeyCode::Char(character)));
@@ -38,58 +37,121 @@ fn run_line(state: &mut State, line: &str) -> Option<Command> {
 }
 
 #[test]
-fn tab_cycles_the_panes_and_digits_jump_to_them() {
+fn slash_commands_open_pages_and_q_returns_to_chat() {
     let mut state = common::state();
+    assert_eq!(state.mode, Mode::Insert);
     assert_eq!(state.focus, Pane::Conversation);
 
-    feed(&mut state, press(KeyCode::Tab));
-    assert_eq!(state.focus, Pane::Runs);
-    feed(&mut state, press(KeyCode::Tab));
-    assert_eq!(state.focus, Pane::Mind);
-    feed(&mut state, press(KeyCode::Tab));
+    assert_eq!(run_line(&mut state, "project"), None);
     assert_eq!(state.focus, Pane::Projects);
-    feed(&mut state, press(KeyCode::Tab));
+    assert_eq!(state.mode, Mode::Normal);
+    feed(&mut state, press(KeyCode::Char('q')));
+    assert_eq!(state.focus, Pane::Conversation);
+    assert_eq!(state.mode, Mode::Insert);
+
+    assert_eq!(run_line(&mut state, "model"), None);
+    assert_eq!(state.view, View::Settings);
+    assert_eq!(state.settings_section, Some(Section::Models));
+    assert!(
+        state
+            .rows()
+            .iter()
+            .all(|row| row.section == Section::Models)
+    );
+    feed(&mut state, press(KeyCode::Esc));
+    assert_eq!(state.view, View::Panes);
     assert_eq!(state.focus, Pane::Conversation);
 
-    feed(&mut state, press(KeyCode::BackTab));
-    assert_eq!(state.focus, Pane::Projects);
-    feed(&mut state, press(KeyCode::Char('2')));
-    assert_eq!(state.focus, Pane::Runs);
-    feed(&mut state, press(KeyCode::Char('4')));
-    assert_eq!(state.focus, Pane::Projects);
+    assert_eq!(run_line(&mut state, "login"), None);
+    assert_eq!(state.settings_section, Some(Section::Connections));
+    assert!(
+        state
+            .rows()
+            .iter()
+            .all(|row| row.section == Section::Connections)
+    );
+}
+
+#[test]
+fn project_page_opens_a_project_and_edits_its_clock() {
+    let mut state = common::state();
+    state.projects.push(common::project());
+    run_line(&mut state, "project");
+
+    assert_eq!(
+        feed(&mut state, press(KeyCode::Enter)),
+        Some(Command::OpenProject {
+            slug: "q4-launch".into(),
+        })
+    );
+    state.show_project(
+        vec![common::project()],
+        neo_agent::ProjectDocuments {
+            soul: "Use the Northstar launch name.".into(),
+            heartbeat: "Review launch blockers.".into(),
+        },
+        Vec::new(),
+    );
+
+    assert_eq!(
+        feed(&mut state, press(KeyCode::Enter)),
+        Some(Command::ToggleProjectHeartbeat {
+            slug: "q4-launch".into(),
+            enabled: false,
+            every_seconds: 14_400,
+            on_gate: neo_core::HeartbeatGate::Hold,
+        })
+    );
+    feed(&mut state, press(KeyCode::Char('j')));
+    assert_eq!(state.project_detail_row, 1);
+    assert_eq!(feed(&mut state, press(KeyCode::Enter)), None);
+    assert!(matches!(
+        state.prompt.as_ref().map(|prompt| &prompt.kind),
+        Some(PromptKind::ProjectInterval { slug, .. }) if slug == "q4-launch"
+    ));
+
+    feed(&mut state, control(KeyCode::Char('u')));
+    for character in "7200".chars() {
+        feed(&mut state, press(KeyCode::Char(character)));
+    }
+    assert_eq!(
+        feed(&mut state, press(KeyCode::Enter)),
+        Some(Command::ToggleProjectHeartbeat {
+            slug: "q4-launch".into(),
+            enabled: true,
+            every_seconds: 7_200,
+            on_gate: neo_core::HeartbeatGate::Hold,
+        })
+    );
+
+    feed(&mut state, press(KeyCode::Esc));
+    assert_eq!(state.focus, Pane::Conversation);
+    assert!(state.project_detail.is_none());
 }
 
 #[test]
 fn quitting_is_explicit() {
     let mut state = common::state();
 
-    // `q` at top level only asks.
+    feed(&mut state, press(KeyCode::Char('q')));
+    assert_eq!(state.composer, "q");
+    assert!(!state.quit_prompt);
+
+    state.composer.clear();
+    feed(&mut state, press(KeyCode::Esc));
     feed(&mut state, press(KeyCode::Char('q')));
     assert!(!state.quit);
     assert!(state.quit_prompt);
-
-    // ...and the question can be answered no.
     feed(&mut state, press(KeyCode::Char('n')));
     assert!(!state.quit);
     assert!(!state.quit_prompt);
 
-    // A bare `q` inside a view leaves the view instead of quitting.
-    feed(&mut state, press(KeyCode::Char(',')));
-    assert_eq!(state.view, View::Settings);
+    state.mode = Mode::Insert;
+    run_line(&mut state, "project");
     feed(&mut state, press(KeyCode::Char('q')));
-    assert_eq!(state.view, View::Panes);
-    assert!(!state.quit);
-    assert!(!state.quit_prompt);
-
-    // `q` while typing is a character, not a quit.
-    feed(&mut state, press(KeyCode::Char('i')));
+    assert_eq!(state.focus, Pane::Conversation);
     assert_eq!(state.mode, Mode::Insert);
-    feed(&mut state, press(KeyCode::Char('q')));
-    assert_eq!(state.composer, "q");
-    assert!(!state.quit);
-    assert!(!state.quit_prompt);
 
-    // Ctrl-Q is the one binding that quits outright, from any mode.
     feed(&mut state, control(KeyCode::Char('q')));
     assert!(state.quit);
 }
@@ -102,6 +164,7 @@ fn quitting_is_explicit() {
 #[test]
 fn no_key_resolves_a_confirm_that_is_not_on_screen() {
     let mut state = common::state();
+    state.mode = Mode::Normal;
     // No card at all: `y` and `n` are ordinary normal-mode keys and neither
     // produces a confirm resolution.
     for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Enter] {
@@ -220,7 +283,7 @@ fn an_overlay_over_the_card_disarms_it() {
 #[test]
 fn the_kill_switch_is_reachable_from_every_mode_and_drops_a_half_typed_key() {
     let mut state = common::state();
-    for mode in [Mode::Normal, Mode::Insert, Mode::Command, Mode::Search] {
+    for mode in [Mode::Normal, Mode::Insert, Mode::Command] {
         state.mode = mode;
         assert_eq!(
             KeyMap.resolve(control(KeyCode::Char('c')), &state),
@@ -245,6 +308,7 @@ fn the_kill_switch_is_reachable_from_every_mode_and_drops_a_half_typed_key() {
 fn setting_a_key_is_masked_and_produces_one_set_key_command() {
     let mut state = common::state();
     state.view = View::Settings;
+    state.mode = Mode::Normal;
     state.row = openai_row(&state);
 
     feed(&mut state, press(KeyCode::Char('s')));
@@ -293,6 +357,7 @@ fn setting_a_key_is_masked_and_produces_one_set_key_command() {
 fn x_removes_the_selected_account_and_enter_selects_its_k6_path() {
     let mut state = common::state();
     state.view = View::Settings;
+    state.mode = Mode::Normal;
     state.row = anthropic_row(&state);
 
     assert_eq!(
@@ -310,13 +375,12 @@ fn x_removes_the_selected_account_and_enter_selects_its_k6_path() {
     );
 }
 
-/// The `:` line is still closed: unknown input is rejected, never forwarded.
-/// What changed is that the commands on the list now do their job instead of
-/// naming a milestone.
+/// The slash line is closed: unknown input is rejected, never forwarded.
+/// Commands on the list execute typed core work or open a TUI page.
 #[test]
 fn the_command_line_is_closed_and_rejects_anything_not_on_the_list() {
     let mut state = common::state();
-    // `:doctor` re-runs the checks as well as opening the section: a cached
+    // `/doctor` re-runs the checks as well as opening the section: a cached
     // row is not a readiness report.
     assert_eq!(run_line(&mut state, "doctor"), Some(Command::Doctor));
     assert_eq!(state.view, View::Settings);
@@ -324,7 +388,7 @@ fn the_command_line_is_closed_and_rejects_anything_not_on_the_list() {
 
     feed(&mut state, press(KeyCode::Char('q')));
     assert_eq!(run_line(&mut state, "!sh"), None);
-    assert_eq!(state.status.as_deref(), Some("unknown command: !sh"));
+    assert_eq!(state.status.as_deref(), Some("unknown command: /!sh"));
 
     // A command that names a capability the core does not have says so, and
     // says which capability — not which milestone.
@@ -339,7 +403,7 @@ fn the_command_line_is_closed_and_rejects_anything_not_on_the_list() {
     );
 }
 
-/// `:nav` takes the same flags `neo nav` does, and the goal is everything
+/// `/nav` takes the same flags `neo nav` does, and the goal is everything
 /// left over — a goal is a sentence, not a token.
 #[test]
 fn nav_parses_the_url_the_goal_and_every_flag() {
@@ -493,6 +557,7 @@ fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
 #[test]
 fn x_stops_the_selected_run_and_is_honest_about_what_it_cannot_reclaim() {
     let mut state = common::state();
+    state.mode = Mode::Normal;
     assert_eq!(
         KeyMap.resolve(press(KeyCode::Char('x')), &state),
         Action::StopRun
@@ -532,7 +597,7 @@ fn x_stops_the_selected_run_and_is_honest_about_what_it_cannot_reclaim() {
     assert!(state.runs.iter().all(|run| run.state == RunState::Stopping));
 }
 
-/// `:stop` is the same intent typed.
+/// `/stop` is the same intent typed.
 #[test]
 fn stop_on_the_command_line_cancels_the_selected_run() {
     let mut state = common::state();
@@ -560,10 +625,6 @@ fn conversations_are_reachable_from_the_keyboard_and_the_command_line() {
         })
     );
     assert_eq!(
-        feed(&mut state, press(KeyCode::Char('t'))),
-        Some(Command::ListConversations)
-    );
-    assert_eq!(
         run_line(&mut state, "sessions"),
         Some(Command::ListConversations)
     );
@@ -573,7 +634,7 @@ fn conversations_are_reachable_from_the_keyboard_and_the_command_line() {
             title: "launch week".into()
         })
     );
-    // A bare `:rename` opens a prompt pre-filled with the current title.
+    // A bare `/rename` opens a prompt pre-filled with the current title.
     state.conversation_title = Some("old name".into());
     assert_eq!(run_line(&mut state, "rename"), None);
     assert_eq!(
@@ -623,6 +684,7 @@ fn the_session_picker_moves_and_opens() {
 #[test]
 fn m_toggles_the_listen_setting() {
     let mut state = common::state();
+    state.mode = Mode::Normal;
     let before = state.settings.listen.enabled;
     assert_eq!(
         feed(&mut state, press(KeyCode::Char('m'))),
@@ -639,6 +701,7 @@ fn m_toggles_the_listen_setting() {
 fn every_settings_section_has_editable_rows() {
     let mut state = common::state();
     state.view = View::Settings;
+    state.mode = Mode::Normal;
     for section in Section::ALL {
         assert!(
             state
@@ -711,6 +774,7 @@ fn every_settings_section_has_editable_rows() {
 fn k_moves_the_cursor_and_shifted_k_checks_the_key() {
     let mut state = common::state();
     state.view = View::Settings;
+    state.mode = Mode::Normal;
     state.row = openai_row(&state);
 
     assert_eq!(
@@ -729,12 +793,11 @@ fn k_moves_the_cursor_and_shifted_k_checks_the_key() {
     );
 }
 
-/// Tab completion over the closed list, and over `:ax`'s closed set of
-/// requests — the only argument that is drawn from one.
+/// Tab completion over the closed slash-command list and `/ax` requests.
 #[test]
 fn tab_completes_a_command_and_an_ax_request() {
     let mut state = common::state();
-    feed(&mut state, press(KeyCode::Char(':')));
+    feed(&mut state, press(KeyCode::Char('/')));
     for character in "sess".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
@@ -742,26 +805,23 @@ fn tab_completes_a_command_and_an_ax_request() {
     assert_eq!(state.line, "sessions");
 
     feed(&mut state, press(KeyCode::Esc));
-    feed(&mut state, press(KeyCode::Char(':')));
+    feed(&mut state, press(KeyCode::Char('/')));
     for character in "na".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
     feed(&mut state, press(KeyCode::Tab));
-    // A command that takes arguments completes with the space already typed.
     assert_eq!(state.line, "nav ");
 
     feed(&mut state, press(KeyCode::Esc));
-    feed(&mut state, press(KeyCode::Char(':')));
+    feed(&mut state, press(KeyCode::Char('/')));
     for character in "ax tab".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
     feed(&mut state, press(KeyCode::Tab));
     assert_eq!(state.line, "ax table");
 
-    // Ambiguity completes nothing rather than guessing: `:s` is settings,
-    // sessions and stop.
     feed(&mut state, press(KeyCode::Esc));
-    feed(&mut state, press(KeyCode::Char(':')));
+    feed(&mut state, press(KeyCode::Char('/')));
     feed(&mut state, press(KeyCode::Char('s')));
     feed(&mut state, press(KeyCode::Tab));
     assert_eq!(state.line, "s");
@@ -771,6 +831,7 @@ fn tab_completes_a_command_and_an_ax_request() {
 fn gg_and_g_jump_to_the_first_and_last_settings_row() {
     let mut state = common::state();
     state.view = View::Settings;
+    state.mode = Mode::Normal;
     let last = state.rows().len() - 1;
 
     feed(&mut state, press(KeyCode::Char('G')));
@@ -791,7 +852,6 @@ fn a_message_typed_into_a_running_turn_steers_it() {
     let mut state = common::state();
     state.start_run(common::run_id(1), RunKind::Chat, "post the launch note");
 
-    feed(&mut state, press(KeyCode::Char('i')));
     for character in "use the other account".chars() {
         feed(&mut state, press(KeyCode::Char(character)));
     }
@@ -838,7 +898,6 @@ fn a_message_typed_into_a_running_turn_steers_it() {
 fn a_steer_the_run_missed_leaves_no_orphan_row() {
     let mut state = common::state();
     state.start_run(common::run_id(1), RunKind::Chat, "post the launch note");
-    feed(&mut state, press(KeyCode::Char('i')));
     state.composer = "use the other account".into();
     feed(&mut state, press(KeyCode::Enter));
     assert_eq!(state.thread.len(), 1);
@@ -852,6 +911,7 @@ fn a_steer_the_run_missed_leaves_no_orphan_row() {
 #[test]
 fn esc_stops_a_live_run_and_otherwise_asks_to_quit() {
     let mut state = common::state();
+    state.mode = Mode::Normal;
     assert_eq!(
         KeyMap.resolve(press(KeyCode::Esc), &state),
         Action::CloseOverlay

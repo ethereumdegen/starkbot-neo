@@ -17,7 +17,7 @@ neo-agent.workspace = true
 neo-core.workspace = true
 neo-store.workspace = true
 # The evaluation suite is a capability the front end offers, not a test
-# harness it links: `:eval` calls `run_suite` exactly as `neo eval` does.
+# harness it links: `/eval` calls `run_suite` exactly as `neo eval` does.
 neo-eval.workspace = true
 neo-voice.workspace = true
 ratatui.workspace = true

@@ -2,8 +2,7 @@
 source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
-Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
-1  Conversation    2  Runs (1/2 live)    3  Mind · chat · failed    4  Projects (0)
+Stark  ○ NO MIC YET  v dictates   Esc/q chat  runs
 ┌ Runs (1/2 live) ─────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │▸× chat failed     0:15  1 step(s)                                                                                    │
 │   post the launch note                                                                                               │
@@ -38,31 +37,26 @@ Stark  ○ NO MIC YET  v dictates   chat · , settings · : commands · ? keys
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
 │                                                                                                                ▼ live│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
 NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
 --- styles ---
 fg=Blue bg=Reset mod=BOLD  running
 fg=Blue bg=Reset mod=NONE  nav
-fg=Cyan bg=Reset mod=BOLD  Runs (1/2 live)
-fg=Cyan bg=Reset mod=BOLD  chat
-fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=BOLD  runs
 fg=Cyan bg=Reset mod=NONE  ▶
 fg=Cyan bg=Reset mod=NONE  ▸×
 fg=DarkGray bg=Reset mod=NONE  0:15  1 step(s)
 fg=DarkGray bg=Reset mod=NONE  0:23  3 step(s)
-fg=DarkGray bg=Reset mod=NONE  1  Conversation    2
-fg=DarkGray bg=Reset mod=NONE  3  Mind · chat · failed    4  Projects (0)
-fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
-fg=DarkGray bg=Reset mod=NONE  · , settings · : commands · ? keys
 fg=DarkGray bg=Reset mod=NONE  │
 fg=DarkGray bg=Reset mod=NONE  │   opened https://example.com
 fg=DarkGray bg=Reset mod=NONE  │   the model could not be reached
 fg=DarkGray bg=Reset mod=NONE  ┌ Runs (1/2 live) ─────────────────────────────────────────────────────────────────────────────────────────────────────┐
 fg=DarkGray bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 fg=DarkGray bg=Reset mod=NONE  ▼ live│
-fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc/q chat
 fg=Red bg=Reset mod=BOLD  failed
 fg=Red bg=Reset mod=NONE  chat
 fg=Reset bg=Reset mod=BOLD  Stark

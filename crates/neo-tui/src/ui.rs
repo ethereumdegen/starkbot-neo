@@ -58,7 +58,7 @@ pub fn draw(frame: &mut Frame, state: &State) -> Painted {
     }
 
     let header_height = u16::from(area.height >= 24);
-    let composer_height = u16::from(state.view == View::Panes);
+    let composer_height = u16::from(state.view == View::Panes && state.focus == Pane::Conversation);
     let [header, body, composer, status] = Layout::vertical([
         Constraint::Length(header_height),
         Constraint::Min(3),
@@ -152,72 +152,36 @@ fn header_line(state: &State) -> Paragraph<'_> {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ));
     }
-    // Which screens exist, and the key that reaches each one.
-    //
-    // The chat entry names a key only from Settings, where `Esc` really does
-    // go back: at top level `Esc` raises the quit prompt, and advertising it
-    // as "back to chat" taught the wrong thing to exactly the user who had
-    // not learned the keymap yet.
     spans.push(Span::styled("   ", Style::new().fg(GREY)));
     let active = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let idle = Style::new().fg(GREY);
-    if state.view == View::Panes {
+    if state.view == View::Panes && state.focus == Pane::Conversation {
         spans.push(Span::styled("chat", active));
+        spans.push(Span::styled("  /project · /model · /login · /help", idle));
     } else {
-        spans.push(Span::styled("Esc chat", idle));
+        spans.push(Span::styled("Esc/q chat", idle));
+        spans.push(Span::styled("  ", idle));
+        let page = match (state.view, state.focus, state.settings_section) {
+            (View::Settings, _, Some(Section::Models)) => "models",
+            (View::Settings, _, Some(Section::Connections)) => "login",
+            (View::Settings, _, _) => "settings",
+            (_, Pane::Projects, _) => "projects",
+            (_, Pane::Runs, _) => "runs",
+            (_, Pane::Mind, _) if state.selected_run.is_some() => "mind",
+            (_, Pane::Mind, _) => "activity",
+            _ => "chat",
+        };
+        spans.push(Span::styled(page, active));
     }
-    spans.push(Span::styled(" · ", idle));
-    spans.push(Span::styled(
-        ", settings",
-        if state.view == View::Settings {
-            active
-        } else {
-            idle
-        },
-    ));
-    spans.push(Span::styled(" · : commands · ? keys", idle));
     Paragraph::new(Line::from(spans))
 }
 
 // -------------------------------------------------------------------- panes
 
-/// One page at a time, full width (14 §2 as amended).
-///
-/// Three side-by-side columns were the original design and they were wrong for
-/// this front end: the Conversation is the surface a user reads, and on an
-/// 80-column terminal a third of the width wraps a sentence every four words
-/// while two columns sit mostly empty. The other pages are reference material
-/// — what ran, and what the agent was thinking — so they are a keystroke away
-/// rather than permanently in the way.
+/// The conversation is the home surface. Reference and configuration pages
+/// replace it only after an explicit slash command.
 fn render_panes(frame: &mut Frame, area: Rect, state: &State) {
-    let [tabs, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
-    frame.render_widget(tab_bar(state), tabs);
-    render_pane(frame, body, state, state.focus);
-}
-
-/// The page strip: which page is showing, and the key for each.
-///
-/// It carries the number because the pages are reached by number — a tab bar
-/// that names pages without saying how to get to them is decoration.
-fn tab_bar(state: &State) -> Paragraph<'_> {
-    let mut spans = Vec::with_capacity(Pane::ALL.len() * 3);
-    for (index, pane) in Pane::ALL.iter().enumerate() {
-        let current = *pane == state.focus;
-        let style = if current {
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(GREY)
-        };
-        if index > 0 {
-            spans.push(Span::styled("   ", Style::new().fg(GREY)));
-        }
-        spans.push(Span::styled(
-            format!("{} ", index + 1),
-            Style::new().fg(GREY),
-        ));
-        spans.push(Span::styled(pane_title(state, *pane), style));
-    }
-    Paragraph::new(Line::from(spans))
+    render_pane(frame, area, state, state.focus);
 }
 
 /// What a pane's border says it is holding.
@@ -309,34 +273,69 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
 
 fn project_lines(state: &State) -> Vec<Line<'static>> {
     let Some(selected) = state.projects.get(state.project_row) else {
-        return vec![Line::styled(
-            "No projects yet. Use `neo projects add \"Name\"`.",
-            Style::new().fg(GREY),
-        )];
+        return vec![
+            Line::styled("No projects yet.", Style::new().fg(GREY)),
+            Line::styled(
+                "Create one with `neo projects add \"Name\"`, then reopen /project.",
+                Style::new().fg(GREY),
+            ),
+        ];
     };
     if let Some((documents, ticks)) = &state.project_detail {
-        let clock = if selected.heartbeat_enabled {
-            format!(
-                "every {}s · next {:?}",
-                selected.heartbeat_every_seconds, selected.next_due_at
+        let control = |row: usize, label: String| {
+            let selected = row == state.project_detail_row;
+            Line::styled(
+                format!("{} {label}", if selected { "▸" } else { " " }),
+                if selected {
+                    Style::new().fg(Color::Cyan).bold()
+                } else {
+                    Style::new()
+                },
             )
-        } else {
-            "off".to_owned()
         };
         let mut lines = vec![
             Line::styled(selected.name.clone(), Style::new().fg(Color::Cyan).bold()),
-            Line::raw(selected.root.clone()),
-            Line::raw(format!("heartbeat: {clock}")),
+            Line::styled(selected.root.clone(), Style::new().fg(GREY)),
             Line::raw(""),
-            Line::styled("soul.md", Style::new().bold()),
-            Line::raw(documents.soul.clone()),
+            Line::styled("Project settings", Style::new().bold()),
+            control(
+                0,
+                format!(
+                    "Run automatically        {}",
+                    if selected.heartbeat_enabled {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ),
+            ),
+            control(
+                1,
+                format!(
+                    "Every (seconds)         {}",
+                    selected.heartbeat_every_seconds
+                ),
+            ),
+            control(2, format!("When a gate appears     {:?}", selected.on_gate)),
             Line::raw(""),
-            Line::styled("heartbeat.md", Style::new().bold()),
-            Line::raw(documents.heartbeat.clone()),
+            Line::styled("Files", Style::new().bold()),
+            control(3, "soul.md                  edit in $EDITOR".to_owned()),
+            Line::styled(
+                format!("    {}", project_excerpt(&documents.soul)),
+                Style::new().fg(GREY),
+            ),
+            control(4, "heartbeat.md             edit in $EDITOR".to_owned()),
+            Line::styled(
+                format!("    {}", project_excerpt(&documents.heartbeat)),
+                Style::new().fg(GREY),
+            ),
             Line::raw(""),
-            Line::styled("recent ticks", Style::new().bold()),
+            Line::styled("Actions", Style::new().bold()),
+            control(5, "Run heartbeat now".to_owned()),
+            Line::raw(""),
+            Line::styled("Recent activity", Style::new().bold()),
         ];
-        lines.extend(ticks.iter().map(|tick| {
+        lines.extend(ticks.iter().take(5).map(|tick| {
             Line::raw(format!(
                 "{}  {:?}  {}",
                 tick.started_at,
@@ -345,15 +344,19 @@ fn project_lines(state: &State) -> Vec<Line<'static>> {
             ))
         }));
         lines.push(Line::styled(
-            "Enter back · e heartbeat · E soul · r run · t toggle",
+            "j/k moves · Enter changes or opens · Backspace/← index · Esc/q chat",
             Style::new().fg(GREY),
         ));
         return lines;
     }
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::styled(
+        "Select a project and press Enter.",
+        Style::new().fg(GREY),
+    )];
+    lines.push(Line::raw(""));
     for (index, project) in state.projects.iter().enumerate() {
         let cursor = if index == state.project_row {
-            "›"
+            "▸"
         } else {
             " "
         };
@@ -370,13 +373,26 @@ fn project_lines(state: &State) -> Vec<Line<'static>> {
                 Style::new()
             },
         ));
-        lines.push(Line::raw(format!("  {} · {clock}", project.slug)));
         lines.push(Line::styled(
-            format!("  last {:?}", project.last_tick_at),
+            format!("  {} · {clock}", project.slug),
             Style::new().fg(GREY),
         ));
     }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "j/k moves · Enter opens · Esc/q chat",
+        Style::new().fg(GREY),
+    ));
     lines
+}
+
+fn project_excerpt(text: &str) -> String {
+    let first = text.lines().next().unwrap_or_default();
+    let mut excerpt = first.chars().take(80).collect::<String>();
+    if first.chars().count() > 80 {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 /// The conversation, wrapped to `width`: the thread, then whatever the
@@ -399,7 +415,7 @@ fn conversation_lines(state: &State, width: u16) -> Vec<Line<'static>> {
                 Style::new().fg(GREY),
             ),
             Line::styled(
-                "i or a starts typing · Enter sends · : runs a command",
+                "Type a message and press Enter · / opens commands",
                 Style::new().fg(GREY),
             ),
         ];
@@ -694,12 +710,25 @@ fn activity_lines(state: &State) -> Vec<Line<'_>> {
 // ----------------------------------------------------------------- settings
 
 fn render_settings(frame: &mut Frame, area: Rect, state: &State) {
+    let (title, hint) = match state.settings_section {
+        Some(Section::Connections) => (
+            " Login & connections ",
+            " Enter selects · s sets key · x removes · K checks · c signs in · d signs out · Esc/q chat ",
+        ),
+        Some(Section::Models) => (
+            " Model configuration ",
+            " Enter edits or cycles · r refreshes · Esc/q chat ",
+        ),
+        Some(section) => (section.title(), " Enter edits or toggles · Esc/q chat "),
+        None => (
+            " Settings ",
+            " Enter edits/toggles · s key · c login · Esc/q chat ",
+        ),
+    };
     let block = Block::bordered()
         .border_style(Style::new().fg(Color::Cyan))
-        .title(" Settings ")
-        .title_bottom(
-            " Enter edit/toggle · s set key · x remove · K check · c connect · d disconnect · Esc back ",
-        );
+        .title(title)
+        .title_bottom(hint);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -754,14 +783,15 @@ fn connection_value_style(value: &str) -> Style {
 
 fn composer_line(state: &State) -> Paragraph<'_> {
     let draft = state.composer.replace('\n', "⏎");
-    let prefix = match state.mode {
-        Mode::Command => ":",
-        Mode::Search => "/",
-        _ => "> ",
+    let prefix = if state.mode == Mode::Command {
+        "/"
+    } else {
+        "> "
     };
-    let typed = match state.mode {
-        Mode::Command | Mode::Search => state.line.clone(),
-        _ => draft,
+    let typed = if state.mode == Mode::Command {
+        state.line.clone()
+    } else {
+        draft
     };
     let mut spans = vec![
         Span::styled(prefix, Style::new().fg(Color::Cyan)),
@@ -769,10 +799,9 @@ fn composer_line(state: &State) -> Paragraph<'_> {
     ];
     if typed.is_empty() {
         let hint = match state.mode {
-            Mode::Command => "Tab completes · try nav, app, ax, eval, sessions",
-            Mode::Search => "search the thread",
-            Mode::Insert => "",
-            _ => state.composer_hint(),
+            Mode::Command => "Tab completes · try project, model, login, sessions",
+            Mode::Insert => state.composer_hint(),
+            Mode::Normal | Mode::Card => "/ opens commands · i starts typing",
         };
         if !hint.is_empty() {
             spans.push(Span::styled(hint, Style::new().fg(GREY)));
@@ -902,34 +931,27 @@ fn account_segment(state: &State) -> String {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line<'_>> = [
-        "Esc     stop the live run     q       quit (asks)      Ctrl-Q  quit now",
-        "Ctrl-C  kill switch   Ctrl-L  redraw           x       stop the selected run",
-        "1 2 3   focus pane    Tab     next pane        < >     resize split",
-        "i / a   compose       :       command line     /       search thread",
-        "f       follow live   ,       settings         ?       this help",
-        "j k     move          gg / G  first / last     Enter   activate",
-        "Ctrl-N  new conversation      t       sessions",
-        "v       dictate       Ctrl-V  dictate (insert) m       listen on/off",
-        "Insert: Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert",
-        "While a turn runs: Enter steers it — the message reaches the turn at the",
-        "        next step, and is sent as a new turn if that one just ended.",
-        "        Esc leaves insert, Esc again stops the run; what it already did stays.",
-        "Prompts: Enter saves · Ctrl-U clears a pre-filled value · Esc cancels",
-        "On a card: y / n answer a confirm once it is on screen · j k pick · 1-9 answer · i types",
-        "Settings: s set key · x remove key · K check key · c sign in · d sign out",
-        "          r refresh models · Enter toggles a bool or cycles a choice",
+        "Chat opens ready to type. Enter sends; / opens the command line.",
+        "Esc leaves typing. Esc again stops a live run; q asks before quitting.",
+        "On a page, Esc or q returns to chat.",
+        "j/k or arrows move · Enter opens or changes · Backspace/← returns to an index",
+        "Ctrl-N starts a conversation · Ctrl-V dictates · Ctrl-Q quits now",
+        "Ctrl-C kill switch · Ctrl-L redraw · x stops the selected run",
+        "Cards: y/n confirms · j/k picks · 1-9 answers · i types a free answer",
+        "Login: c signs in · d signs out · s sets a key · x removes · K checks",
+        "Models: Enter edits or cycles · r refreshes the catalogue",
         "",
     ]
     .iter()
     .map(|line| Line::raw(*line))
     .collect();
     lines.push(Line::styled(
-        "the : line",
+        "slash commands",
         Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
     ));
     for spec in &COMMAND_LINE {
         let mut spans = vec![Span::styled(
-            format!("  :{:<9}", spec.name),
+            format!("  /{:<9}", spec.name),
             Style::new().fg(Color::Cyan),
         )];
         spans.push(Span::styled(
@@ -947,7 +969,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
     }
 
     let block = Block::bordered()
-        .title(" Keys ")
+        .title(" Help ")
         .border_style(Style::new().fg(Color::Cyan));
     let height = u16::try_from(lines.len()).unwrap_or(8) + 2;
     let rect = centered(area, 104, height);
@@ -995,7 +1017,7 @@ fn render_sessions(frame: &mut Frame, area: Rect, state: &State) {
     };
     let block = Block::bordered()
         .title(" Conversations ")
-        .title_bottom(" j k moves · Enter opens · Ctrl-N new · :rename retitles · Esc closes ")
+        .title_bottom(" j k moves · Enter opens · Ctrl-N new · /rename retitles · Esc closes ")
         .border_style(Style::new().fg(Color::Cyan));
     let height = u16::try_from(lines.len()).unwrap_or(4).min(20) + 2;
     let rect = centered(area, 80, height);

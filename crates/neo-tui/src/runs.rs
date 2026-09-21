@@ -1,7 +1,7 @@
 //! What this front end started, and what each of those runs is doing.
 //!
-//! A run is one thing the user asked for — a chat turn, a `:nav`, a `:app`, a
-//! `:ax` call, an eval suite — identified by the [`RunId`] the loop minted
+//! A run is one thing the user asked for — a chat turn, a `/nav`, an `/app`, an
+//! `/ax` call, an eval suite — identified by the [`RunId`] the loop minted
 //! before it spawned the work. Everything below is reduced from the event
 //! stream: [`AppEvent::TurnStep`] and friends, [`AppEvent::NavStep`],
 //! [`AppEvent::EvalCase`]. Nothing here polls, and nothing here is derived

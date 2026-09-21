@@ -18,8 +18,16 @@ fn press(state: &mut State, code: KeyCode) {
     state.apply_action(action);
 }
 
+fn slash(state: &mut State, command: &str) {
+    press(state, KeyCode::Char('/'));
+    for character in command.chars() {
+        press(state, KeyCode::Char(character));
+    }
+    press(state, KeyCode::Enter);
+}
+
 fn open_settings(state: &mut State) {
-    press(state, KeyCode::Char(','));
+    slash(state, "settings");
 }
 
 fn select_row(state: &mut State, label: &str) {
@@ -80,7 +88,7 @@ fn the_activity_pane_shows_the_event_ring() {
         code: "store.opened".into(),
         text: "store ready".into(),
     });
-    press(&mut state, KeyCode::Char('3'));
+    slash(&mut state, "activity");
     insta::assert_snapshot!("activity_pane", common::render(&state, 120, 40));
 }
 
@@ -120,7 +128,7 @@ fn the_runs_pane_shows_a_running_and_a_failed_run() {
     });
 
     state.tick(23_000);
-    press(&mut state, KeyCode::Char('2'));
+    slash(&mut state, "runs");
     let frame = common::render(&state, 120, 40);
     assert!(frame.contains("running"), "no live run on screen");
     assert!(frame.contains("failed"), "no failed run on screen");
@@ -176,7 +184,7 @@ fn the_mind_pane_traces_the_selected_run_through_nav_decision_display() {
         "the trace must be NavDecision's own Display, not a second formatter"
     );
 
-    press(&mut state, KeyCode::Char('3'));
+    slash(&mut state, "mind");
     let frame = common::render(&state, 120, 40);
     assert!(
         !frame.contains("must not prefer"),
@@ -224,7 +232,7 @@ fn the_mind_pane_traces_eval_cases() {
         });
     }
     state.tick(12_000);
-    press(&mut state, KeyCode::Char('3'));
+    slash(&mut state, "mind");
     let frame = common::render(&state, 120, 40);
     assert!(frame.contains("1/3 numbers-sum · passed"));
     assert!(frame.contains("3/3 keynote-slide · skipped"));
@@ -348,6 +356,44 @@ fn the_session_picker_lists_conversations() {
     assert!(frame.contains("launch week"));
     assert!(frame.contains("open"), "the open thread is not marked");
     insta::assert_snapshot!("session_picker", frame);
+}
+
+#[test]
+fn project_command_opens_index_and_configurable_detail_page() {
+    let mut state = common::state();
+    state.projects.push(common::project());
+    slash(&mut state, "project");
+
+    let index = common::render(&state, 100, 30);
+    assert!(index.contains("Q4 Launch"));
+    assert!(index.contains("Enter opens"));
+    assert!(!index.contains("Project settings"));
+
+    state.show_project(
+        vec![common::project()],
+        neo_agent::ProjectDocuments {
+            soul: "Use the Northstar launch name.".into(),
+            heartbeat: "Review launch blockers.".into(),
+        },
+        Vec::new(),
+    );
+    let detail = common::render(&state, 100, 30);
+    for expected in [
+        "Project settings",
+        "Run automatically",
+        "Every (seconds)",
+        "When a gate appears",
+        "soul.md",
+        "heartbeat.md",
+        "Run heartbeat now",
+        "Esc/q chat",
+    ] {
+        assert!(
+            detail.contains(expected),
+            "project detail lost {expected}:\\n{detail}"
+        );
+    }
+    insta::assert_snapshot!("project_detail", detail);
 }
 
 #[test]
@@ -475,17 +521,18 @@ fn the_login_overlay_shows_what_was_pasted() {
     assert!(!format!("{command:?}").contains("code=xyz"));
 }
 
-/// A fresh install opens on Connections, not the panes: every credential can
-/// be added here, so setup never needs a shell.
+/// A fresh install still opens in chat and points directly at `/login`.
 #[test]
-fn a_fresh_install_opens_on_connections() {
+fn a_fresh_install_opens_in_chat() {
     let state = State::new(common::empty_bootstrap());
-    assert_eq!(state.view, View::Settings);
+    assert_eq!(state.view, View::Panes);
+    assert_eq!(state.mode, neo_tui::Mode::Insert);
     assert!(state.setup_needed());
-    let row = state.rows().get(state.row).cloned();
     assert!(
-        row.is_some_and(|row| !row.heading),
-        "the cursor must start on something actionable"
+        state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("/login"))
     );
 }
 

@@ -148,7 +148,7 @@ enum VoiceUpdate {
 /// This is *not* how progress arrives — progress is [`neo_core::AppEvent`],
 /// reduced by `state.rs`, which is what lets any number of observers follow
 /// a run. It is only the terminal result, which the event stream does not
-/// carry for a `:nav`, a `:ax` or a suite: those report their outcome as a
+/// carry for a `/nav`, an `/ax` or a suite: those report their outcome as a
 /// return value, and a run that failed before publishing anything would
 /// otherwise sit at `running` forever.
 struct Settled {
@@ -303,6 +303,7 @@ enum Chore {
         projects: Vec<neo_core::Project>,
         documents: neo_agent::ProjectDocuments,
         ticks: Vec<neo_core::HeartbeatTick>,
+        note: Option<String>,
     },
 }
 
@@ -731,23 +732,35 @@ fn spawn_reload(
     });
 }
 
+fn load_project(
+    runtime: &Runtime,
+    slug: &str,
+) -> Result<
+    (
+        Vec<neo_core::Project>,
+        neo_agent::ProjectDocuments,
+        Vec<neo_core::HeartbeatTick>,
+    ),
+    neo_agent::ProjectError,
+> {
+    Ok((
+        runtime.projects()?,
+        runtime.project_documents(slug)?,
+        runtime.project_ticks(slug, 20)?,
+    ))
+}
+
 fn spawn_project_load(runtime: &Arc<Runtime>, state: &mut State, chores: &Chores, slug: String) {
     let handle = Arc::clone(runtime);
     let pending = format!("project {slug} — loading");
     spawn_chore(chores, state, pending, async move {
-        let loaded = tokio::task::spawn_blocking(move || {
-            Ok::<_, neo_agent::ProjectError>((
-                handle.projects()?,
-                handle.project_documents(&slug)?,
-                handle.project_ticks(&slug, 20)?,
-            ))
-        })
-        .await;
+        let loaded = tokio::task::spawn_blocking(move || load_project(&handle, &slug)).await;
         match loaded {
             Ok(Ok((projects, documents, ticks))) => Chore::ProjectLoaded {
                 projects,
                 documents,
                 ticks,
+                note: None,
             },
             Ok(Err(error)) => Chore::Said(format!("project could not be loaded: {error}")),
             Err(error) => Chore::Said(format!("project load stopped: {error}")),
@@ -780,7 +793,13 @@ fn poll_chores(state: &mut State, chores: &mut Chores) {
                 projects,
                 documents,
                 ticks,
-            } => state.show_project(projects, documents, ticks),
+                note,
+            } => {
+                state.show_project(projects, documents, ticks);
+                if let Some(note) = note {
+                    state.note(note);
+                }
+            }
         }
     }
 }
@@ -1050,16 +1069,22 @@ fn dispatch<B: Backend>(
                 async move {
                     match handle.run_project_heartbeat(&slug).await {
                         Ok(run) => {
-                            match tokio::task::spawn_blocking(move || handle.bootstrap()).await {
-                                Ok(Ok(bootstrap)) => Chore::Reloaded(
-                                    Some(format!("project {label} — {:?}", run.tick.outcome)),
-                                    Box::new(bootstrap),
-                                ),
+                            let note = format!("project {label} — {:?}", run.tick.outcome);
+                            let loaded =
+                                tokio::task::spawn_blocking(move || load_project(&handle, &slug))
+                                    .await;
+                            match loaded {
+                                Ok(Ok((projects, documents, ticks))) => Chore::ProjectLoaded {
+                                    projects,
+                                    documents,
+                                    ticks,
+                                    note: Some(note),
+                                },
                                 Ok(Err(error)) => Chore::Said(format!(
-                                    "project {label} ran, but the index could not reload: {error}"
+                                    "{note}, but the project could not reload: {error}"
                                 )),
                                 Err(error) => Chore::Said(format!(
-                                    "project {label} ran, but the index reload stopped: {error}"
+                                    "{note}, but the project reload stopped: {error}"
                                 )),
                             }
                         }
@@ -1085,17 +1110,16 @@ fn dispatch<B: Backend>(
                         handle
                             .configure_project_heartbeat(&slug, enabled, every_seconds, on_gate)
                             .map_err(|error| error.to_string())?;
-                        handle.bootstrap().map_err(|error| error.to_string())
+                        load_project(&handle, &slug).map_err(|error| error.to_string())
                     })
                     .await;
                     match changed {
-                        Ok(Ok(bootstrap)) => Chore::Reloaded(
-                            Some(format!(
-                                "project {label} heartbeat {}",
-                                if enabled { "on" } else { "off" }
-                            )),
-                            Box::new(bootstrap),
-                        ),
+                        Ok(Ok((projects, documents, ticks))) => Chore::ProjectLoaded {
+                            projects,
+                            documents,
+                            ticks,
+                            note: Some(format!("project {label} heartbeat updated")),
+                        },
                         Ok(Err(error)) => Chore::Said(format!("project {label}: {error}")),
                         Err(error) => Chore::Said(format!("project {label}: {error}")),
                     }
@@ -1554,7 +1578,7 @@ fn eval_list(state: &mut State) {
             case.tags.join(" ")
         ));
     }
-    state.note(format!("{} case(s) — `:eval` runs them", cases.len()));
+    state.note(format!("{} case(s) — `/eval` runs them", cases.len()));
 }
 
 /// A stored timestamp as a date and a minute, which is what a switcher row
@@ -1880,7 +1904,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The same contract for `:doctor`, which is not a vendor call at all.
+    /// The same contract for `/doctor`, which is not a vendor call at all.
     ///
     /// Every doctor check is local, and one of them is slow: with no OpenAI
     /// key stored, the dictation row asks macOS three authorisation

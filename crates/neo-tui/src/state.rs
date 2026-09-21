@@ -27,9 +27,8 @@ use crate::runs::{RUNS_CAP, Run, RunKind, RunState, TraceKind, eval_line, nav_tr
 // module takes from `ui`, and it is data, not rendering.
 use crate::ui::Painted;
 
-/// Shown on a first run, naming the keystrokes that finish setup.
-const SETUP_HINT: &str =
-    "setup: s adds a key · c signs in to a subscription · Enter selects the runtime";
+/// Shown on a first run without replacing the conversation.
+const SETUP_HINT: &str = "setup needed — /login opens connections and keys";
 
 /// How many `AppEvent` summaries the Activity ring keeps.
 pub const ACTIVITY_CAP: usize = 200;
@@ -51,20 +50,18 @@ const COMPOSER_HINT: &str = "Enter sends · Alt-Enter or Ctrl-J newline · Esc l
 /// refused, which is the whole point of the mailbox. `Esc twice` because
 /// the first one leaves insert: the help overlay spells that out.
 const COMPOSER_STEERS: &str = "Enter steers the running turn · Esc twice stops it";
-/// What it says when no runtime can answer, which is a setup problem the
-/// Connections screen fixes.
-const COMPOSER_BLOCKED: &str = "no inference connection — press , then c to sign in";
+/// What it says while no runtime can answer.
+const COMPOSER_BLOCKED: &str = "no inference connection — type /login to connect";
 
 /// What the status line says when a key would have resolved a card that is
 /// not armed yet. Not silence: a keystroke that did nothing and said nothing
 /// reads as a broken binding, and the user presses it again harder.
 const CARD_UNREAD: &str = "give the card a moment — y and n go live once it has been on screen";
 
-/// Panes in the M1 pane row.
+/// Full-screen surfaces reached from chat slash commands.
 ///
-/// [`Pane::Mind`] shows the selected run's trace; with nothing selected it
-/// falls back to the raw `AppEvent` ring, which is still the only view of
-/// everything the core publishes that this front end did not start.
+/// Conversation is the home surface. The others replace it until Esc or q
+/// returns to chat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     Conversation,
@@ -74,8 +71,6 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ALL: [Self; 4] = [Self::Conversation, Self::Runs, Self::Mind, Self::Projects];
-
     pub const fn index(self) -> usize {
         match self {
             Self::Conversation => 0,
@@ -83,23 +78,6 @@ impl Pane {
             Self::Mind => 2,
             Self::Projects => 3,
         }
-    }
-
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Conversation => "Conversation",
-            Self::Runs => "Runs",
-            Self::Mind => "Mind",
-            Self::Projects => "Projects",
-        }
-    }
-
-    fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
-    }
-
-    fn previous(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
 
@@ -112,7 +90,6 @@ pub enum Mode {
     Insert,
     Card,
     Command,
-    Search,
 }
 
 impl Mode {
@@ -122,7 +99,6 @@ impl Mode {
             Self::Insert => "INSERT",
             Self::Card => "CARD",
             Self::Command => "COMMAND",
-            Self::Search => "SEARCH",
         }
     }
 }
@@ -212,7 +188,7 @@ impl Section {
         }
     }
 
-    /// The word `:settings <name>` jumps by.
+    /// The word `/settings <name>` jumps by.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Connections => "connections",
@@ -507,6 +483,12 @@ pub enum PromptKind {
         pointer: &'static str,
         kind: FieldKind,
     },
+    /// Change a project's heartbeat interval without leaving the TUI.
+    ProjectInterval {
+        slug: String,
+        enabled: bool,
+        on_gate: neo_core::HeartbeatGate,
+    },
     /// Rename the open conversation.
     Rename,
     /// The typed answer to a free-text question (16 §5.5). The same one-line
@@ -723,7 +705,7 @@ pub enum Command {
     ReBootstrap,
 }
 
-/// Everything `:nav` can be asked for, in the front end's own words.
+/// Everything `/nav` can be asked for, in the front end's own words.
 ///
 /// Not [`neo_agent::agent::BrowserOptions`]: that carries a confirm threshold
 /// the reducer has no business inventing. The loop resolves it from settings,
@@ -1293,16 +1275,19 @@ pub struct State {
     pub projects: Vec<Project>,
     pub project_row: usize,
     pub project_detail: Option<(ProjectDocuments, Vec<neo_core::HeartbeatTick>)>,
+    /// The selected control on an open project page.
+    pub project_detail_row: usize,
 
     pub listen: Option<ListenState>,
     pub mic_device: Option<String>,
 
     pub view: View,
+    /// Restricts Settings to the page opened by `/model` or `/login`.
+    pub settings_section: Option<Section>,
     pub mode: Mode,
     pub focus: Pane,
     pub scroll: [u16; 4],
     pub follow: [bool; 4],
-    pub tab_only: bool,
 
     /// The conversation, oldest first.
     pub thread: Vec<ThreadRow>,
@@ -1362,16 +1347,11 @@ pub struct State {
 }
 
 impl State {
-    /// Build the first frame's state.
-    ///
-    /// A fresh install opens on Connections rather than the panes: every
-    /// credential Starkbot needs can be added here, so a first run never has
-    /// to leave the front end for a shell.
+    /// Build the first frame's state. Chat is always the entry surface;
+    /// incomplete setup is explained in the composer instead of replacing it.
     pub fn new(bootstrap: Bootstrap) -> Self {
         let mut state = Self::of(bootstrap);
         if state.setup_needed() {
-            state.view = View::Settings;
-            state.row = state.first_actionable_row();
             state.status = Some(SETUP_HINT.into());
         }
         state
@@ -1401,14 +1381,15 @@ impl State {
             projects,
             project_row: 0,
             project_detail: None,
+            project_detail_row: 0,
             listen: None,
             mic_device: None,
             view: View::Panes,
-            mode: Mode::Normal,
+            settings_section: None,
+            mode: Mode::Insert,
             focus: Pane::Conversation,
             scroll: [0; 4],
             follow: [true; 4],
-            tab_only: false,
             thread: Vec::new(),
             conversation: None,
             conversation_title: None,
@@ -1692,7 +1673,7 @@ impl State {
     /// How a run ended, as the loop saw the call return.
     ///
     /// Needed beside the event stream because only a chat turn publishes a
-    /// terminal event: a `:nav`, a `:ax` or a suite reports its outcome as a
+    /// terminal event: a `/nav`, an `/ax` or a suite reports its outcome as a
     /// return value, and a run that failed before it published anything would
     /// otherwise sit at `running` forever.
     pub fn finish_run(&mut self, id: RunId, detail: Vec<String>, outcome: Result<String, String>) {
@@ -1762,7 +1743,7 @@ impl State {
         self.follow[Pane::Runs.index()] = next == last;
     }
 
-    /// The run `x` and `:stop` act on: the one being traced, or the chat turn
+    /// The run `x` and `/stop` act on: the one being traced, or the chat turn
     /// when nothing is selected.
     #[must_use]
     pub fn stoppable_run(&self) -> Option<RunId> {
@@ -2253,8 +2234,12 @@ impl State {
                     self.help = false;
                 } else if self.sessions.is_some() {
                     self.sessions = None;
-                } else if self.view == View::Settings {
+                } else if self.view == View::Settings || self.focus != Pane::Conversation {
                     self.view = View::Panes;
+                    self.focus = Pane::Conversation;
+                    self.project_detail = None;
+                    self.settings_section = None;
+                    self.mode = Mode::Insert;
                 } else {
                     self.quit_prompt = true;
                 }
@@ -2276,18 +2261,10 @@ impl State {
             }
             Action::StopRun => return self.stop_selected(),
             Action::OpenProject => return self.open_project(),
-            Action::RunProjectHeartbeat => return self.run_project_heartbeat(),
-            Action::ToggleProjectHeartbeat => return self.toggle_project_heartbeat(),
-            Action::EditProjectHeartbeat => return self.edit_project_document("heartbeat.md"),
-            Action::EditProjectSoul => return self.edit_project_document("soul.md"),
-            Action::FocusPane(pane) => self.focus = pane,
-            Action::FocusNext => self.focus = self.focus.next(),
-            Action::FocusPrevious => self.focus = self.focus.previous(),
-            // Nothing to resize: one page occupies the terminal (14 §2 as
-            // amended). `<`/`>` move between pages instead of splitting them,
-            // which is what a user pressing them is actually after.
-            Action::ShrinkSplit => self.focus = self.focus.previous(),
-            Action::GrowSplit => self.focus = self.focus.next(),
+            Action::ProjectBack => {
+                self.project_detail = None;
+                self.project_detail_row = 0;
+            }
             Action::ToggleFollow => {
                 let index = self.focus.index();
                 self.follow[index] = !self.follow[index];
@@ -2313,10 +2290,6 @@ impl State {
                 self.mode = Mode::Command;
                 self.line = String::new();
             }
-            Action::EnterSearch => {
-                self.mode = Mode::Search;
-                self.line = String::new();
-            }
             Action::ComposerChar(character) => self.composer.push(character),
             Action::ComposerNewline => self.composer.push('\n'),
             Action::ComposerBackspace => {
@@ -2330,7 +2303,7 @@ impl State {
                 self.line.pop();
             }
             Action::LineCancel => {
-                self.mode = Mode::Normal;
+                self.mode = Mode::Insert;
                 self.line = String::new();
             }
             Action::LineComplete => {
@@ -2339,11 +2312,6 @@ impl State {
                 }
             }
             Action::LineSubmit => return self.run_line(),
-            Action::OpenSettings => {
-                self.view = View::Settings;
-                self.mode = Mode::Normal;
-                self.row = 0;
-            }
             // A card owns the keyboard while it is up, so motion moves its
             // options rather than a settings row nobody can see behind it.
             Action::SelectNext => {
@@ -2601,28 +2569,56 @@ impl State {
     }
 
     fn open_project(&mut self) -> Option<Command> {
-        if self.project_detail.take().is_some() {
-            return None;
+        if self.project_detail.is_some() {
+            return self.activate_project_control();
         }
         self.selected_project().map(|project| Command::OpenProject {
             slug: project.slug.clone(),
         })
     }
 
+    fn activate_project_control(&mut self) -> Option<Command> {
+        let project = self.selected_project()?.clone();
+        match self.project_detail_row {
+            0 => Some(Command::ToggleProjectHeartbeat {
+                slug: project.slug,
+                enabled: !project.heartbeat_enabled,
+                every_seconds: project.heartbeat_every_seconds,
+                on_gate: project.on_gate,
+            }),
+            1 => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::ProjectInterval {
+                        slug: project.slug,
+                        enabled: project.heartbeat_enabled,
+                        on_gate: project.on_gate,
+                    },
+                    label: "heartbeat interval in seconds".to_owned(),
+                    hint: "Enter saves · Ctrl-U clears · Esc cancels",
+                    masked: false,
+                    buffer: project.heartbeat_every_seconds.to_string(),
+                });
+                None
+            }
+            2 => Some(Command::ToggleProjectHeartbeat {
+                slug: project.slug,
+                enabled: project.heartbeat_enabled,
+                every_seconds: project.heartbeat_every_seconds,
+                on_gate: match project.on_gate {
+                    neo_core::HeartbeatGate::Hold => neo_core::HeartbeatGate::Skip,
+                    neo_core::HeartbeatGate::Skip => neo_core::HeartbeatGate::Hold,
+                },
+            }),
+            3 => self.edit_project_document("soul.md"),
+            4 => self.edit_project_document("heartbeat.md"),
+            _ => self.run_project_heartbeat(),
+        }
+    }
+
     fn run_project_heartbeat(&self) -> Option<Command> {
         self.selected_project()
             .map(|project| Command::RunProjectHeartbeat {
                 slug: project.slug.clone(),
-            })
-    }
-
-    fn toggle_project_heartbeat(&self) -> Option<Command> {
-        self.selected_project()
-            .map(|project| Command::ToggleProjectHeartbeat {
-                slug: project.slug.clone(),
-                enabled: !project.heartbeat_enabled,
-                every_seconds: project.heartbeat_every_seconds,
-                on_gate: project.on_gate,
             })
     }
 
@@ -2643,10 +2639,11 @@ impl State {
         self.projects = projects;
         self.project_row = self.project_row.min(self.projects.len().saturating_sub(1));
         self.project_detail = Some((documents, ticks));
+        self.project_detail_row = self.project_detail_row.min(5);
         self.dirty = true;
     }
 
-    /// `x` and `:stop`: cancel the run being traced.
+    /// `x` and `/stop`: cancel the run being traced.
     ///
     /// The row goes to `stopping`, not `cancelled`: the token still has to
     /// reach the navigator, and the navigator still has to close the Chrome
@@ -2697,7 +2694,13 @@ impl State {
                 self.selected_run = self.runs.last().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = true;
             }
-            (_, Pane::Projects) => self.project_row = 0,
+            (_, Pane::Projects) => {
+                if self.project_detail.is_some() {
+                    self.project_detail_row = 0;
+                } else {
+                    self.project_row = 0;
+                }
+            }
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, u16::MAX),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, 0),
         }
@@ -2711,7 +2714,13 @@ impl State {
                 self.selected_run = self.runs.first().map(|run| run.id);
                 self.follow[Pane::Runs.index()] = self.runs.len() <= 1;
             }
-            (_, Pane::Projects) => self.project_row = self.projects.len().saturating_sub(1),
+            (_, Pane::Projects) => {
+                if self.project_detail.is_some() {
+                    self.project_detail_row = 5;
+                } else {
+                    self.project_row = self.projects.len().saturating_sub(1);
+                }
+            }
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, 0),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, u16::MAX),
         }
@@ -2778,26 +2787,28 @@ impl State {
             return;
         }
         if self.focus == Pane::Projects {
-            let last = self.projects.len().saturating_sub(1);
-            let next = i64::from(i32::try_from(self.project_row).unwrap_or(0) + delta.signum())
-                .clamp(0, i64::try_from(last).unwrap_or(0));
-            self.project_row = usize::try_from(next).unwrap_or(0);
-            self.project_detail = None;
+            if self.project_detail.is_some() {
+                let next =
+                    i64::from(i32::try_from(self.project_detail_row).unwrap_or(0) + delta.signum())
+                        .clamp(0, 5);
+                self.project_detail_row = usize::try_from(next).unwrap_or(0);
+            } else {
+                let last = self.projects.len().saturating_sub(1);
+                let next = i64::from(i32::try_from(self.project_row).unwrap_or(0) + delta.signum())
+                    .clamp(0, i64::try_from(last).unwrap_or(0));
+                self.project_row = usize::try_from(next).unwrap_or(0);
+            }
             return;
         }
         let scroll = i32::from(self.scroll[self.focus.index()]) + delta;
         self.scroll_to(self.focus, u16::try_from(scroll.max(0)).unwrap_or(u16::MAX));
     }
 
-    // ------------------------------------------------------------- `:` line
+    // ------------------------------------------------------------- slash line
 
     fn run_line(&mut self) -> Option<Command> {
         let line = std::mem::take(&mut self.line);
-        let searching = self.mode == Mode::Search;
-        self.mode = Mode::Normal;
-        if searching {
-            return self.search_thread(line.trim());
-        }
+        self.mode = Mode::Insert;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return None;
@@ -2806,27 +2817,67 @@ impl State {
             .split_once(char::is_whitespace)
             .map_or((trimmed, ""), |(name, rest)| (name, rest.trim()));
         match name {
-            "settings" | "keys" => {
-                self.view = View::Settings;
-                self.row = match Section::ALL.iter().find(|section| section.name() == rest) {
-                    Some(section) => self.first_row_of(*section),
-                    None => 0,
-                };
+            "chat" => {
+                self.view = View::Panes;
+                self.focus = Pane::Conversation;
             }
-            "models" => {
+            "project" => {
+                self.view = View::Panes;
+                self.focus = Pane::Projects;
+                self.project_detail = None;
+                self.project_detail_row = 0;
+                self.mode = Mode::Normal;
+            }
+            "runs" => {
+                self.view = View::Panes;
+                self.focus = Pane::Runs;
+                self.mode = Mode::Normal;
+            }
+            "mind" => {
+                self.view = View::Panes;
+                self.focus = Pane::Mind;
+                self.mode = Mode::Normal;
+            }
+            "activity" => {
+                self.view = View::Panes;
+                self.focus = Pane::Mind;
+                self.selected_run = None;
+                self.mode = Mode::Normal;
+            }
+            "settings" => {
+                self.view = View::Settings;
+                self.settings_section = Section::ALL
+                    .iter()
+                    .find(|section| section.name() == rest)
+                    .copied();
+                self.row = 0;
+                self.mode = Mode::Normal;
+            }
+            "login" => {
+                self.view = View::Settings;
+                self.settings_section = Some(Section::Connections);
+                self.row = self.first_actionable_row();
+                self.mode = Mode::Normal;
+            }
+            "model" => {
                 if rest == "refresh" {
                     let account = self.settings.models.inference.provider.as_str().to_owned();
                     self.status = Some(format!("refreshing the {account} catalogue"));
                     return Some(Command::RefreshModels { account });
                 }
                 self.view = View::Settings;
-                self.row = self.first_row_of(Section::Models);
+                self.settings_section = Some(Section::Models);
+                self.row = self.first_actionable_row();
+                self.mode = Mode::Normal;
             }
             "doctor" => {
                 self.view = View::Settings;
-                self.row = self.first_row_of(Section::Doctor);
+                self.settings_section = Some(Section::Doctor);
+                self.row = 0;
+                self.mode = Mode::Normal;
                 return Some(Command::Doctor);
             }
+            "search" => return self.search_thread(rest),
             "nav" => return self.parse_nav(rest),
             "app" => return self.parse_app(rest),
             "ax" => return self.parse_ax(rest),
@@ -2867,12 +2918,11 @@ impl State {
             "help" => self.help = true,
             "quit" => self.quit = true,
             other if lookup(other).is_some() => {
-                // The honest ones: capabilities the core does not have yet.
                 self.status = lookup(other)
                     .and_then(|spec| spec.unavailable)
                     .map(ToOwned::to_owned);
             }
-            other => self.status = Some(format!("unknown command: {other}")),
+            other => self.status = Some(format!("unknown command: /{other}")),
         }
         None
     }
@@ -3085,13 +3135,6 @@ impl State {
         Some(Command::Eval { selection })
     }
 
-    fn first_row_of(&self, section: Section) -> usize {
-        self.rows()
-            .iter()
-            .position(|row| row.section == section)
-            .unwrap_or(0)
-    }
-
     fn selected(&self) -> Option<Row> {
         self.rows().get(self.row).cloned()
     }
@@ -3231,6 +3274,23 @@ impl State {
                 }),
                 Err(reason) => {
                     self.status = Some(format!("{section}.{pointer}: {reason}"));
+                    None
+                }
+            },
+            PromptKind::ProjectInterval {
+                slug,
+                enabled,
+                on_gate,
+            } => match prompt.buffer.trim().parse::<u64>() {
+                Ok(every_seconds) if every_seconds > 0 => Some(Command::ToggleProjectHeartbeat {
+                    slug,
+                    enabled,
+                    every_seconds,
+                    on_gate,
+                }),
+                _ => {
+                    self.status =
+                        Some("the heartbeat interval must be a positive whole number".into());
                     None
                 }
             },
@@ -3640,6 +3700,9 @@ impl State {
         ));
 
         rows.extend(self.doctor_rows());
+        if let Some(section) = self.settings_section {
+            rows.retain(|row| row.section == section);
+        }
         rows
     }
 
@@ -3827,7 +3890,7 @@ impl State {
         rows.push(Row::fact(
             Section::Models,
             "",
-            "ids are typed, not picked — `:models refresh` re-reads the catalogue",
+            "ids are typed, not picked — `/model refresh` re-reads the catalogue",
         ));
         rows
     }
@@ -3953,7 +4016,7 @@ fn patch_for(pointer: &str, value: Value) -> Value {
     patch
 }
 
-/// One entry of the `:` line.
+/// One entry of the slash-command line.
 ///
 /// Still a closed list (14 §5): nothing here runs a program, opens a path for
 /// reading or forwards unknown input anywhere. The arguments it does take are
@@ -3970,7 +4033,61 @@ pub struct CommandSpec {
     pub unavailable: Option<&'static str>,
 }
 
-pub const COMMAND_LINE: [CommandSpec; 20] = [
+pub const COMMAND_LINE: [CommandSpec; 26] = [
+    CommandSpec {
+        name: "project",
+        args: "",
+        help: "open the project index",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "model",
+        args: "[refresh]",
+        help: "configure models or refresh the active catalogue",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "login",
+        args: "",
+        help: "configure connections, keys, and subscriptions",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "settings",
+        args: "[section]",
+        help: "open all settings or one named section",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "runs",
+        args: "",
+        help: "show work started by this TUI",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "mind",
+        args: "",
+        help: "show the selected run trace",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "activity",
+        args: "",
+        help: "show recent core activity",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "chat",
+        args: "",
+        help: "return to the conversation",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "search",
+        args: "<text>",
+        help: "find text in the conversation",
+        unavailable: None,
+    },
     CommandSpec {
         name: "nav",
         args: "<url> <goal> [--headless] [--profile P] [--no-safety]",
@@ -3998,7 +4115,7 @@ pub const COMMAND_LINE: [CommandSpec; 20] = [
     CommandSpec {
         name: "stop",
         args: "",
-        help: "cancel the selected run — Esc, while live",
+        help: "cancel the selected run",
         unavailable: None,
     },
     CommandSpec {
@@ -4026,76 +4143,58 @@ pub const COMMAND_LINE: [CommandSpec; 20] = [
         unavailable: None,
     },
     CommandSpec {
-        name: "settings",
-        args: "[section]",
-        help: "open Settings",
-        unavailable: None,
-    },
-    CommandSpec {
-        name: "keys",
-        args: "",
-        help: "open Connections & keys",
-        unavailable: None,
-    },
-    CommandSpec {
-        name: "models",
-        args: "[refresh]",
-        help: "open Models, or re-read the catalogue",
-        unavailable: None,
-    },
-    CommandSpec {
         name: "doctor",
         args: "",
-        help: "re-run the readiness checks",
+        help: "re-run readiness checks",
         unavailable: None,
     },
     CommandSpec {
         name: "help",
         args: "",
-        help: "the keymap",
+        help: "show commands and keys",
         unavailable: None,
     },
     CommandSpec {
         name: "quit",
         args: "",
-        help: "leave — the key is Ctrl-Q",
+        help: "leave Starkbot Neo",
         unavailable: None,
     },
     CommandSpec {
         name: "packs",
         args: "",
         help: "capability packs",
-        unavailable: Some(":packs needs the pack registry, which is not built yet"),
+        unavailable: Some("/packs needs the pack registry, which is not built yet"),
     },
     CommandSpec {
         name: "soul",
         args: "",
         help: "edit soul.md",
-        unavailable: Some(":soul needs the soul buffer, which is not built yet"),
+        unavailable: Some("/soul needs the global soul buffer, which is not built yet"),
     },
     CommandSpec {
         name: "pause",
         args: "",
         help: "pause the queue",
-        unavailable: Some(":pause needs the queue worker, which is not built yet"),
+        unavailable: Some("/pause needs the queue worker, which is not built yet"),
     },
     CommandSpec {
         name: "resume",
         args: "",
         help: "resume the queue",
-        unavailable: Some(":resume needs the queue worker, which is not built yet"),
+        unavailable: Some("/resume needs the queue worker, which is not built yet"),
     },
     CommandSpec {
         name: "listen",
         args: "on|off",
         help: "microphone",
         unavailable: Some(
-            ":listen needs the always-on listener; `m` toggles the setting and `v` dictates",
+            "/listen needs the always-on listener; `m` toggles the setting and `v` dictates",
         ),
     },
 ];
 
-/// The subcommands `:ax` accepts, for completion and for the help overlay.
+/// The subcommands `/ax` accepts, for completion and for the help overlay.
 pub const AX_REQUESTS: [&str; 8] = [
     "trusted", "apps", "table", "press", "set", "menu", "type", "key",
 ];
@@ -4107,12 +4206,12 @@ pub fn lookup(name: &str) -> Option<&'static CommandSpec> {
 
 fn usage(name: &str) -> String {
     lookup(name).map_or_else(
-        || format!("unknown command: {name}"),
-        |spec| format!("{}: :{} {}", spec.help, spec.name, spec.args),
+        || format!("unknown command: /{name}"),
+        |spec| format!("{}: /{} {}", spec.help, spec.name, spec.args),
     )
 }
 
-/// Tab completion: the command name while one is being typed, then the `:ax`
+/// Tab completion: the command name while one is being typed, then the `/ax`
 /// subcommand, which is the only argument drawn from a closed set.
 fn complete_command(prefix: &str) -> Option<String> {
     match prefix.split_once(char::is_whitespace) {
