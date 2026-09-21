@@ -1,0 +1,53 @@
+/* 04 §2 — the only place a colour literal exists. */
+:root {
+  --bg: #0b0d10;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-solid: #14171c;
+  --surface-raised: rgba(255, 255, 255, 0.1);
+  /* Not in the §2 table: the two literals the first screen had inline, named
+     here so the table's rule — one place a colour exists — still holds. */
+  --surface-hover: rgba(255, 255, 255, 0.16);
+  --field: rgba(0, 0, 0, 0.35);
+  /* Ink on a `--working`-filled control; the only near-black that is not
+     `--bg`, because `--bg` on that blue reads as a hole rather than a label. */
+  --on-accent: #08121f;
+  --border: rgba(255, 255, 255, 0.1);
+  --text: #eceef2;
+  --text-2: #a4abb8;
+  --text-3: #6f7785;
+  --listen: #35d0ba;
+  --hearing: #6ff2de;
+  --speaking: #a78bfa;
+  --working: #5aa9ff;
+  --confirm: #f5b544;
+  --danger: #f26d6d;
+  --ok: #5bd68a;
+  --muted: #6f7785;
+
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  --radius-chip: 6px;
+  --radius-card: 10px;
+  --radius-panel: 16px;
+  --radius-pill: 999px;
+
+  --caption: 11px;
+  --meta: 12px;
+  --body: 13px;
+  --emphasis: 15px;
+  --title: 18px;
+  --bar: 24px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --surface: var(--surface-solid);
+  }
+}

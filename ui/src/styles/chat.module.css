@@ -1,0 +1,122 @@
+/* The thread and its composer. */
+
+.thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.bubble {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  max-width: 72ch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.user {
+  align-self: flex-end;
+  background: var(--surface-raised);
+}
+
+.agent {
+  align-self: flex-start;
+  background: var(--surface);
+}
+
+/* A tool result is a card rather than conversation: same column, quieter. */
+.card {
+  align-self: stretch;
+  background: var(--field);
+  max-width: none;
+}
+
+.bubbleHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.kind {
+  color: var(--working);
+}
+
+/* Said into a turn that was already running. Marked rather than coloured
+   only: the word is the carrier, the tint is the reminder. */
+.steered {
+  color: var(--confirm);
+}
+
+.time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The turn that is happening now: its cards and the answer being written,
+   in the thread where the finished rows will land. */
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The answer while it is still arriving. The left edge says the text is not
+   finished, so a reader does not take a half sentence for the whole one. */
+.streaming {
+  border-left: 2px solid var(--working);
+}
+
+/* A turn that ended badly, in the thread where its answer would have been. */
+.failure {
+  border-left: 2px solid var(--danger);
+}
+
+/* Fixed at the bottom of the pane: the thread above it scrolls, this never
+   shrinks and never scrolls out of reach. */
+.composer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: var(--space-4) var(--space-5);
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+/* The draft shares the row with Send, and a long one scrolls inside itself
+   rather than growing the composer until the thread is gone. */
+.composer textarea {
+  flex: 1 1 auto;
+  max-height: 40vh;
+}
+
+/* Model, elapsed, steps and tokens, above the composer while a turn runs. */
+.status {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: var(--space-2) var(--space-5);
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--caption);
+  color: var(--text-3);
+}
+
+.rename {
+  display: flex;
+  gap: var(--space-3);
+  width: 100%;
+  align-items: center;
+}

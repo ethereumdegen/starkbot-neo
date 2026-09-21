@@ -1,0 +1,36 @@
+[package]
+name = "neo-desktop"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Starkbot Neo desktop app shell (Tauri v2): the Connections screen (P12, K7)."
+publish = false
+
+[[bin]]
+name = "neo-desktop"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+neo-agent.workspace = true
+neo-ax.workspace = true
+neo-core.workspace = true
+neo-eval.workspace = true
+neo-otel.workspace = true
+neo-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+ts-rs.workspace = true
+
+[dev-dependencies]
+tauri = { workspace = true, features = ["test"] }

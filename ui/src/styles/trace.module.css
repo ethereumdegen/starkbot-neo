@@ -1,0 +1,117 @@
+/* The live view of a run: one card per step, plus the navigator and eval
+   lines that came out of it. */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A step whose observation has not arrived is still running. The border says
+   so as well as the label, because colour alone is never the carrier. */
+.running {
+  border-color: var(--working);
+}
+
+.stepHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--caption);
+  color: var(--text-2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.index {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.thought {
+  color: var(--text-2);
+  font-size: var(--meta);
+}
+
+.action {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: var(--meta);
+  color: var(--working);
+  overflow-wrap: anywhere;
+}
+
+.observation {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.notes {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--text-2);
+  font-size: var(--caption);
+}
+
+.pending {
+  color: var(--working);
+  font-size: var(--meta);
+}
+
+.lines {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: var(--caption);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.decision {
+  color: var(--text);
+}
+
+.launch,
+.summary {
+  color: var(--text-2);
+}
+
+.outcome {
+  color: var(--ok);
+}
+
+.stale {
+  color: var(--confirm);
+}
+
+.answer {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  white-space: pre-wrap;
+}
+
+.usage {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--caption);
+  color: var(--text-3);
+}

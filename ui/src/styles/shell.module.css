@@ -1,0 +1,137 @@
+/* The window frame: a rail of screens on the left, one screen on the right.
+   Colours come from tokens.css only (04 §2). */
+
+/* `grid-template-rows: minmax(0, 1fr)` is what keeps the window the window.
+   The implicit row this grid had was `auto`, which is content-sized: a
+   screen taller than the viewport — Connections, with four sections of
+   cards — grew the row past `height: 100%`, and because the row grew, the
+   `.screen` below it was never bounded and the scrolling body inside it
+   never had an overflow to scroll. The whole document scrolled instead,
+   taking the rail with it. `minmax(0, 1fr)` pins the row to the window and
+   lets the pane inside be shorter than its content, which is the only way
+   an inner `overflow-y: auto` can ever engage. */
+.shell {
+  display: grid;
+  grid-template-columns: 176px 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+}
+
+.rail {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-3);
+  gap: var(--space-1);
+  overflow: hidden;
+}
+
+.wordmark {
+  font-size: var(--meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  padding: var(--space-3) var(--space-3) var(--space-4);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-2);
+}
+
+.tab:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+
+.tab[aria-current="page"] {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* A count beside a tab; never the only carrier of the state it reports. */
+.count {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--caption);
+  color: var(--working);
+}
+
+.railFoot {
+  margin-top: auto;
+  padding: var(--space-3);
+  font-size: var(--caption);
+  color: var(--text-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+.banner {
+  margin: var(--space-4) var(--space-5) 0;
+  border-radius: var(--radius-card);
+  border: 1px solid currentColor;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--meta);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.loading {
+  margin: auto;
+  color: var(--text-2);
+}
+
+/* The whole window when the bundle and the binary disagree about the
+   protocol: no rail, no screen, nothing to click that could make it worse. */
+.stale {
+  margin: auto;
+  max-width: 44ch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+  color: var(--text);
+}
+
+.staleTitle {
+  font-size: var(--title);
+  font-weight: 600;
+}
+
+.staleFix {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: var(--meta);
+  color: var(--text-2);
+}
+

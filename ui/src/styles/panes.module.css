@@ -1,0 +1,285 @@
+/* Furniture shared by every screen added in this batch: column layouts,
+   list rails, forms, tables, step cards. New screens are CSS Modules; the
+   Connections screen kept the global `app.css` it shipped with. */
+
+.columns {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat {
+  grid-template-columns: 216px minmax(0, 1fr) 340px;
+}
+
+/* The turn pane closed: the thread takes the width it was giving away. This
+   is the default, because the conversation is the screen and the turn is a
+   detail somebody opens when a run is doing something worth watching. */
+.chatWide {
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.split {
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+/* `flex: 1 1 auto` is what makes a screen that *is* one pane — Automate,
+   Eval, Inspect, Settings — as tall as the window. Their parent is the
+   shell's `.screen`, a column flex container, so without a grow factor the
+   pane took its content height; and its own `.body` is `flex: 1 1 0`, which
+   contributes nothing to that height. The pane settled at head + padding,
+   `overflow: hidden` cut off everything below, and the form underneath was
+   invisible. Inert for the panes inside `.columns`: those are grid items,
+   which stretch already and ignore `flex`. */
+.pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pane + .pane {
+  border-left: 1px solid var(--border);
+}
+
+/* Three panes need 1120px of window before the middle one — the thread and
+   its composer, the only flexible track — is worth having beside the other
+   two. It was the track that lost: at 720 it was sized to 0 and the grid
+   overflowed the window by 12px, and at the default 900 it was 168px, half
+   the width of the turn pane it was making room for. Below that the turn
+   pane stacks under the thread, which is the precedence the two-column
+   default already states: the conversation is the screen and the turn is a
+   detail opened over it. */
+@media (max-width: 1120px) {
+  .chat {
+    grid-template-columns: 216px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  .chat > :first-child {
+    grid-row: 1 / span 2;
+  }
+
+  .chat > :last-child {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* And at the window's minimum the run list gives up 80px, because 280px of
+   rail out of the 544px beside the shell left a trace pane too narrow for
+   the eval table's last column. */
+@media (max-width: 960px) {
+  .split {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+/* A header is a title and its controls, and the controls win: a long thread
+   name used to push the buttons past the pane's hidden overflow, which is
+   how the turn pane became impossible to close from the thread side. */
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  min-height: 48px;
+}
+
+.head > button {
+  flex: 0 0 auto;
+}
+
+.head h2 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--meta);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.spacer {
+  margin-left: auto;
+}
+
+/* `flex: 1 1 0` *and* `min-height: 0`: a column flex item defaults to
+   `min-height: auto`, so a long thread made this pane taller than its parent
+   instead of scrolling inside it, and whatever sits under it — the composer —
+   was pushed past the bottom of the window. The input looked missing until
+   the screen was scrolled. */
+.body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.tight {
+  padding: var(--space-3);
+  gap: var(--space-1);
+}
+
+.empty {
+  color: var(--text-3);
+  font-size: var(--meta);
+  padding: var(--space-4);
+}
+
+/* One selectable row in a rail: conversations, runs, eval cases. */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  padding: var(--space-3);
+  color: var(--text);
+}
+
+.row:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+
+.row[aria-selected="true"] {
+  background: var(--surface-raised);
+  border-color: var(--working);
+}
+
+.rowTitle {
+  font-size: var(--body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMeta {
+  font-size: var(--caption);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: var(--space-3);
+}
+
+/* Forms: Automate, Eval, Inspect, Settings. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+}
+
+.form h3 {
+  margin: 0;
+  font-size: var(--emphasis);
+  font-weight: 600;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.field > label {
+  font-size: var(--meta);
+  color: var(--text-2);
+}
+
+.hint {
+  grid-column: 2;
+  font-size: var(--caption);
+  color: var(--text-3);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--meta);
+}
+
+.check input {
+  width: auto;
+  min-height: 0;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Result tables: `ax` elements, apps, eval rows.
+
+   `overflow-wrap: break-word` on the cells is the safety net that keeps one
+   of these inside its pane: an ax label or a bundle id arrives as a single
+   long token, and a column that cannot break one widens the table past the
+   pane until the last column sits outside the window behind a horizontal
+   scrollbar. `break-word` rather than `anywhere` because only `anywhere`
+   feeds back into the column-width algorithm, and columns sized from
+   one-character minimums break ordinary words like `skipped` in half. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--meta);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  font-size: var(--caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  position: sticky;
+  top: 0;
+  background: var(--surface-solid);
+}
+
+.table td {
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.num {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button[aria-current="page"] {
+  background: var(--surface-hover);
+  border-color: var(--working);
+}

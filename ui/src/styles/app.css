@@ -1,0 +1,378 @@
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--body);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+.mono {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: 6px 12px;
+  min-height: 28px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+button:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+button.primary {
+  background: var(--working);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* `.primary` sets its own ink, so without this a disabled primary button
+   still reads as the one thing on the screen to press. */
+button.primary:disabled {
+  background: var(--surface-raised);
+  color: var(--text-3);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--working);
+  padding: 0;
+  min-height: 0;
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: 6px 10px;
+  min-height: 28px;
+  width: 100%;
+}
+
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: var(--space-3);
+  width: 100%;
+  resize: vertical;
+}
+
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: 5px var(--space-3);
+  min-height: 28px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1 {
+  font-size: var(--title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.app-header .sub {
+  color: var(--text-2);
+  font-size: var(--meta);
+}
+
+.app-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.app-footer {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) var(--space-6);
+  color: var(--text-3);
+  font-size: var(--caption);
+  display: flex;
+  gap: var(--space-5);
+}
+
+section h2 {
+  font-size: var(--meta);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin: 0 0 var(--space-4);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (max-width: 760px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.card h3 {
+  margin: 0;
+  font-size: var(--emphasis);
+  font-weight: 600;
+}
+
+.meta {
+  color: var(--text-2);
+  font-size: var(--meta);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  padding: 2px 10px;
+  font-size: var(--caption);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
+
+.ok {
+  color: var(--ok);
+}
+.warn {
+  color: var(--confirm);
+}
+.fail {
+  color: var(--danger);
+}
+.unknown {
+  color: var(--muted);
+}
+.busy {
+  color: var(--working);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.login {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.url {
+  user-select: all;
+  word-break: break-all;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: var(--space-3);
+  font-size: var(--caption);
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+/* The field that takes a key has to be wide enough to look like one. As a
+   `1fr` grid track beside an `auto` track of four buttons it lost every
+   time: at 900 and at 720 the track collapsed to its 85px minimum and the
+   masked input inside it was 22px wide, which reads as a rendering fault
+   rather than a place to paste 51 characters. Wrapping instead: the label
+   and the field share the first line and keep a floor, and the buttons drop
+   to a line of their own when the row runs out of width. */
+.paste {
+  display: flex;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.paste input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.paste button {
+  flex: 0 0 auto;
+}
+
+.keys,
+.checks,
+.runtimes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.key-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.key-row > :first-child {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.key-row > .paste {
+  flex: 2 1 260px;
+}
+
+.key-row > .actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.key-row.required-missing {
+  border-color: var(--danger);
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 170px 1fr auto;
+  gap: var(--space-4);
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-3);
+}
+
+.check:last-child {
+  border-bottom: none;
+}
+
+.runtime {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-4);
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+}
+
+.runtime.selected {
+  border-color: var(--working);
+}
+
+.banner {
+  border-radius: var(--radius-card);
+  border: 1px solid currentColor;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--meta);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.readiness {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  padding: var(--space-5);
+}
+
+.readiness .headline {
+  font-size: var(--emphasis);
+  font-weight: 600;
+}

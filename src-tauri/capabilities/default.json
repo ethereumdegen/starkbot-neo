@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the one desktop window. No filesystem, shell, HTTP or asset access: everything the screen does goes through this crate's commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
