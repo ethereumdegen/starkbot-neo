@@ -27,17 +27,15 @@ neo-store.workspace = true
 neo-voice.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri.workspace = true
+# Tauri validates this literal dependency declaration against app config before
+# Cargo target cfgs are applied. The feature is inert off macOS, so keeping it
+# here preserves Linux builds while allowing the macOS window compositor API.
+tauri = { workspace = true, features = ["macos-private-api"] }
 time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 ts-rs.workspace = true
 
-# The private-API window compositing this shell asks for in
-# `tauri.macos.conf.json`. macOS-only by name and by effect; the Linux shell
-# (11.2 L4) opens plain webkit2gtk windows.
-[target.'cfg(target_os = "macos")'.dependencies]
-tauri = { workspace = true, features = ["macos-private-api"] }
 
 [dev-dependencies]
 tauri = { workspace = true, features = ["test"] }
