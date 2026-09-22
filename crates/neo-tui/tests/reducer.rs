@@ -722,3 +722,36 @@ fn the_shared_corpus_leaves_no_card_behind() {
     assert_eq!(state.queued_cards.len(), 1);
     assert!(state.card.is_some());
 }
+
+/// The frame loop only draws when the state says it changed, so an action
+/// that changes the screen and forgets to say so is a terminal that has
+/// stopped painting — which is what a hang looks like from the chair. The
+/// arms that return a `Command` are the ones that used to forget.
+#[test]
+fn an_action_that_carries_a_command_still_asks_for_a_frame() {
+    let mut state = common::state();
+
+    // `/settings` changes the view and carries no command.
+    state.dirty = false;
+    state.apply_action(Action::EnterCommand);
+    for character in "settings".chars() {
+        state.apply_action(Action::LineChar(character));
+    }
+    state.dirty = false;
+    assert_eq!(state.apply_action(Action::LineSubmit), None);
+    assert_eq!(state.view, neo_tui::View::Settings);
+    assert!(state.dirty, "the settings view never reached a frame");
+
+    // `/doctor` changes the view and carries one.
+    state.dirty = false;
+    state.apply_action(Action::EnterCommand);
+    for character in "doctor".chars() {
+        state.apply_action(Action::LineChar(character));
+    }
+    state.dirty = false;
+    assert_eq!(
+        state.apply_action(Action::LineSubmit),
+        Some(Command::Doctor)
+    );
+    assert!(state.dirty, "the doctor view never reached a frame");
+}

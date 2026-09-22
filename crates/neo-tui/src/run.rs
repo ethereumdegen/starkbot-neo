@@ -2031,7 +2031,9 @@ mod tests {
 
         let first = blank_conversation(&core).expect("a thread to start in");
         assert!(
-            core.thread(first.id, 1).expect("the thread reads").is_empty(),
+            core.thread(first.id, 1)
+                .expect("the thread reads")
+                .is_empty(),
             "the first boot of a fresh store starts empty"
         );
 

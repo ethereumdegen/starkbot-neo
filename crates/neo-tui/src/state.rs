@@ -2212,6 +2212,16 @@ impl State {
     /// Apply one action. Returns the core work it implies, if any.
     pub fn apply_action(&mut self, action: Action) -> Option<Command> {
         let clears_g = !matches!(action, Action::PendingG);
+        // Marked before the dispatch, not after it: every arm that produces a
+        // `Command` returns early, so a flag set at the bottom of `dispatch`
+        // is the one thing those arms never reach. `/settings` changed the
+        // view and the loop never redrew — a terminal that has stopped
+        // painting is indistinguishable from one that has hung. Marking it
+        // here also covers the status line the loop clears on every key.
+        //
+        // An action that changed nothing costs nothing: the renderer diffs
+        // against the back buffer, so an identical frame writes no bytes.
+        self.dirty = true;
         let result = self.dispatch(action);
         if clears_g {
             self.pending_g = false;
@@ -2443,7 +2453,6 @@ impl State {
             Action::PendingG => self.pending_g = !self.pending_g,
             Action::Unavailable(reason) => self.status = Some(reason.into()),
         }
-        self.dirty = true;
         None
     }
 
