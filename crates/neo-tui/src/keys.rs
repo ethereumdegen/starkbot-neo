@@ -267,6 +267,12 @@ fn insert_key(key: KeyEvent, control: bool, state: &State) -> Action {
         KeyCode::Char('a') if control => {
             Action::Unavailable("attachments need the media import, which is not built yet")
         }
+        // The transcript is readable without leaving the composer: typing a
+        // long message and wanting to check what was said ten lines up is the
+        // same moment, and `Esc k k k i` to do it is four keys too many.
+        // `Up`/`Down` are not borrowed for it — they recall what was typed.
+        KeyCode::PageUp => Action::SelectPageUp,
+        KeyCode::PageDown => Action::SelectPageDown,
         KeyCode::Up if state.composer.is_empty() => {
             Action::Unavailable("nothing typed yet to recall")
         }

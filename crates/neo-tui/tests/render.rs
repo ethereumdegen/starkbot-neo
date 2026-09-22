@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use neo_core::{
     AppEvent, EvalCaseState, KeyState, ListenState, NavStepKind, PROVIDER_ANTHROPIC, TurnUsage,
 };
-use neo_tui::{KeyMap, RunKind, SessionRow, State, TraceKind, View};
+use neo_tui::{KeyMap, Pane, RunKind, SessionRow, State, TraceKind, View};
 
 const SECRET: &str = "sk-live-do-not-render-1234";
 
@@ -663,5 +663,97 @@ fn a_queued_gate_is_counted_on_the_card_in_front_of_it() {
     assert!(
         queued.contains("1 more waiting behind this one"),
         "the queued gate is invisible:\n{queued}"
+    );
+}
+
+/// Forty lines of thread, so the pane holds far less than the transcript.
+fn long_thread(state: &mut State) {
+    state.load_thread(common::conversation_id(1), None, &[]);
+    for nth in 0..40 {
+        let role = if nth % 2 == 0 {
+            neo_core::MessageRole::User
+        } else {
+            neo_core::MessageRole::Assistant
+        };
+        state.apply(AppEvent::Message {
+            message: neo_core::Message {
+                id: neo_core::MessageId::new(),
+                conversation_id: common::conversation_id(1),
+                role,
+                source: neo_core::MessageSource::Typed,
+                kind: neo_core::MessageKind::Text,
+                text: format!("line {nth:03}"),
+                at: 1_700_000_000_000 + i64::from(nth),
+                task_id: None,
+                spoken: false,
+                meta: None,
+            },
+        });
+    }
+}
+
+/// The conversation is anchored to its bottom, so `PageUp` has to walk back
+/// into the thread — and stop at a top that still fills the pane rather than
+/// at one line marooned in an empty one.
+#[test]
+fn paging_up_the_conversation_reaches_the_oldest_screenful() {
+    let mut state = common::state();
+    long_thread(&mut state);
+
+    let newest = common::paint(&mut state, 100, 30);
+    assert!(
+        newest.contains("line 039"),
+        "the newest line is not on the frame:\n{newest}"
+    );
+    assert_eq!(
+        state.scroll_of(Pane::Conversation),
+        0,
+        "a fresh thread starts live"
+    );
+
+    press(&mut state, KeyCode::PageUp);
+    let back = common::paint(&mut state, 100, 30);
+    assert!(
+        !back.contains("line 039") && back.contains("line 029"),
+        "PageUp did not walk back into the thread:\n{back}"
+    );
+    assert!(
+        !state.follows(Pane::Conversation),
+        "a scrolled pane is not live"
+    );
+
+    // Far past the top: the oldest line shows, and so does a full pane under
+    // it — and the scroll the reducer kept is the one the frame really used,
+    // so one PageDown comes straight back.
+    for _ in 0..20 {
+        press(&mut state, KeyCode::PageUp);
+    }
+    let top = common::paint(&mut state, 100, 30);
+    assert!(
+        top.contains("line 000"),
+        "the top of the thread is unreachable:\n{top}"
+    );
+    assert!(
+        top.contains("line 012"),
+        "the top of the thread is one line in an empty pane:\n{top}"
+    );
+    let pinned = state.scroll_of(Pane::Conversation);
+
+    press(&mut state, KeyCode::PageDown);
+    assert!(
+        state.scroll_of(Pane::Conversation) < pinned,
+        "coming back down took a column of presses"
+    );
+    for _ in 0..20 {
+        press(&mut state, KeyCode::PageDown);
+    }
+    let live = common::paint(&mut state, 100, 30);
+    assert!(
+        live.contains("line 039"),
+        "the newest line never came back:\n{live}"
+    );
+    assert!(
+        state.follows(Pane::Conversation),
+        "the pane did not go live again"
     );
 }

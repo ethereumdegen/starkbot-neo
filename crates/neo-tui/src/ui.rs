@@ -42,6 +42,14 @@ const CARD_MIN_WIDTH: u16 = 40;
 pub struct Painted {
     /// The card's sentence reached the frame and nothing covers it.
     pub card: bool,
+    /// How many rows back from the newest the conversation actually drew at,
+    /// once clamped to the text as it wrapped at this width. `None` when the
+    /// pane was not on the frame at all — a settings page must not reset a
+    /// scroll the user will come back to.
+    ///
+    /// The reducer's own limit is an estimate made without a width, so it is
+    /// generous on purpose; this is the measurement that replaces it.
+    pub conversation_back: Option<u16>,
 }
 
 pub fn draw(frame: &mut Frame, state: &State) -> Painted {
@@ -70,10 +78,13 @@ pub fn draw(frame: &mut Frame, state: &State) -> Painted {
     if header_height > 0 {
         frame.render_widget(header_line(state), header);
     }
-    match state.view {
+    let conversation_back = match state.view {
         View::Panes => render_panes(frame, body, state),
-        View::Settings => render_settings(frame, body, state),
-    }
+        View::Settings => {
+            render_settings(frame, body, state);
+            None
+        }
+    };
     if composer_height > 0 {
         frame.render_widget(composer_line(state), composer);
     }
@@ -84,6 +95,7 @@ pub fn draw(frame: &mut Frame, state: &State) -> Painted {
     // stay readable behind it.
     let mut painted = Painted {
         card: render_card(frame, area, state),
+        conversation_back,
     };
     if state.help {
         render_help(frame, area);
@@ -180,8 +192,8 @@ fn header_line(state: &State) -> Paragraph<'_> {
 
 /// The conversation is the home surface. Reference and configuration pages
 /// replace it only after an explicit slash command.
-fn render_panes(frame: &mut Frame, area: Rect, state: &State) {
-    render_pane(frame, area, state, state.focus);
+fn render_panes(frame: &mut Frame, area: Rect, state: &State) -> Option<u16> {
+    render_pane(frame, area, state, state.focus)
 }
 
 /// What a pane's border says it is holding.
@@ -212,7 +224,7 @@ fn pane_title(state: &State, pane: Pane) -> String {
     }
 }
 
-fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
+fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) -> Option<u16> {
     // The Conversation is read, not inspected: no border, so the full terminal
     // width goes to the text and a paragraph is not re-wrapped four words at a
     // time. The reference pages keep a frame, because their title carries
@@ -237,17 +249,24 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
     // not good enough: undercount and the newest message falls off the
     // bottom of the pane, which is the one line that must always be there.
     let follow = if state.follows(pane) { "▼ live" } else { "" };
+    let mut drawn_back = None;
     if pane == Pane::Conversation {
         let lines = conversation_lines(state, inner.width);
         let height = usize::from(inner.height);
         // `scroll` counts rows back from the newest.
         // Clamped here, not in the reducer: only the renderer knows how many
         // rows the text actually wrapped to at this width.
-        let back = usize::from(state.scroll_of(pane)).min(lines.len().saturating_sub(1));
+        //
+        // The limit is the first row that can still fill the pane, not the
+        // last row there is: clamping to `len - 1` meant the top of a long
+        // thread was one line marooned in an empty pane, and every row above
+        // it unreachable. At the limit the oldest screenful is what shows.
+        let back = usize::from(state.scroll_of(pane)).min(lines.len().saturating_sub(height));
         let end = lines.len().saturating_sub(back);
         let start = end.saturating_sub(height);
         let window = lines.get(start..end).unwrap_or(&[]).to_vec();
         frame.render_widget(Paragraph::new(window), inner);
+        drawn_back = Some(u16::try_from(back).unwrap_or(u16::MAX));
     } else {
         let body = match pane {
             Pane::Runs => runs_lines(state),
@@ -269,6 +288,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) {
             marker,
         );
     }
+    drawn_back
 }
 
 fn project_lines(state: &State) -> Vec<Line<'static>> {

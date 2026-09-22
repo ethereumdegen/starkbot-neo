@@ -1485,6 +1485,18 @@ impl State {
         {
             self.dirty = true;
         }
+        // The renderer measured what the reducer could only estimate. Taking
+        // its number keeps a scroll that ran past the top of the thread from
+        // becoming a column of presses on the way back down: the pane stopped
+        // moving long before the count did.
+        //
+        // No repaint is owed — the frame this came from is already showing
+        // exactly this position.
+        if let Some(back) = painted.conversation_back {
+            let index = Pane::Conversation.index();
+            self.scroll[index] = back;
+            self.follow[index] = back == 0;
+        }
     }
 
     /// The coarsest thing the runs pane renders from the clock: whole seconds
@@ -2809,6 +2821,16 @@ impl State {
             }
             return;
         }
+        // The conversation reads oldest-first and is anchored to its bottom,
+        // so its `scroll` counts rows *back* from the newest: up must add and
+        // down must subtract. Sharing the sign with the top-anchored panes
+        // inverted both keys — `k` at the bottom of a thread did nothing at
+        // all, which is what "I cannot scroll up" looks like.
+        let delta = if self.focus == Pane::Conversation {
+            -delta
+        } else {
+            delta
+        };
         let scroll = i32::from(self.scroll[self.focus.index()]) + delta;
         self.scroll_to(self.focus, u16::try_from(scroll.max(0)).unwrap_or(u16::MAX));
     }
