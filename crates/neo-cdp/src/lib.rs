@@ -814,7 +814,20 @@ impl Page {
             } else {
                 continue;
             }
-            let model = self.call("DOM.getBoxModel", params).await?;
+            // Chrome lists hidden iframes in the frame tree, but their owner
+            // element has no layout box. They cannot contribute visible text
+            // or actionable controls, so omit them instead of making the
+            // containing page unreadable.
+            let model = match self.call("DOM.getBoxModel", params).await {
+                Ok(model) => model,
+                Err(CdpError::Protocol { method, message })
+                    if method == "DOM.getBoxModel"
+                        && message.contains("Could not compute box model") =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let quad = model["model"]["content"].as_array();
             let offset_x = quad
                 .and_then(|quad| quad.first())
