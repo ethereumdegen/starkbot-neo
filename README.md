@@ -29,13 +29,124 @@ Status, as observed in this tree rather than as planned:
   transcripts are editable before sending. There is no speech out.
 - Media through apps, packs and the GTM workflows are unbuilt.
 
-## Requirements
+## Install and launch from source
 
-- macOS on Apple Silicon or Intel, or Linux (x86-64; developed on Arch/Hyprland)
-- Rust stable (the repository toolchain file pins the required version)
-- A Claude Pro/Max or eligible ChatGPT account for subscription-backed inference, and a TypeSafe key for the navigator
+Starkbot Neo runs as a real Tauri desktop app on **macOS and Linux**. There
+are no published installers or release downloads yet. After installing the
+prerequisites below, use the same three commands on either platform:
 
-### What Linux does not have yet
+```sh
+git clone https://github.com/ethereumdegen/starkbot-neo.git
+cd starkbot-neo
+./run_gui.sh
+```
+
+The first launch installs the locked frontend dependencies with npm, installs
+a pinned Tauri CLI **inside this checkout**, builds the release desktop with
+its frontend embedded, and launches it. Allow several minutes, network access
+for dependencies, and disk space for Rust build artifacts. No Vite server is
+required. The launcher never installs system packages, runs `sudo`, installs a
+global npm package, or copies an app into `/Applications`.
+
+Run `./run_gui.sh` again to launch after closing the app or updating the source.
+It reuses installed dependencies when the package manifests are unchanged,
+rebuilds the frontend, and lets Cargo reuse unchanged Rust compilation work.
+It does not guess build freshness from timestamps or launch an old binary
+after a failed build. The terminal stays attached for diagnostics; **Ctrl-C**
+stops the build or app. `./run_gui.sh --help` describes the launcher. It also
+works by absolute path from another directory, including paths with spaces.
+
+### Prerequisites
+
+- **macOS** on Apple Silicon or Intel, or **Linux x86-64** with an active
+  Wayland or X11 desktop session (not a headless server).
+- **Git**, [Rust installed through rustup](https://rustup.rs), and
+  [Node.js **22.12 or newer** with npm](https://nodejs.org). The repository's
+  `rust-toolchain.toml` pins Rust **1.91.0**; rustup prepares that toolchain
+  when the launcher first uses it. Reopen your terminal after installing tools
+  so `git`, `rustup`, `cargo`, `rustc`, `node`, and `npm` are on `PATH`.
+- For agent tasks, a Claude Pro/Max or eligible ChatGPT account, or an OpenAI
+  API key for inference, plus a TypeSafe key for the navigator. Configure these
+  in **Connections**; they are not needed just to build and open the window.
+  Browser automation also needs Google Chrome.
+
+#### macOS prerequisites
+
+Install Apple's compiler and SDK tools:
+
+```sh
+xcode-select --install
+```
+
+Finish the installer (or use an existing Xcode installation), then run the
+quick start above. The launcher builds `Starkbot Neo.app` using
+`src-tauri/tauri.macos.conf.json`, including the microphone usage description
+and audio-input entitlement. It ad-hoc signs local builds by default; no paid
+Apple certificate is required. If you have a signing identity, set
+`APPLE_SIGNING_IDENTITY` to use it. A source-built local app is not a notarized
+release, and rebuilding an ad-hoc-signed app can cause permission or Keychain
+prompts to return.
+
+#### Linux prerequisites
+
+Install the native compiler tools and desktop development libraries yourself.
+For Debian/Ubuntu with WebKitGTK 4.1 packages available:
+
+```sh
+sudo apt update
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev \
+  libgtk-3-dev libsoup-3.0-dev libasound2-dev \
+  libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+```
+
+For Arch Linux:
+
+```sh
+sudo pacman -S --needed base-devel pkgconf webkit2gtk-4.1 gtk3 libsoup3 \
+  alsa-lib libayatana-appindicator librsvg xdotool
+```
+
+For Fedora:
+
+```sh
+sudo dnf install gcc gcc-c++ make pkgconf-pkg-config webkit2gtk4.1-devel \
+  gtk3-devel libsoup3-devel alsa-lib-devel \
+  libayatana-appindicator-gtk3-devel librsvg2-devel libxdo-devel
+```
+
+These commands are manual prerequisites, not actions the launcher performs.
+Other distributions need equivalent development packages. Run the launcher
+inside your graphical desktop. It checks for the compiler tools and
+GTK 3, WebKitGTK 4.1, libsoup 3 and ALSA via `pkg-config` before building.
+For native-app automation, enable the desktop's AT-SPI accessibility service.
+A Secret Service provider (GNOME Keyring, KWallet or KeePassXC) is recommended
+for credential storage.
+
+### First launch and permissions
+
+- Open **Connections** to connect an inference account and configure navigator
+  credentials. Connection or permission failures are also explained by
+  `cargo run -- doctor`; see the command-line examples below.
+- On macOS, allow **Microphone** when starting GUI dictation. For native-app
+  control, grant **Accessibility** in System Settings → Privacy & Security
+  to Starkbot Neo (or the terminal if macOS attributes a terminal-launched
+  process to it). Use the permission diagnostic to check the actual requester.
+- GUI dictation uses OpenAI `gpt-transcribe` on **both platforms**. Add an
+  OpenAI key in **Connections** and select an available microphone. A Claude
+  or ChatGPT subscription does not supply this transcription key. Transcripts
+  are editable before sending; there is no speech output.
+- On Linux NVIDIA/Wayland sessions, the launcher applies the same WebKit
+  DMABUF workaround as `neo gui`, unless you explicitly set
+  `WEBKIT_DISABLE_DMABUF_RENDERER` yourself.
+
+If setup or building fails, fix the diagnostic printed in the terminal and
+rerun `./run_gui.sh`; no desktop is launched on a failed build. To reinstall
+frontend packages manually, use `npm --prefix ui ci --include=dev --include=optional`.
+Builds live under `target/<native-rust-target>/release` (including
+`bundle/macos/Starkbot Neo.app` on macOS). `CARGO_TARGET_DIR` is honored;
+relative values are resolved from the directory where you invoke the script.
+
+## Platform differences
 
 The portable half — the store, the CLI, the TUI, the agent loop, the web
 navigator over CDP — is the whole product on either platform. Three things
@@ -55,8 +166,8 @@ under `~/Library/Application Support/com.starkbot.neo` on macOS and the XDG
 base directories (`~/.local/share/starkbot-neo` and friends) on Linux.
 
 Building the desktop shell on Linux needs webkit2gtk 4.1, GTK 3, libsoup 3
-and ALSA headers; `neo` itself needs none of them. `neo gui` sets
-`WEBKIT_DISABLE_DMABUF_RENDERER` for itself on an NVIDIA Wayland session,
+and ALSA headers; `neo` itself needs none of them. Both `./run_gui.sh` and
+`neo gui` set `WEBKIT_DISABLE_DMABUF_RENDERER` on an NVIDIA Wayland session,
 where WebKit's DMABUF renderer commits a buffer with no acquire point and the
 compositor closes the window a second after it opens.
 
@@ -76,7 +187,7 @@ The three front ends over the same runtime:
 
 ```sh
 cargo run -- tui                      # terminal front end, full agent loop
-cargo run -- gui                      # desktop app, Vite dev server on :1420
+./run_gui.sh                          # standalone desktop app, no dev server
 cargo run -- nav https://example.com "click the More information link"
 cargo run -- app com.apple.Numbers "pick the Blank template"
 ```
@@ -99,9 +210,14 @@ attaches an existing folder without creating or scanning unrelated files.
 which is also why a bare `cargo build`, `cargo test` or `cargo clippy` covers
 that package alone. Add `--workspace` for the whole thing, as CI does.
 
-`neo gui` runs `cargo tauri dev` in the checkout it finds, because a
-development desktop build loads its window from the dev server and starting
-the binary alone shows an empty one. `neo gui --build` builds it instead.
+For desktop development with hot reload, `cargo run -- gui` runs
+`cargo tauri dev` in the checkout. This separate developer workflow needs
+the Cargo Tauri CLI (`cargo install tauri-cli --version 2.11.5 --locked`)
+and frontend dependencies (`npm --prefix ui ci --include=dev --include=optional`).
+It starts Vite on port 1420; a development desktop binary started alone
+would show an empty window. `neo gui --build` builds instead. For normal
+source installation and launching, prefer `./run_gui.sh`, which installs its
+own local CLI and builds an embedded-frontend app rather than a dev window.
 
 The sidebar's top toggle collapses navigation into labeled, tooltip-equipped
 icons and expands it again. A focused chat uses the whole content area;
