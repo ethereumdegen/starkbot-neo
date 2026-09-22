@@ -99,6 +99,9 @@ pub fn bootstrap() -> Bootstrap {
         doctor: doctor_report(),
         bridge_version: BRIDGE_VERSION,
         settings: Settings::default(),
+        // What the default `sol-latest` means on the OpenAI key this fixture
+        // has: the goldens render the id a turn would really send.
+        inference_model: neo_core::OPENAI_SOL_FALLBACK.to_owned(),
         keys: vec![
             KeyStatus::new(PROVIDER_OPENAI, KeyState::Present),
             KeyStatus::new(PROVIDER_ANTHROPIC, KeyState::Missing),

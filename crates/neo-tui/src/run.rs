@@ -945,7 +945,22 @@ fn drain(
                         "the event stream broke — re-reading",
                     )?;
                 }
+                // What a tier alias resolves to moves with the settings and
+                // with the catalogue, and only the core can say what it is
+                // now. Both reads are a local `SELECT` plus a pure compare,
+                // so they belong on the frame loop rather than in a chore.
+                let resolves = matches!(
+                    event,
+                    neo_core::AppEvent::SettingsChanged { .. }
+                        | neo_core::AppEvent::ModelsChanged { .. }
+                );
                 state.apply(event);
+                if resolves {
+                    match runtime.inference_model() {
+                        Ok(model) => state.set_inference_model(model),
+                        Err(error) => state.note(format!("the model did not resolve: {error}")),
+                    }
+                }
             }
             Err(TryRecvError::Empty) => return Ok(()),
             Err(TryRecvError::Closed) => {
@@ -2101,6 +2116,7 @@ mod tests {
         Bootstrap {
             bridge_version: neo_agent::runtime::BRIDGE_VERSION,
             settings: neo_core::Settings::default(),
+            inference_model: neo_core::OPENAI_SOL_FALLBACK.to_owned(),
             keys: Vec::new(),
             inference: neo_core::InferenceConnection::None,
             account: None,

@@ -1735,7 +1735,14 @@ fn openai_model(
         .base_url(base.as_str())
         .build()
         .map_err(|error| AgentError::Graph(error.to_string()))?;
-    let id = settings.models.inference.id.clone();
+    // Resolved, not sent as saved: `sol-latest` is a tier, not an id, and the
+    // default install holds exactly that. This path used to hand the literal
+    // string to the vendor, which answers 404.
+    let id = runtime.resolved_model(
+        neo_core::PROVIDER_OPENAI,
+        None,
+        &settings.models.inference.id,
+    )?;
     let model = client.completion_model(id.as_str());
     Ok((
         Inference {
@@ -1761,7 +1768,7 @@ async fn claude_model(
     runtime: &Arc<Runtime>,
     settings: &Settings,
 ) -> Result<(Inference, ClaudeSubscription), AgentError> {
-    let id = runtime.resolved_model(&ANTHROPIC_OAUTH, None, &settings.models.inference.id)?;
+    let id = runtime.resolved_model(ANTHROPIC_OAUTH.id, None, &settings.models.inference.id)?;
     // Not `AgentError::NoKey`: that one says `neo keys set`, and no key will
     // ever fix this. A subscription is connected by signing in, and the user
     // who selected this runtime has to be told which command does that.
@@ -1807,7 +1814,7 @@ async fn codex_model(
     runtime: &Arc<Runtime>,
     settings: &Settings,
 ) -> Result<(Inference, chatgpt::ResponsesCompletionModel), AgentError> {
-    let id = runtime.resolved_model(&OPENAI_CODEX, None, &settings.models.inference.id)?;
+    let id = runtime.resolved_model(OPENAI_CODEX.id, None, &settings.models.inference.id)?;
     let token = runtime.oauth_token(&OPENAI_CODEX).await.map_err(|error| {
         AgentError::Request(format!(
             "the ChatGPT subscription is not connected ({error}) — run \

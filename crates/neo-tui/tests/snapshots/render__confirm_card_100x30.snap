@@ -31,7 +31,7 @@ Type a message and press Enter · / opens commands
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ > / opens commands · i starts typing                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  chat
 fg=Cyan bg=Reset mod=NONE  >
@@ -50,7 +50,7 @@ fg=Green bg=Reset mod=NONE  [y]
 fg=Red bg=Reset mod=NONE  [n]
 fg=Reset bg=Reset mod=BOLD  Stark
 fg=White bg=Reset mod=BOLD  `Pay $42.00 now` says “pay”.
-fg=Yellow bg=Reset mod=NONE  CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+fg=Yellow bg=Reset mod=NONE  CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic
 fg=Yellow bg=Reset mod=NONE  │
 fg=Yellow bg=Reset mod=NONE  ┌ Confirm ─────────────────────────────────────────────────────────────┐
 fg=Yellow bg=Reset mod=NONE  └ y approves · n denies · Enter is not an answer ──────────────────────┘

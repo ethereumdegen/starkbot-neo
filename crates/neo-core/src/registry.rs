@@ -11,7 +11,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ModelUseCase, PROVIDER_ANTHROPIC, PROVIDER_OPENAI};
+use crate::{
+    ModelUseCase, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_OAUTH, PROVIDER_CHATGPT_CODEX,
+    PROVIDER_CLAUDE_SUBSCRIPTION, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX,
+};
 
 /// The symbolic inference id settings hold instead of a concrete model (K3).
 pub const SOL_LATEST: &str = "sol-latest";
@@ -67,6 +70,48 @@ pub fn hidden(id: &str) -> bool {
         .any(|prefix| id == *prefix || id.starts_with(prefix))
 }
 
+/// Whose catalogue a connection draws on.
+///
+/// A subscription is the same vendor reached through a different door:
+/// `anthropic-oauth` and `claude-subscription` send Anthropic ids,
+/// `openai-codex` and `chatgpt-codex` send OpenAI ids. Reading the
+/// *connection* name as the vendor meant every id on a subscription
+/// classified as nothing at all, so `sol-latest` resolved to nothing and the
+/// turn silently ran on whatever the hardcoded fallback happened to be.
+#[must_use]
+pub fn vendor(provider: &str) -> Option<&'static str> {
+    match provider {
+        PROVIDER_OPENAI | PROVIDER_OPENAI_CODEX | PROVIDER_CHATGPT_CODEX => Some(PROVIDER_OPENAI),
+        PROVIDER_ANTHROPIC | PROVIDER_ANTHROPIC_OAUTH | PROVIDER_CLAUDE_SUBSCRIPTION => {
+            Some(PROVIDER_ANTHROPIC)
+        }
+        _ => None,
+    }
+}
+
+/// What [`SOL_LATEST`] means on a connection whose catalogue has not been
+/// read yet — the vendor's newest top-tier model, named here rather than in
+/// each caller so "top tier" means one thing across the app.
+///
+/// A fresh install has no catalogue, so this is what the first turn actually
+/// runs on. It is the *top* tier on purpose: a symbolic id that asks for the
+/// best model and quietly delivers the middle one is the bug this replaced.
+/// Anyone who wants a cheaper or pinned model types a concrete id, which is
+/// returned untouched.
+#[must_use]
+pub fn sol_fallback(provider: &str) -> Option<&'static str> {
+    match vendor(provider)? {
+        PROVIDER_OPENAI => Some(OPENAI_SOL_FALLBACK),
+        PROVIDER_ANTHROPIC => Some(ANTHROPIC_SOL_FALLBACK),
+        _ => None,
+    }
+}
+
+/// OpenAI's newest top tier *(verify against the live catalogue)*.
+pub const OPENAI_SOL_FALLBACK: &str = "gpt-5.6-sol";
+/// Anthropic's newest top tier *(verify against the live catalogue)*.
+pub const ANTHROPIC_SOL_FALLBACK: &str = "claude-opus-5";
+
 /// Understand one catalogue id, or answer `None` for "never offered" —
 /// hide-listed or unclassified (05 §7).
 #[must_use]
@@ -74,7 +119,7 @@ pub fn classify(provider: &str, id: &str) -> Option<Classified> {
     if hidden(id) {
         return None;
     }
-    match provider {
+    match vendor(provider)? {
         PROVIDER_OPENAI => classify_openai(id),
         PROVIDER_ANTHROPIC => classify_anthropic(id),
         // A runtime that reports its own capabilities does not come through
@@ -282,6 +327,59 @@ mod tests {
         assert!(classify(PROVIDER_OPENAI, "gpt-4.1").is_none());
         assert!(classify(PROVIDER_OPENAI, "text-embedding-3-large").is_none());
         assert!(classify("starkrouter", "gpt-5.6-sol").is_none());
+    }
+
+    /// A subscription sends its vendor's ids. Reading the connection name as
+    /// the vendor made every id on one unclassifiable, so `sol-latest`
+    /// resolved to nothing and the turn ran on a hardcoded fallback instead
+    /// of on the tier that was asked for.
+    #[test]
+    fn a_subscription_reads_its_vendors_catalogue() {
+        let catalog = ids(&["claude-opus-5", "claude-sonnet-5"]);
+        assert_eq!(
+            resolve(PROVIDER_ANTHROPIC_OAUTH, SOL_LATEST, &catalog).as_deref(),
+            Some("claude-opus-5"),
+        );
+        assert_eq!(
+            resolve(PROVIDER_CLAUDE_SUBSCRIPTION, SOL_LATEST, &catalog).as_deref(),
+            Some("claude-opus-5"),
+        );
+        let openai = ids(&["gpt-5.6-sol", "gpt-5.6-luna"]);
+        assert_eq!(
+            resolve(PROVIDER_OPENAI_CODEX, SOL_LATEST, &openai).as_deref(),
+            Some("gpt-5.6-sol"),
+        );
+        assert_eq!(
+            vendor("starkrouter"),
+            None,
+            "an unknown door is not a vendor"
+        );
+    }
+
+    /// `sol-latest` asks for the top tier on both vendors, so both fallbacks
+    /// have to *be* the top tier — Sol on OpenAI, Opus on Anthropic.
+    #[test]
+    fn the_no_catalogue_fallback_is_the_tier_the_alias_asks_for() {
+        for provider in [
+            PROVIDER_ANTHROPIC,
+            PROVIDER_ANTHROPIC_OAUTH,
+            PROVIDER_CLAUDE_SUBSCRIPTION,
+            PROVIDER_OPENAI,
+            PROVIDER_OPENAI_CODEX,
+        ] {
+            let fallback = sol_fallback(provider).expect("every vendor has a top tier");
+            let classified = classify(provider, fallback).expect("the fallback is a known id");
+            assert_eq!(
+                classified.tier,
+                Some(ModelTier::Sol),
+                "{provider} falls back to {fallback}, which is not the top tier"
+            );
+            assert!(
+                !classified.dated,
+                "{fallback} is a snapshot, not an evergreen id"
+            );
+        }
+        assert_eq!(sol_fallback("starkrouter"), None);
     }
 
     #[test]

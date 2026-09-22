@@ -507,7 +507,11 @@ pub async fn list_models(
                 .as_str()
                 .to_owned(),
         };
-        let models = runtime.models(&provider)?;
+        // The vendor's catalogue, not the connection's: a subscription has no
+        // list of its own and sends the same vendor's ids, so the picker
+        // behind it was permanently empty even with that vendor's key set.
+        let catalogue = neo_core::vendor(&provider).unwrap_or(&provider);
+        let models = runtime.models(catalogue)?;
         Ok((provider, models))
     })
     .await?;

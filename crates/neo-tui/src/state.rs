@@ -1264,6 +1264,10 @@ const TURN_CARD_CAP: usize = 40;
 pub struct State {
     pub bridge_version: u32,
     pub settings: Settings,
+    /// The concrete model the next turn runs on, as the core resolved it.
+    /// `settings.models.inference.id` is what the user chose — often the
+    /// symbolic `sol-latest` — and this is what that means today.
+    pub inference_model: String,
     pub keys: Vec<KeyStatus>,
     pub inference: InferenceConnection,
     pub account: Option<ProviderAccount>,
@@ -1361,6 +1365,7 @@ impl State {
         let Bootstrap {
             bridge_version,
             settings,
+            inference_model,
             keys,
             inference,
             account,
@@ -1372,6 +1377,7 @@ impl State {
         Self {
             bridge_version,
             settings,
+            inference_model,
             keys,
             inference,
             account,
@@ -1424,6 +1430,7 @@ impl State {
         let Bootstrap {
             bridge_version,
             settings,
+            inference_model,
             keys,
             inference,
             account,
@@ -1434,6 +1441,7 @@ impl State {
         } = bootstrap;
         self.bridge_version = bridge_version;
         self.settings = settings;
+        self.inference_model = inference_model;
         self.keys = keys;
         self.inference = inference;
         self.account = account;
@@ -2195,6 +2203,14 @@ impl State {
             _ => {}
         }
         self.dirty = true;
+    }
+
+    /// The core re-resolved the symbolic model id; show what it says now.
+    pub fn set_inference_model(&mut self, model: String) {
+        if self.inference_model != model {
+            self.inference_model = model;
+            self.dirty = true;
+        }
     }
 
     pub fn note(&mut self, detail: impl Into<String>) {
@@ -3890,10 +3906,14 @@ impl State {
         let settings = &self.settings;
         let mut rows = vec![Row::heading(Section::Models)];
         for field in ["inference", "text_helper", "stt", "tts"] {
-            rows.push(
-                Row::fact(Section::Models, field, model_field(settings, field))
-                    .with(RowAction::EditModel(field)),
-            );
+            let mut value = model_field(settings, field);
+            // A tier alias is a promise about which model runs; the row says
+            // what it is keeping today, so "top tier" can be checked rather
+            // than trusted.
+            if field == "inference" && settings.models.inference.id == neo_core::SOL_LATEST {
+                value = format!("{value} → {}", self.inference_model);
+            }
+            rows.push(Row::fact(Section::Models, field, value).with(RowAction::EditModel(field)));
         }
         rows.push(
             Row::fact(
@@ -3921,7 +3941,7 @@ impl State {
         rows.push(Row::fact(
             Section::Models,
             "",
-            "ids are typed, not picked — `/model refresh` re-reads the catalogue",
+            "ids are typed, not picked — `sol-latest` is the vendor's newest top-tier model",
         ));
         rows
     }

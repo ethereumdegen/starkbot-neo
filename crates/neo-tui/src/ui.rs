@@ -906,11 +906,14 @@ fn status_line(state: &State, compact_header: bool, width: u16) -> Paragraph<'_>
         segments.push(format!("{live} running · Esc stops"));
     }
     segments.push(format!("{store} v{}", state.store.schema_version));
+    // The id that will actually be sent, not the tier alias that was saved:
+    // `anthropic-oauth/sol-latest` named no model anyone could look up, and
+    // read as a mismatch between a vendor and another vendor's model.
     segments.push(format!(
         "{} · {}/{}",
         connection_label(state.inference),
         model.provider.as_str(),
-        model.id
+        state.inference_model
     ));
     segments.push(key_segment(state));
     segments.push(format!("account {}", account_segment(state)));

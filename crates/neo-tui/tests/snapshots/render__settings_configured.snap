@@ -16,14 +16,14 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  settings
 │  (f) ChatGPT via Codex     signed out                                                                                │
 │  typesafe key              present                                                                                   │
 │── Models                                                                                                             │
-│  inference                 openai/sol-latest                                                                         │
+│  inference                 openai/sol-latest → gpt-5.6-sol                                                           │
 │  text_helper               openai/gpt-5.6-luna                                                                       │
 │  stt                       openai/gpt-transcribe                                                                     │
 │  tts                       openai/gpt-4o-mini-tts                                                                    │
 │  sol_effort                low                                                                                       │
 │  live transcription        off                                                                                       │
 │  stt_live.model            openai/gpt-live-transcribe                                                                │
-│                            ids are typed, not picked — `/model refresh` re-reads the catalogue                       │
+│                            ids are typed, not picked — `sol-latest` is the vendor's newest top-tier model            │
 │── Identity                                                                                                           │
 │  name                      Stark                                                                                     │
 │── Listening                                                                                                          │
@@ -41,7 +41,7 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  settings
 │  enqueue at                0.70                                                                                      │
 │  offer at                  0.40                                                                                      │
 └ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
-NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic │ account none
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  settings
 fg=Cyan bg=Reset mod=BOLD  ── Connections & keys
@@ -84,6 +84,6 @@ fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc/q chat
 fg=Green bg=Reset mod=NONE  present
 fg=Green bg=Reset mod=NONE  present · selected
 fg=Reset bg=Reset mod=BOLD  Stark
-fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic │ account none
 fg=Yellow bg=Reset mod=NONE  missing
 fg=Yellow bg=Reset mod=NONE  signed out

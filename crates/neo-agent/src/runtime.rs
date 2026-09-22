@@ -142,6 +142,10 @@ pub struct StoreInfo {
 pub struct Bootstrap {
     pub bridge_version: u32,
     pub settings: Settings,
+    /// The concrete model the next turn will run on, with `sol-latest`
+    /// already resolved. A front end that renders `settings` alone shows a
+    /// tier alias, which is not a model anyone can look up.
+    pub inference_model: String,
     pub keys: Vec<KeyStatus>,
     pub inference: InferenceConnection,
     pub account: Option<ProviderAccount>,
@@ -558,16 +562,22 @@ impl Runtime {
         self.put_account(account)
     }
 
-    /// The concrete model id to send for one provider.
+    /// The concrete model id to send on one connection.
     ///
-    /// Settings hold a *symbolic* id — `sol-latest` by default (05 §7) — and a
-    /// vendor API rejects that string. It resolves against the cached
-    /// catalogue when one has been fetched; otherwise the provider's own
-    /// documented default is used, because refusing to answer until the user
-    /// runs a catalogue refresh would make a fresh install unusable.
-    pub(crate) fn resolved_model(
+    /// Settings hold a *symbolic* id — `sol-latest` by default (05 §7) — and
+    /// every vendor API rejects that string. It resolves against the cached
+    /// catalogue when one has been fetched; otherwise the vendor's newest
+    /// top-tier model is used, because refusing to answer until the user runs
+    /// a catalogue refresh would make a fresh install unusable.
+    ///
+    /// Every path comes through here — both subscriptions and both API keys.
+    /// It used to take an `OauthProvider`, so the OpenAI-key path had nowhere
+    /// to call and sent the literal `sol-latest` to the vendor, and the
+    /// catalogue lookup was keyed by the *connection* rather than the vendor,
+    /// so a subscription resolved nothing and always took the fallback.
+    pub fn resolved_model(
         &self,
-        provider: &'static OauthProvider,
+        provider: &str,
         requested: Option<&str>,
         saved: &str,
     ) -> Result<String, RuntimeError> {
@@ -577,15 +587,31 @@ impl Runtime {
         if wanted != neo_core::SOL_LATEST {
             return Ok(wanted.to_owned());
         }
+        // The catalogue is the vendor's, whichever door this connection is:
+        // an Anthropic key and a Claude subscription read the same list.
+        let catalogue = neo_core::vendor(provider).unwrap_or(provider);
         let ids: Vec<String> = self
-            .models(provider.id)?
+            .models(catalogue)?
             .into_iter()
             .map(|model| model.info.reference.id)
             .collect();
-        if let Some(resolved) = neo_core::registry::resolve(provider.id, wanted, &ids) {
+        if let Some(resolved) = neo_core::registry::resolve(provider, wanted, &ids) {
             return Ok(resolved);
         }
-        Ok(default_model(provider).to_owned())
+        Ok(neo_core::sol_fallback(provider)
+            .unwrap_or(wanted)
+            .to_owned())
+    }
+
+    /// The model the next turn will actually run on, for a front end to show.
+    ///
+    /// A status bar that renders `settings.models.inference` shows
+    /// `sol-latest`, which is not a model anyone can look up and not what is
+    /// sent. This is the same answer the turn itself will get.
+    pub fn inference_model(&self) -> Result<String, RuntimeError> {
+        let settings = self.settings()?;
+        let inference = &settings.models.inference;
+        self.resolved_model(inference.provider.as_str(), None, inference.id.as_str())
     }
 
     /// The access token for one subscription path, read once per process and
@@ -790,14 +816,14 @@ impl Runtime {
     ) -> Result<Turn, RuntimeError> {
         match selected {
             id_ if id_ == ANTHROPIC_OAUTH.id => {
-                let id = self.resolved_model(&ANTHROPIC_OAUTH, model, saved)?;
+                let id = self.resolved_model(ANTHROPIC_OAUTH.id, model, saved)?;
                 Ok(self
                     .oauth_turn(&ANTHROPIC_OAUTH, &id, prompt, None)
                     .await?
                     .1)
             }
             id_ if id_ == OPENAI_CODEX.id => {
-                let id = self.resolved_model(&OPENAI_CODEX, model, saved)?;
+                let id = self.resolved_model(OPENAI_CODEX.id, model, saved)?;
                 Ok(self.oauth_turn(&OPENAI_CODEX, &id, prompt, None).await?.1)
             }
             neo_core::PROVIDER_CLAUDE_SUBSCRIPTION => {
@@ -855,7 +881,7 @@ impl Runtime {
             _ => None,
         };
         if let Some(provider) = provider {
-            let id = self.resolved_model(provider, model, saved)?;
+            let id = self.resolved_model(provider.id, model, saved)?;
             let (value, turn) = self.oauth_turn(provider, &id, prompt, Some(schema)).await?;
             let value = value.ok_or_else(|| {
                 RuntimeError::RuntimeUnavailable(format!("{selected} answered without JSON"))
@@ -915,8 +941,12 @@ impl Runtime {
         let account = self.account(&settings)?;
         let accounts = self.subscription_accounts()?;
         let inference = InferenceConnection::detect(&settings, &keys, account.as_ref());
+        let model = &settings.models.inference;
+        let inference_model =
+            self.resolved_model(model.provider.as_str(), None, model.id.as_str())?;
         Ok(Bootstrap {
             bridge_version: BRIDGE_VERSION,
+            inference_model,
             settings,
             keys,
             inference,
@@ -1496,16 +1526,25 @@ impl Runtime {
             .list(&ProviderId::new(provider), neo_store::GLOBAL_SCOPE)?)
     }
 
-    /// Re-read one API-key runtime's catalogue and replace its cache.
+    /// Re-read a vendor's catalogue and replace its cache.
     ///
-    /// A runtime whose key is missing is left alone: there is nothing to ask
-    /// with, and a stale catalogue beats an empty one. Answers the models now
-    /// cached and publishes `ModelsChanged` when the catalogue was replaced.
+    /// The argument may be an account or any connection to that vendor: a
+    /// subscription has no catalogue endpoint of its own but reads the same
+    /// vendor's list, so asking to refresh from one is a request about the
+    /// vendor, not an unsupported operation. A vendor whose key is missing is
+    /// left alone: there is nothing to ask with, and a stale catalogue beats
+    /// an empty one. Answers the models now cached and publishes
+    /// `ModelsChanged` when the catalogue was replaced.
     pub async fn refresh_models(&self, account: &str) -> Result<Vec<CachedModel>, RuntimeError> {
-        let provider = match account {
-            ACCOUNT_OPENAI => neo_core::PROVIDER_OPENAI,
-            ACCOUNT_ANTHROPIC => neo_core::PROVIDER_ANTHROPIC,
+        let provider = match neo_core::vendor(account).unwrap_or(account) {
+            neo_core::PROVIDER_OPENAI => neo_core::PROVIDER_OPENAI,
+            neo_core::PROVIDER_ANTHROPIC => neo_core::PROVIDER_ANTHROPIC,
             other => return Err(ValidationError::Unsupported(other.to_owned()).into()),
+        };
+        // The key account behind that vendor, whichever connection asked.
+        let account = match provider {
+            neo_core::PROVIDER_ANTHROPIC => ACCOUNT_ANTHROPIC,
+            _ => ACCOUNT_OPENAI,
         };
         let Some(secret) = self.secret(account)? else {
             return self.models(provider);
@@ -1745,19 +1784,12 @@ impl LoginHandle {
 }
 
 /// ChatGPT plan model used while its runtime has no cached catalogue.
-pub const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.6-sol";
-
-/// The model a subscription path uses before any catalogue has been fetched.
 ///
-/// Both are the current general-purpose model of each vendor's plan, which is
-/// what a user on that plan expects a turn to cost against their quota.
-const fn default_model(provider: &OauthProvider) -> &'static str {
-    if matches!(provider.id.as_bytes(), b"openai-codex") {
-        OPENAI_CODEX_DEFAULT_MODEL
-    } else {
-        "claude-sonnet-4-5-20250929"
-    }
-}
+/// One value, in one place: what a plan falls back to and what `sol-latest`
+/// means on it are the same question, and answering it twice is how the
+/// Claude path ended up pinned to a model two generations behind the tier it
+/// was asking for.
+pub const OPENAI_CODEX_DEFAULT_MODEL: &str = neo_core::OPENAI_SOL_FALLBACK;
 
 impl Drop for Runtime {
     /// Leave the roster on the way out.
@@ -2157,10 +2189,60 @@ mod tests {
         let (_directory, runtime) = runtime();
 
         let resolved = runtime
-            .resolved_model(&OPENAI_CODEX, None, neo_core::SOL_LATEST)
+            .resolved_model(OPENAI_CODEX.id, None, neo_core::SOL_LATEST)
             .expect("the symbolic model resolves");
 
         assert_eq!(resolved, "gpt-5.6-sol");
+    }
+
+    /// Every connection resolves the alias, and none of them sends it. The
+    /// OpenAI-key path had no resolution at all and handed the vendor the
+    /// literal string; the Claude plan resolved against a catalogue keyed by
+    /// the connection name, found nothing, and took a fallback two tiers and
+    /// two generations off what it had asked for.
+    #[test]
+    fn every_connection_resolves_the_tier_alias_and_leaves_a_pinned_id_alone() {
+        let (_directory, runtime) = runtime();
+
+        for (provider, expected) in [
+            (neo_core::PROVIDER_OPENAI, neo_core::OPENAI_SOL_FALLBACK),
+            (OPENAI_CODEX.id, neo_core::OPENAI_SOL_FALLBACK),
+            (
+                neo_core::PROVIDER_ANTHROPIC,
+                neo_core::ANTHROPIC_SOL_FALLBACK,
+            ),
+            (ANTHROPIC_OAUTH.id, neo_core::ANTHROPIC_SOL_FALLBACK),
+        ] {
+            let resolved = runtime
+                .resolved_model(provider, None, neo_core::SOL_LATEST)
+                .expect("the symbolic model resolves");
+            assert_eq!(resolved, expected, "{provider} resolved {resolved}");
+            assert_ne!(resolved, neo_core::SOL_LATEST, "{provider} sent the alias");
+        }
+
+        // A concrete id is the user's own choice and is never second-guessed.
+        let pinned = runtime
+            .resolved_model(ANTHROPIC_OAUTH.id, None, "claude-haiku-4-5")
+            .expect("a pinned id resolves");
+        assert_eq!(pinned, "claude-haiku-4-5");
+    }
+
+    /// What the front ends render in place of the alias.
+    #[test]
+    fn the_bootstrap_carries_the_model_a_turn_would_really_use() {
+        let (_directory, runtime) = runtime();
+        let bootstrap = runtime.bootstrap().expect("a bootstrap");
+
+        assert_eq!(
+            bootstrap.settings.models.inference.id,
+            neo_core::SOL_LATEST,
+            "the default install holds the alias"
+        );
+        assert_eq!(bootstrap.inference_model, neo_core::OPENAI_SOL_FALLBACK);
+        assert_eq!(
+            bootstrap.inference_model,
+            runtime.inference_model().expect("the same answer twice")
+        );
     }
 
     #[test]

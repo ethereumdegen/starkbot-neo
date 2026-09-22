@@ -14,5 +14,8 @@ pub use error::*;
 pub use events::*;
 pub use ids::*;
 pub use providers::*;
-pub use registry::{Classified, ModelTier, SOL_LATEST, classify, hidden, resolve, resolve_latest};
+pub use registry::{
+    ANTHROPIC_SOL_FALLBACK, Classified, ModelTier, OPENAI_SOL_FALLBACK, SOL_LATEST, classify,
+    hidden, resolve, resolve_latest, sol_fallback, vendor,
+};
 pub use settings::*;

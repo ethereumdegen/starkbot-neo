@@ -41,7 +41,7 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  runs
 │                                                                                                                      │
 │                                                                                                                ▼ live│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic
 --- styles ---
 fg=Blue bg=Reset mod=BOLD  running
 fg=Blue bg=Reset mod=NONE  nav
@@ -61,4 +61,4 @@ fg=Red bg=Reset mod=BOLD  failed
 fg=Red bg=Reset mod=NONE  chat
 fg=Reset bg=Reset mod=BOLD  Stark
 fg=Reset bg=Reset mod=BOLD  post the launch note
-fg=Yellow bg=Reset mod=NONE  NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+fg=Yellow bg=Reset mod=NONE  NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic

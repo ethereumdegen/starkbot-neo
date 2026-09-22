@@ -16,14 +16,14 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  settings
 │  (f) ChatGPT via Codex     signed out                                                                                │
 │  typesafe key              present                                                                                   │
 │── Models                                                                                                             │
-│  inference                 openai/sol-latest                                                                         │
+│  inference                 openai/sol-latest → gpt-5.6-sol                                                           │
 │  text_helper               openai/gpt-5.6-luna                                                                       │
 │  stt                ┌ Claude Pro/Max ──────────────────────────────────────────────────────────┐                     │
 │  tts                │Sign in to Claude Pro/Max in your browser.                                │                     │
 │  sol_effort         │                                                                          │                     │
 │  live transcription │https://claude.ai/oauth/authorize?client_id=9d1c250a&state=abc123         │                     │
 │  stt_live.model     │                                                                          │                     │
-│                     │waiting for your browser · 296s left                                      │                     │
+│                     │waiting for your browser · 296s left                                      │ier model            │
 │── Identity          │listening on http://localhost:54545/callback                              │                     │
 │  name               └ o opens the page · p pastes instead · Esc cancels ───────────────────────┘                     │
 │── Listening                                                                                                          │
@@ -41,7 +41,7 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  settings
 │  enqueue at                0.70                                                                                      │
 │  offer at                  0.40                                                                                      │
 └ Enter edits/toggles · s key · c login · Esc/q chat ──────────────────────────────────────────────────────────────────┘
-NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic │ account none
 --- styles ---
 fg=Blue bg=Reset mod=NONE  https://claude.ai/oauth/authorize?client_id=9d1c250a&state=abc123
 fg=Cyan bg=Reset mod=BOLD  Claude Pro/Max
@@ -89,7 +89,7 @@ fg=Green bg=Reset mod=NONE  present
 fg=Green bg=Reset mod=NONE  present · selected
 fg=Reset bg=Reset mod=BOLD  (b) Claude Pro/Max
 fg=Reset bg=Reset mod=BOLD  Stark
-fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+fg=Yellow bg=Reset mod=NONE  NORMAL │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic │ account none
 fg=Yellow bg=Reset mod=NONE  missing
 fg=Yellow bg=Reset mod=NONE  signed out
 fg=Yellow bg=Reset mod=NONE  waiting for your browser

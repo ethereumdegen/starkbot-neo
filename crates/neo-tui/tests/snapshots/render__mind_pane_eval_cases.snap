@@ -41,7 +41,7 @@ Stark  ○ NO MIC YET  v dictates   Esc/q chat  mind
 │                                                                                                                      │
 │                                                                                                                ▼ live│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  mind
 fg=Cyan bg=Reset mod=NONE  case
@@ -51,4 +51,4 @@ fg=DarkGray bg=Reset mod=NONE  └───────────────�
 fg=DarkGray bg=Reset mod=NONE  ▼ live│
 fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates   Esc/q chat
 fg=Reset bg=Reset mod=BOLD  Stark
-fg=Yellow bg=Reset mod=NONE  NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
+fg=Yellow bg=Reset mod=NONE  NORMAL │ 1 running · Esc stops │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys missing: anthropic
