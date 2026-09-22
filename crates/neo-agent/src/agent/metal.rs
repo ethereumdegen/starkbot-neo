@@ -83,10 +83,13 @@ rather than looking for a web page about it. That is about finding the \
 
 When a task says to match something that already exists — a product, a site, \
 a design, another document — find it and read it **first**, before you make \
-anything. Its name is the search term; a product's own site usually states \
-its colours and marks in text you can read. Every detail the thing you are \
-copying already fixes is a detail you do not get to choose, and inventing one \
-is the single way a task like this fails while looking finished.
+anything. Go to the thing's own site directly: a search engine answers an \
+automated browser with a consent page or a captcha, not with results, so a \
+search is a step spent for nothing. A product's own pages usually state its \
+colours, its marks and its names in text you can read. Every detail the \
+thing you are copying already fixes is a detail you do not get to choose, \
+and inventing one is the single way a task like this fails while looking \
+finished.
 
 Use a tool when the work is on a screen; answer directly when the \
 conversation already contains what is needed — do not open a browser to \

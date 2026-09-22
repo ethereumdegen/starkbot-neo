@@ -541,14 +541,23 @@ impl Collector {
 fn event_name(event: &AppEvent) -> String {
     match event {
         AppEvent::TurnStarted { .. } => "turn started".to_owned(),
-        AppEvent::TurnStep { action, .. } => format!("step {:?} {}", action.kind, action.target.as_deref().unwrap_or("-")),
+        AppEvent::TurnStep { action, .. } => format!(
+            "step {:?} {}",
+            action.kind,
+            action.target.as_deref().unwrap_or("-")
+        ),
         AppEvent::TurnStepDone { .. } => "step done".to_owned(),
         AppEvent::TurnFinished { .. } => "turn finished".to_owned(),
         AppEvent::TurnFailed { .. } => "turn failed".to_owned(),
         AppEvent::NavStep { .. } => "nav step".to_owned(),
         AppEvent::ConfirmRequest { .. } => "confirm asked".to_owned(),
         AppEvent::AskRequest { .. } => "question asked".to_owned(),
-        other => format!("{}", serde_json::to_value(other).map(|v| v.get("type").and_then(|t| t.as_str()).unwrap_or("event").to_owned()).unwrap_or_else(|_| "event".to_owned())),
+        // Everything else by its serde tag, which is the name the wire
+        // already uses — no second list to keep in step with `AppEvent`.
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| "event".to_owned()),
     }
 }
 
