@@ -545,6 +545,17 @@ fn enumerable_options(elem: &AxElem, attrs: &Attrs, node: &RawNode, app: &str) -
 }
 
 /// Walk a window subtree into a `RawNode` tree plus its element store.
+/// The walk of an app that has no window: no elements, no url, and a root
+/// that offers nothing. Its fingerprint is a real one — "the windowless
+/// surface" — so a guard can be taken on it like any other.
+pub(crate) fn empty_walk() -> Walk {
+    Walk {
+        root: RawNode::default(),
+        store: Vec::new(),
+        url: None,
+    }
+}
+
 pub(crate) fn walk(root: &AxElem, attrs: &Attrs, app: &str, deadline: Instant) -> Walk {
     let mut store: Vec<AxElem> = Vec::new();
     let mut url = None;

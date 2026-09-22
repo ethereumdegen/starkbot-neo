@@ -1178,6 +1178,42 @@ mod tests {
         assert_eq!(built.table.elements[1].label, "File › New Note");
     }
 
+    /// A document app whose last window was closed keeps its menu bar, and
+    /// `File ▸ New` is the one action that gets it a window back. The
+    /// windowless surface has to be describable for that to be offerable —
+    /// including its fingerprint, which is what a guard is taken on.
+    #[test]
+    fn a_windowless_app_still_offers_its_menu_bar() {
+        let menu = vec![MenuLeaf {
+            id: 0,
+            path: vec!["File".into(), "New".into()],
+            shortcut: Some("⌘N".into()),
+            enabled: true,
+        }];
+        let nowhere = RawNode::default();
+        let built = build(&nowhere, &menu);
+
+        assert_eq!(
+            built.table.elements.len(),
+            1,
+            "the menu is the whole surface"
+        );
+        assert_eq!(built.table.elements[0].label, "File › New");
+        assert!(!built.table.elements[0].operations.is_empty());
+        assert!(built.table.text.is_empty(), "a windowless app says nothing");
+        assert!(!built.table.window.modal);
+        assert_eq!(
+            window_fingerprint(&nowhere),
+            window_fingerprint(&RawNode::default()),
+            "the windowless surface is one surface, not a new one each time"
+        );
+        assert_ne!(
+            window_fingerprint(&nowhere),
+            window_fingerprint(&window(vec![])),
+            "a window that appears is a different surface"
+        );
+    }
+
     #[test]
     fn a_disabled_menu_leaf_has_no_operations() {
         let menu = vec![MenuLeaf {

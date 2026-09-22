@@ -27,20 +27,17 @@ pub enum Fixture {
     /// Open a spreadsheet with known contents, so a case can assert on data
     /// it put there.
     ///
-    /// This exists because `File ▸ New` cannot be used on LibreOffice yet: a
-    /// running LibreOffice with no open document has **no focused window**, so
-    /// there is no observation to resolve a menu against — `neo ax table
-    /// LibreOffice` answers `has no focused window`. Opening a document is
-    /// also better eval design: a case that asserts `A1 == "Starkbot 42"`
-    /// needs A1 to have been put there by the fixture, not by whatever ran
-    /// last.
+    /// `File ▸ New` would now work on a windowless app — the menu bar is
+    /// observable without a window — but opening a document is better eval
+    /// design anyway: a case that asserts `A1 == "Starkbot 42"` needs A1 to
+    /// have been put there by the fixture, not by whatever ran last.
     Spreadsheet { app: String, a1: String },
     /// Open an empty text document.
     ///
-    /// Why not `File ▸ New`: an app whose last document was closed has **no
-    /// focused window**, so there is no observation for `SelectMenu` to
-    /// resolve against and the action answers `stale reference`. Opening a
-    /// file needs no window to already exist, which is the point of a fixture.
+    /// Why not `File ▸ New`: it would work — a windowless app is observed
+    /// through its menu bar — but a fixture's job is a *known* starting
+    /// state, and an empty file it wrote is known in a way a new document
+    /// inheriting the app's last settings is not.
     TextDocument { app: String },
     /// Only bring the app to the front. For apps with no document model.
     Activate { app: String },
@@ -459,10 +456,12 @@ async fn new_document(ax: &AxHandle, app: AppSel) -> Result<Vec<String>, ProbeEr
         for path in PATHS {
             // A fresh observation helps `SelectMenu` resolve against the
             // current generation, but it must not gate the attempt: an app
-            // whose last document was closed has **no focused window**, so
-            // `table` fails — and opening a new document is exactly the fix
-            // for that. Gating on it made every TextEdit case fail with an
-            // empty reason once an earlier case had closed the window.
+            // whose last document was closed used to fail `table` outright,
+            // and opening a new document is exactly the fix for that.
+            // Gating on it made every TextEdit case fail with an empty
+            // reason once an earlier case had closed the window. The
+            // windowless observation is served from the menu bar now, so
+            // this is belt and braces rather than the only way through.
             let _ = ax.table(&app).await;
             let owned: Vec<String> = path.iter().map(|part| (*part).to_owned()).collect();
             match ax

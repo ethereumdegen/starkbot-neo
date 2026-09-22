@@ -634,7 +634,6 @@ impl Actor {
         let app_elem = AxElem::app(app.pid);
         app_elem.set_messaging_timeout(sys::APP_MESSAGING_TIMEOUT);
         self.publish_full_tree(&app_elem, &app.name);
-        let deadline = Instant::now() + TABLE_DEADLINE;
 
         // An app that has just come forward may not have published its
         // focused window yet, so give it a moment before giving up. This is
@@ -644,23 +643,45 @@ impl Actor {
             loop {
                 let found = self.window_of(&app_elem, &app.name)?;
                 match found {
-                    Some(elem) => break elem,
+                    Some(elem) => break Some(elem),
                     None if Instant::now() < window_deadline => {
                         std::thread::sleep(Duration::from_millis(40));
                     }
-                    None => {
-                        return Err(AxError::NoWindow {
-                            app: app.name.clone(),
-                        });
-                    }
+                    None => break None,
                 }
             }
         };
 
-        let mut walk = sys::walk(&window_elem, &self.attrs, &app.name, deadline);
+        // Waiting for the window is not walking it: the budget starts once
+        // there is something to read. Started before the wait, a slow app —
+        // and every windowless one, which waits the whole 1.5 s — handed the
+        // walkers a deadline that had already passed, so the tree came back
+        // empty and the menu bar came back with nothing in it at all.
+        let deadline = Instant::now() + TABLE_DEADLINE;
+
+        // A document app whose last window was closed is still running, and
+        // its menu bar is still there: `File ▸ New` is exactly what makes a
+        // window, and it hangs off the *application* element, not off a
+        // window. Refusing to observe a windowless app meant the one action
+        // that fixes it was the one action that could never be offered —
+        // "TextEdit has no focused window", from an app one keystroke away
+        // from having one.
+        let windowless = window_elem.is_none();
+        let mut walk = match window_elem.as_ref() {
+            Some(elem) => sys::walk(elem, &self.attrs, &app.name, deadline),
+            None => sys::empty_walk(),
+        };
         let menu = sys::walk_menu_bar(&app_elem, &self.attrs, &app.name, &mut walk.store, deadline);
 
-        if walk.root.children.is_empty() && walk.root.label().is_empty() {
+        if windowless {
+            // No window *and* no menu is an app with nothing to offer, which
+            // is what the old error really meant.
+            if menu.is_empty() {
+                return Err(AxError::NoWindow {
+                    app: app.name.clone(),
+                });
+            }
+        } else if walk.root.children.is_empty() && walk.root.label().is_empty() {
             return Err(AxError::OpaqueApp {
                 app: app.name.clone(),
             });
@@ -743,19 +764,25 @@ impl Actor {
         }
         let app_elem = AxElem::app(guard.pid);
         app_elem.set_messaging_timeout(sys::APP_MESSAGING_TIMEOUT);
-        let Ok(Some(window_value)) = sys::guarded(&app.name, "focused_window", || {
-            app_elem.attr(&self.attrs.focused_window)
-        }) else {
-            return Freshness::Stale(StaleReason::WindowChanged);
+        // "No window" is a surface like any other here, not a failure to
+        // read one: an observation taken of a windowless app stays fresh
+        // while the app is still windowless, and goes stale the moment a
+        // window appears — which is exactly what `File ▸ New` does, after
+        // the guard that let it run.
+        let window_elem = match self.window_of(&app_elem, &app.name) {
+            Ok(found) => found,
+            Err(_) => return Freshness::Stale(StaleReason::WindowChanged),
         };
-        let Some(window_elem) = sys::first_element(&window_value) else {
-            return Freshness::Stale(StaleReason::WindowChanged);
-        };
-        let window_node = sys::read_shallow(&window_elem, &self.attrs, &app.name);
+        let window_node = window_elem
+            .as_ref()
+            .map(|elem| sys::read_shallow(elem, &self.attrs, &app.name))
+            .unwrap_or_default();
         if table::window_fingerprint(&window_node) != guard.window {
             return Freshness::Stale(StaleReason::WindowChanged);
         }
-        let modal_now = sys::has_modal_child(&window_elem, &self.attrs, &app.name);
+        let modal_now = window_elem
+            .as_ref()
+            .is_some_and(|elem| sys::has_modal_child(elem, &self.attrs, &app.name));
         if modal_now && !guard.modal {
             return Freshness::Stale(StaleReason::SheetAppeared);
         }
