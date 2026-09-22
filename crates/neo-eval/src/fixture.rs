@@ -152,7 +152,7 @@ pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Va
     // to do that would take the screen from whoever is using it. It therefore
     // also runs on a machine with no Accessibility grant, like the web ones.
     if let Fixture::DegenPaintProject { base, .. } = fixture {
-        let http = reqwest::Client::new();
+        let http = crate::probe::grounding_client();
         let status = crate::probe::grounding_get(
             &http,
             &format!("{}/api/v1/status", base.trim_end_matches('/')),
@@ -170,6 +170,40 @@ pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Va
                 "degen-paint has no project open, so there is nothing to draw in".to_owned(),
             ));
         }
+        // A known starting state, which for a document means *empty*. Five
+        // consensus runs share one project, and without this each would be
+        // scored on what the last one left behind. Reset through the app's
+        // own undo rather than by touching its files: the journal is the
+        // contract, and a project rewritten underneath a running Studio is
+        // exactly the kind of state nothing else can reason about.
+        //
+        // "Empty" is the app saying there is nothing left to undo — `undo`
+        // answers `op: null` — and not the revision reaching zero: revision is
+        // the project's edit *counter* and only ever climbs, undo included.
+        let api = format!("{}/api", base.trim_end_matches('/'));
+        let mut undone = 0u64;
+        loop {
+            if undone >= 500 {
+                return Err(ProbeError::Ax(
+                    "the document could not be emptied in 500 undo(s)".to_owned(),
+                ));
+            }
+            let reply = http
+                .post(&api)
+                .json(&json!({ "method": "undo", "params": {} }))
+                .send()
+                .await
+                .map_err(|error| ProbeError::Ax(format!("could not undo: {error}")))?;
+            let body: Value = reply.json().await.unwrap_or(Value::Null);
+            if body.get("ok").and_then(Value::as_bool) != Some(true) {
+                return Err(ProbeError::Ax(format!("undo was refused: {body}")));
+            }
+            let undid = body.pointer("/result/op").is_some_and(|op| !op.is_null());
+            if !undid {
+                break;
+            }
+            undone += 1;
+        }
         return Ok(json!({
             "fixture": "degen_paint_project",
             "app": "degen-paint Studio",
@@ -181,7 +215,7 @@ pub async fn apply(runtime: &neo_agent::Runtime, fixture: &Fixture) -> Result<Va
                      or open another project, and do not expect a Studio window to drive",
             "project": project,
             "active_document": status.get("activeDoc").cloned().unwrap_or(Value::Null),
-            "revision": status.get("revision").cloned().unwrap_or(Value::Null),
+            "emptied_by_undoing": undone,
         }));
     }
     if !AxHandle::trusted() {

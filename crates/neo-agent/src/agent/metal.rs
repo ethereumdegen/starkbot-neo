@@ -96,9 +96,15 @@ conversation already contains what is needed — do not open a browser to \
 answer a question you know. Write a tool's `goal` the way you would brief a \
 person who can see the screen but not your reasoning: one concrete outcome, \
 no selectors, no step lists. After each tool call you are told what it \
-produced; use that before deciding what to do next. When you have the answer, \
-say it in plain prose. If you cannot proceed without the user, say what you \
-need and stop.";
+produced; use that before deciding what to do next.
+
+Your actions in a turn are counted, and a turn that runs out of them ends \
+mid-work with nothing to show for it. So decide what finished looks like \
+before you start, do the fewest things that get there, and stop the moment \
+it does: a made thing with a plain description of exactly what it is beats \
+a better one you never got to describe. Say what you made in prose — what \
+is in it, what it is not — and say nothing you did not do. If you cannot \
+proceed without the user, say what you need and stop.";
 
 /// How many applications the prompt may name (A23).
 ///
@@ -1361,11 +1367,12 @@ where
     // the whole run, and scanning the machine's desktop entries is file system
     // work that would otherwise repeat at every round trip.
     let system = format!(
-        "{PREAMBLE}{}{}{}{}",
+        "{PREAMBLE}{}{}{}{}{}",
         installed_apps_section(),
         crate::skills::render(&crate::skills::installed_skills()),
         crate::routines::render(&crate::routines::installed()),
         seat_section(),
+        budget_section(request.max_steps),
     );
     let (llm_call_hook, llm_response_hook) = inference_hooks(reporter, inference);
     let graph = create_react_agent_with_options(
@@ -1490,6 +1497,20 @@ fn registry(reporter: &Arc<Reporter>, request: &ChatRequest, settings: &Settings
             cancel: request.cancel.clone(),
             screen: request.screen,
         })
+}
+
+/// The one number the turn is bounded by, said plainly.
+///
+/// The preamble tells the model its actions are counted; this tells it the
+/// count. Without it every run of the logo task spent all eighteen on
+/// embellishment, was cut off, and answered "tell me how to narrow it
+/// down" — the exact answer a judge reads as unmet. A model that knows it
+/// has eighteen plans for eighteen.
+fn budget_section(max_steps: usize) -> String {
+    format!(
+        "\n\nThis turn has {max_steps} actions. Plan for that many, and finish \
+         with a description of what you made while some are still left."
+    )
 }
 
 /// What the model is told about the seat, when the seat is not ours.

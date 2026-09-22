@@ -133,6 +133,21 @@ pub fn grounding_base() -> String {
     std::env::var("DPAINT_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:4317".to_owned())
 }
 
+/// A client for degen-paint's loopback server.
+///
+/// One connection per request, on purpose. The server is a hand-rolled
+/// `std::net` loop that answers and closes; `reqwest`'s default pool then
+/// tries to reuse a socket the other end has already shut, and the second
+/// call on it — a POST after a GET — fails with "error sending request"
+/// before anything is sent. Measured: every consensus run's fixture failed
+/// exactly there, on the undo that follows the status read.
+pub(crate) fn grounding_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Read one grounding endpoint, tolerating an absent one.
 ///
 /// A probe reports what it found; it does not fail the case because a
@@ -159,7 +174,7 @@ pub(crate) async fn grounding_get(http: &reqwest::Client, url: &str) -> Option<V
 /// along for the judge, which needs the colours and the object tree to tell a
 /// logo from a blank canvas.
 async fn read_grounding(app: &str, base: &str) -> Result<Value, ProbeError> {
-    let http = reqwest::Client::new();
+    let http = grounding_client();
     let base = base.trim_end_matches('/');
 
     let status = grounding_get(&http, &format!("{base}/api/v1/status"))
