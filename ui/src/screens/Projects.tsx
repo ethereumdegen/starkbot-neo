@@ -27,6 +27,7 @@ export function Projects() {
   const [name, setName] = useState("");
   const [root, setRoot] = useState("");
   const [section, setSection] = useState<ProjectSection>("settings");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const applyDetail = (next: ProjectDetailView) => {
     setDetail(next);
@@ -78,6 +79,24 @@ export function Projects() {
     }
   };
 
+  const remove = async () => {
+    if (detail === null) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setProjects(await api.deleteProject(detail.project.slug));
+      setDetail(null);
+      setSection("settings");
+      setConfirmingDelete(false);
+    } catch (thrown) {
+      setError(errorOf(thrown).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const create = async () => {
     if (!(await run(() => api.createProject(name.trim(), root)))) {
       return;
@@ -103,6 +122,7 @@ export function Projects() {
               <button
                 onClick={() => {
                   setDetail(null);
+                  setConfirmingDelete(false);
                   setSection("settings");
                 }}
               >
@@ -247,7 +267,7 @@ export function Projects() {
           )}
           {detail !== null && section === "settings" && (
             <div className={panes.form}>
-              <h3>Clock</h3>
+              <h3>Heartbeat</h3>
               <p className={panes.hint}>{detail.project.root}</p>
               <label className={panes.check}>
                 <input
@@ -313,10 +333,51 @@ export function Projects() {
                     ));
                   }}
                 >
-                  Apply clock
+                  Apply heartbeat
                 </button>
               </div>
               <p className={panes.hint}>Next {when(detail.project.next_due_at)}</p>
+              <section className={panes.advancedSection}>
+                <h3>Advanced</h3>
+                <p className={panes.hint}>
+                  Deleting removes this project and its heartbeat activity from Starkbot.
+                  Files in <code>{detail.project.root}</code> will not be deleted.
+                </p>
+                {confirmingDelete ? (
+                  <div className={panes.advancedConfirm} role="group" aria-label="Confirm project deletion">
+                    <strong>Delete {detail.project.name}?</strong>
+                    <span>This cannot be undone.</span>
+                    <div className={panes.actions}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setConfirmingDelete(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => { void remove(); }}
+                      >
+                        Delete project
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={panes.actions}>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy}
+                      onClick={() => setConfirmingDelete(true)}
+                    >
+                      Delete project
+                    </button>
+                  </div>
+                )}
+              </section>
             </div>
           )}
           {detail !== null && section === "soul" && (

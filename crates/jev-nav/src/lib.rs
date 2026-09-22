@@ -135,7 +135,6 @@ pub struct StepEvent {
     pub usage: Value,
 }
 
-
 pub struct RunConfig {
     pub goal: String,
     /// Ask the risk heads (`rules::SAFETY`) on every step.

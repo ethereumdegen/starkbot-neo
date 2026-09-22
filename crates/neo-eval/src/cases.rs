@@ -42,6 +42,8 @@ pub fn all() -> Vec<Case> {
     let mut cases = vec![
         read_a_page(),
         extract_from_a_page(),
+        discover_octaweave_cli(),
+        summarize_starkbot_octaweave_notes(),
         type_into_textedit(),
         format_in_textedit(),
         write_a_calc_cell(),
@@ -223,6 +225,64 @@ fn extract_from_a_page() -> Case {
             Assertion::ExpectTextContains("MUST".to_owned()),
         ],
         &["browser", "extract"],
+    )
+}
+
+// ------------------------------------------------------------------ CLI
+
+/// The shell floor: investigate a named local CLI instead of treating it as a
+/// graphical application or requiring a dedicated Starkbot adapter.
+fn discover_octaweave_cli() -> Case {
+    case(
+        App::Octaweave,
+        "discover-octaweave-cli",
+        "Use bash to locate the installed octaweave CLI with `command -v octaweave`, \
+         then reply with only its absolute path.",
+        Probe::CommandPath {
+            app: App::Octaweave.label().to_owned(),
+            command: "octaweave".to_owned(),
+        },
+        vec![
+            Assertion::ExpectNoError,
+            Assertion::ExpectTools(vec!["bash".to_owned()]),
+            Assertion::ExpectToolsWithinAllowlist,
+            Assertion::ExpectToolArgExists("bash".to_owned(), "command".to_owned()),
+            Assertion::ExpectTextContains("octaweave".to_owned()),
+        ],
+        &["cli", "bash", "smoke"],
+    )
+}
+
+/// Full Conversation integration: Metalcraft investigates Octaweave through
+/// Bash, the harness independently reads the project back, and Jev classifies
+/// the answer against that ground truth.
+fn summarize_starkbot_octaweave_notes() -> Case {
+    case_judged(
+        App::Octaweave,
+        "summarize-starkbot-octaweave-notes",
+        "Tell me about my notes in the starkbot-neo project in Octaweave. Use \
+         the Octaweave CLI through bash, inspect the project, and summarize \
+         each current note or card with its status and key point.",
+        Probe::OctaweaveProject {
+            app: App::Octaweave.label().to_owned(),
+            project: "starkbot-neo".to_owned(),
+        },
+        None,
+        vec![
+            Assertion::ExpectNoError,
+            Assertion::ExpectTools(vec!["bash".to_owned()]),
+            Assertion::ExpectToolsWithinAllowlist,
+            Assertion::ExpectToolArgExists("bash".to_owned(), "command".to_owned()),
+        ],
+        "The final answer must accurately summarize the current notes/cards in \
+         the `starkbot-neo` Octaweave project shown by the probe. It must cover \
+         every current card, state its actual completion or column status, and \
+         preserve the key point of its body without inventing cards or facts. \
+         The trace must show that the answer came from the Octaweave CLI through \
+         Bash rather than from prior knowledge.",
+        0.80,
+        5,
+        &["cli", "bash", "octaweave", "jev", "conversation"],
     )
 }
 
@@ -987,14 +1047,9 @@ fn fill_a_shadow_dom_field() -> Case {
 /// The upload gate: the first upload to an origin is a confirm (10 §11.3),
 /// and an approval has to finish the job.
 ///
-/// **Expected to fail today**, and in the set for that reason. An agent turn
-/// builds its browser run with `BrowserOptions::unattended`, which carries no
-/// attachments (`neo-agent/src/agent/metal.rs`), and the web observer removes
-/// every upload action when there is nothing to attach
-/// (`jev-nav/src/web.rs`). So the agent cannot upload at all: no card is
-/// published and the page records nothing. The measurement is what tells us
-/// when an attachment reaches the tool — the case is the definition of done
-/// for that work, not a guess at it.
+/// Metalcraft owns the turn and can combine its Bash and Jev-backed browser
+/// tools. This case measures whether the managed browser can reach the fixture
+/// attachment and the trace surfaces any approval required by that operation.
 fn attach_a_file() -> Case {
     nav_case(
         "nav-upload-confirm",

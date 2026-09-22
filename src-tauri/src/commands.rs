@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::UiError;
-use crate::state::{Desktop, Runs, provider_by_id};
+use crate::state::{Desktop, EvalUi, Runs, provider_by_id};
 use crate::view::{
     AxRequestView, AxResponseView, BootstrapView, CaseListingView, CheckView, ConnectionRow,
     ConversationView, Fix, InferenceView, KeyRow, LoginFailed, LoginStart, MessageView, ModelRow,
@@ -216,6 +216,19 @@ pub async fn create_project(
             .map(PathBuf::from);
         let project = runtime.create_project(&name, root.as_deref())?;
         project_detail(&runtime, &project.slug)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_project(
+    state: State<'_, Desktop>,
+    slug: String,
+) -> Result<Vec<Project>, UiError> {
+    let runtime = state.runtime();
+    project_blocking(move || {
+        runtime.delete_project(&slug)?;
+        runtime.projects()
     })
     .await
 }
@@ -871,6 +884,15 @@ pub async fn run_ax(
     Ok(answered?.into())
 }
 
+/// Address of the Spice Lab served by this desktop process.
+///
+/// It is loopback-only and allocated by the OS, so it cannot collide with a
+/// separately launched `neo eval-ui` or a stale development server.
+#[tauri::command]
+pub fn eval_ui_url(state: State<'_, EvalUi>) -> String {
+    state.url().to_owned()
+}
+
 /// Every eval case and whether this machine can run it. Costs nothing: no
 /// model, no application launched.
 #[tauri::command]
@@ -895,6 +917,7 @@ pub async fn run_eval(
     let runs = state.runs();
     let selection = Selection {
         filter,
+        exact_id: None,
         tags: tags.unwrap_or_default(),
         once,
     };

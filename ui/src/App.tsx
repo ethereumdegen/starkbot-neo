@@ -10,6 +10,7 @@ import { useDictation } from "./hooks/useDictation";
 import { currentChatRun } from "./store/runs";
 import { Chat } from "./screens/Chat";
 import { Connections } from "./screens/Connections";
+import { Eval } from "./screens/Eval";
 import { Inspect } from "./screens/Inspect";
 import { Projects } from "./screens/Projects";
 import { Runs } from "./screens/Runs";
@@ -21,6 +22,7 @@ import shell from "./styles/shell.module.css";
 const TABS: { id: Screen; label: string; icon: string }[] = [
   { id: "chat", label: "Chat", icon: "M4 4h16v12H9l-5 4V4Z" },
   { id: "runs", label: "Runs", icon: "M3 12h4l3-8 4 16 3-8h4" },
+  { id: "eval", label: "Eval", icon: "M5 3h14v4l-5 5 5 5v4H5v-4l5-5-5-5V3Z" },
   { id: "projects", label: "Projects", icon: "M3 6h7l2 2h9v12H3V6Z" },
   { id: "inspect", label: "Inspect", icon: "M10 17a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 6 6" },
   // Its own rail entry rather than the thirteenth tab inside Settings: this
@@ -30,10 +32,11 @@ const TABS: { id: Screen; label: string; icon: string }[] = [
   { id: "settings", label: "Settings", icon: "M4 7h16M4 17h16M8 4v6m8 4v6" },
 ];
 
-function Screens({ screen, projectsEpoch, chatEpoch, composer }: {
+function Screens({ screen, projectsEpoch, chatEpoch, evalEpoch, composer }: {
   screen: Screen;
   projectsEpoch: number;
   chatEpoch: number;
+  evalEpoch: number;
   composer: ReactNode;
 }) {
   switch (screen) {
@@ -41,6 +44,8 @@ function Screens({ screen, projectsEpoch, chatEpoch, composer }: {
       return <Chat key={chatEpoch} composer={composer} />;
     case "runs":
       return <Runs />;
+    case "eval":
+      return <Eval key={evalEpoch} />;
     case "projects":
       return <Projects key={projectsEpoch} />;
     case "inspect":
@@ -61,6 +66,7 @@ export function App() {
   useAppEvents();
   const [projectsEpoch, setProjectsEpoch] = useState(0);
   const [chatEpoch, setChatEpoch] = useState(0);
+  const [evalEpoch, setEvalEpoch] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
   const [mini, setMini] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -248,6 +254,9 @@ export function App() {
               if (tab.id === "projects") {
                 setProjectsEpoch((value) => value + 1);
               }
+              if (tab.id === "eval") {
+                setEvalEpoch((value) => value + 1);
+              }
             }}
           >
             <svg className={shell.navIcon} viewBox="0 0 24 24" aria-hidden="true"><path d={tab.icon} /></svg>
@@ -277,7 +286,7 @@ export function App() {
         <div className={shell.screen}>
           {ready ? (
             <Screens screen={screen} projectsEpoch={projectsEpoch} chatEpoch={chatEpoch}
-              composer={mini ? null : composer} />
+              evalEpoch={evalEpoch} composer={mini ? null : composer} />
           ) : (
             <p className={shell.loading}>opening the store…</p>
           )}

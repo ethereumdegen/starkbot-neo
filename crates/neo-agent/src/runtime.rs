@@ -700,12 +700,9 @@ impl Runtime {
     /// request it makes.
     ///
     /// An agent turn is many requests over several minutes, and a plan access
-    /// token expires on its own schedule — so a caller handed one token at
-    /// construction sends a stale one for the rest of the turn and fails
-    /// halfway through with a `401` that reads like a revoked subscription.
-    /// Each call lands on [`Runtime::oauth_token`], which serves the cached
-    /// credential until it is close to expiry and refreshes it in place, so
-    /// this costs nothing per request in the common case.
+    /// token expires on its own schedule. Each call lands on
+    /// [`Runtime::oauth_token`], which serves the cached credential until it
+    /// is close to expiry and refreshes it in place.
     pub(crate) fn token_source(
         self: &Arc<Self>,
         provider: &'static OauthProvider,
@@ -718,9 +715,6 @@ impl Runtime {
                     .oauth_token(provider)
                     .await
                     .map(Arc::new)
-                    // The transport can only carry a string. This one names
-                    // the provider and what went wrong — never the
-                    // credential, which no `RuntimeError` can hold.
                     .map_err(|error| {
                         neo_core::ProviderError::Transport(format!(
                             "no usable `{}` token: {error}",
@@ -1406,15 +1400,12 @@ impl Runtime {
         self.secret(neo_keys::ACCOUNT_OPENAI)
     }
 
-    /// Where OpenAI requests go. Injected, so a test points inference at a
-    /// local server and nothing ever leaves the machine (08 rule 1).
+    /// Where OpenAI requests go.
     pub(crate) fn openai_base(&self) -> &Url {
         &self.key_bases.openai
     }
 
-    /// Where Anthropic requests go. Injected for the same reason
-    /// [`Runtime::openai_base`] is: a test points the Claude subscription's
-    /// chat path at a local server and nothing leaves the machine.
+    /// Where Anthropic requests go.
     pub(crate) fn anthropic_base(&self) -> &Url {
         &self.key_bases.anthropic
     }

@@ -2,7 +2,7 @@
 source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
-Stark  ○ NO MIC YET  v dictates   chat  /project · /model · /login · /help
+Stark  ○ NO MIC YET  v dictates   chat  /project · /evals · /model · /login · /help
 Ask Starkbot to do something in an app or on the web.
 Type a message and press Enter · / opens commands
 
@@ -40,7 +40,7 @@ fg=Cyan bg=Reset mod=NONE  │[i]
 fg=Cyan bg=Reset mod=NONE  ┌ Question ────────────────────────────────────────────────────────────┐
 fg=Cyan bg=Reset mod=NONE  └ i types the answer · the card stays until it is answered ────────────┘
 fg=DarkGray bg=Reset mod=NONE  / opens commands · i starts typing
-fg=DarkGray bg=Reset mod=NONE  /project · /model · /login · /help
+fg=DarkGray bg=Reset mod=NONE  /project · /evals · /model · /login · /help
 fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
 fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
 fg=DarkGray bg=Reset mod=NONE  │

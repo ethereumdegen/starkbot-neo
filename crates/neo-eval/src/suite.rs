@@ -94,6 +94,8 @@ pub struct Selection {
     /// which this replaces — filtering happens before the runner now, so the
     /// count a front end shows is the count that runs.
     pub filter: Option<String>,
+    /// Exact case id, for front ends that run a single catalog entry.
+    pub exact_id: Option<String>,
     /// Any-of over case tags (`browser`, `spreadsheet`, `known-gap`, …).
     ///
     /// [`cases::REVIEW_TAG`] is the release gate's own tag and
@@ -130,6 +132,11 @@ impl Selection {
     }
 
     fn matches(&self, id: &str, name: Option<&str>, tags: &[String]) -> bool {
+        if let Some(exact_id) = &self.exact_id
+            && id != exact_id
+        {
+            return false;
+        }
         if let Some(filter) = &self.filter
             && !id.contains(filter.as_str())
             && !name.is_some_and(|name| name.contains(filter.as_str()))
@@ -142,11 +149,15 @@ impl Selection {
 
 /// One case as a front end needs to show it before anything runs: what it is,
 /// what it needs, and whether this machine has that.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CaseListing {
     pub id: String,
     pub name: Option<String>,
     pub tags: Vec<String>,
+    pub message: String,
+    pub judges: Vec<JudgeListing>,
+    pub consensus_runs: Option<usize>,
+    pub consensus_required: Option<usize>,
     pub app: App,
     /// The app bundle, when it is installed. `None` means this case is skipped
     /// with a reason rather than run and failed.
@@ -159,6 +170,12 @@ impl CaseListing {
     pub const fn runnable(&self) -> bool {
         self.installed.is_some()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JudgeListing {
+    pub rubric: String,
+    pub threshold: f64,
 }
 
 /// Every case and whether this machine can run it, without spending a token.
@@ -180,6 +197,18 @@ pub fn list_cases() -> Vec<CaseListing> {
                 .iter()
                 .find(|(app, _)| *app == case.app)
                 .and_then(|(_, path)| path.clone()),
+            message: case.test.user_message,
+            judges: case
+                .test
+                .judges
+                .into_iter()
+                .map(|judge| JudgeListing {
+                    rubric: judge.rubric,
+                    threshold: judge.threshold,
+                })
+                .collect(),
+            consensus_runs: case.test.consensus_runs,
+            consensus_required: case.test.consensus_required,
         })
         .collect()
 }
@@ -197,12 +226,17 @@ pub async fn run_suite(
     run: RunId,
     cancel: &CancellationToken,
 ) -> Result<SuiteReport, EvalError> {
-    require_connections(runtime)?;
-
     let planned = plan(&selection);
     if !planned.iter().any(|(_, skip)| skip.is_none()) {
         return Err(EvalError::NoCases);
     }
+    let needs_judge = planned
+        .iter()
+        .any(|(case, skip)| skip.is_none() && !case.test.judges.is_empty());
+    let needs_navigator = planned
+        .iter()
+        .any(|(case, skip)| skip.is_none() && case.app != App::Octaweave);
+    require_connections(runtime, needs_judge || needs_navigator)?;
 
     // Held across every case, not per case: a suite that released the screen
     // between cases would let another window in halfway through and report the
@@ -236,19 +270,24 @@ pub async fn run_suite(
         )
         .with_live_log(live),
     );
-    // `require_connections` already refused a missing key by name; this
-    // covers the rest of what reading a credential can fail on.
-    let judge: Arc<dyn Judge> =
-        Arc::new(JevJudge::new(runtime).map_err(|error| EvalError::NoJudge {
-            detail: error.to_string(),
-            fix: "`neo keys set typesafe`".to_owned(),
-        })?);
+    // Jev is optional for CLI-only tests with deterministic assertions. It is
+    // constructed only when a selected case has a judge rubric.
+    let judge: Option<Arc<dyn Judge>> = if needs_judge {
+        Some(
+            Arc::new(JevJudge::new(runtime).map_err(|error| EvalError::NoJudge {
+                detail: error.to_string(),
+                fix: "`neo keys set typesafe`".to_owned(),
+            })?) as Arc<dyn Judge>,
+        )
+    } else {
+        None
+    };
     let trace_dir = runtime.data_dir().join("eval-traces");
 
     execute(
         planned,
         agent,
-        Some(judge),
+        judge,
         Some(trace_dir),
         run,
         cancel,
@@ -272,13 +311,10 @@ fn plan(selection: &Selection) -> Vec<(Case, Option<String>)> {
         .collect()
 }
 
-/// The two credentials a graded run needs, from one doctor pass.
-///
-/// Inference drives the agent; Jev grades it (A6). An eval missing either
-/// measures the connection rather than the agent, so it refuses to start —
-/// and it refuses *before* the first case, because discovering it afterwards
-/// has already spent the expensive half of the run.
-fn require_connections(runtime: &Arc<Runtime>) -> Result<(), EvalError> {
+/// Refuse a run before spending inference when one of its required providers
+/// is unavailable. Jev is optional for deterministic CLI-only cases; app
+/// navigation and model-graded cases opt into it.
+fn require_connections(runtime: &Arc<Runtime>, needs_jev: bool) -> Result<(), EvalError> {
     let doctor = tokio::task::block_in_place(|| runtime.doctor())?;
     let failed = |name: &str| {
         doctor
@@ -298,7 +334,7 @@ fn require_connections(runtime: &Arc<Runtime>) -> Result<(), EvalError> {
     if let Some((detail, fix)) = failed("inference") {
         return Err(EvalError::NoInference { detail, fix });
     }
-    if let Some((detail, fix)) = failed("navigator (jev)") {
+    if needs_jev && let Some((detail, fix)) = failed("navigator (jev)") {
         return Err(EvalError::NoJudge { detail, fix });
     }
     Ok(())
@@ -497,6 +533,7 @@ mod tests {
     fn selection(filter: Option<&str>, tags: &[&str], once: bool) -> Selection {
         Selection {
             filter: filter.map(ToOwned::to_owned),
+            exact_id: None,
             tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             once,
         }

@@ -18,6 +18,8 @@ export function actionLine(action: ActionSummary): string {
       return `${action.kind === "browse" ? "browse" : "app"} ${action.target ?? "?"} — ${
         action.goal ?? "?"
       }`;
+    case "bash":
+      return `bash ${action.target ?? "?"}`;
     case "answer":
       return "answer";
     default:

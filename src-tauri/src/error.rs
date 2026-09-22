@@ -149,9 +149,10 @@ impl From<ToolError> for UiError {
                     detail: "Settings → Models → inference runtime".to_owned(),
                 })
             }
-            ToolError::Browser(_) | ToolError::App { .. } | ToolError::Cancelled(_) => {
-                Self::new("tool", error.to_string())
-            }
+            ToolError::Browser(_)
+            | ToolError::App { .. }
+            | ToolError::Shell(_)
+            | ToolError::Cancelled(_) => Self::new("tool", error.to_string()),
         }
     }
 }

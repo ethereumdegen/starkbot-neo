@@ -199,9 +199,9 @@ const STOPPED = "stopped";
  * every stopped run — so `TurnFailed` carries the producer's own name for
  * the failure and this reads that instead.
  *
- * Two spellings because two layers publish the event: `neo-agent`
- * classifies its own turns (`agent::metal::error_code`) and the desktop
- * commands classify theirs (`UiError`'s `CANCELLED`).
+ * Two spellings because two layers publish the event: `neo-agent` classifies
+ * its executor failures and the desktop commands classify theirs (`UiError`'s
+ * `CANCELLED`).
  */
 const CANCELLED_CODES: Record<string, true> = { cancelled: true, agent_cancelled: true };
 

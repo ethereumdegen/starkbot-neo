@@ -1,5 +1,5 @@
-//! The Claude Pro/Max subscription as a rig completion model, so the ReAct
-//! graph in [`crate::agent::metal`] can run on it the way it runs on OpenAI.
+//! The Claude Pro/Max subscription as a rig completion model for Metalcraft's
+//! Conversation executor.
 //!
 //! [`crate::providers::anthropic_oauth`] already speaks this credential, but
 //! it speaks one shape: a single non-streaming `POST /v1/messages` whose whole

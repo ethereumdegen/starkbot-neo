@@ -27,7 +27,8 @@
 //! a tool call lands in `jev-nav` through the same `run_browser`/`run_app`
 //! that `neo nav` uses, with the same policy, budgets and safety heads.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,6 +48,7 @@ use neo_core::{
     MessageKind, MessageRole, MessageSource, ProviderId, RunId, Settings, TimestampMs, TurnUsage,
 };
 use serde_json::{Value, json};
+use tokio::process::Command;
 use url::Url;
 
 use super::{
@@ -57,29 +59,26 @@ use crate::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX};
 use crate::providers::{ClaudeSubscription, CodexOauthInference};
 use crate::runtime::Runtime;
 
-/// What the model is told it is, and what it may do (P2′/P3).
+/// What the model is told it is, and what it may do.
 ///
-/// The surfaces are named, and the absence of a shell is named with them: a
-/// model that is not told it has no command execution will try to ask for one,
-/// and spend a step finding out.
-///
-/// Nothing here names a platform any more. The text used to say "this Mac"
-/// and list four macOS applications, which is false on half the machines Neo
-/// runs on (P16: one product, one policy, Linux and macOS alike) — and a
-/// model told it is on a Mac when it is not will reach for a Mac's
-/// applications and find none of them. What the machine actually has is not
-/// a constant at all, so it is appended at the call site from
-/// [`installed_apps_section`] instead of guessed here.
+/// Native apps and CLIs are distinct surfaces. A named GUI application belongs
+/// in `app`; a command-line program belongs in `bash`, where the model can
+/// discover it from `PATH`, inspect its help, and invoke it without Neo growing
+/// a one-off tool for every executable.
 const PREAMBLE: &str = "\
 You are Starkbot, a go-to-market marketing and media operator. You get work \
-done by operating real applications on this machine: web pages through a \
-managed browser, and native applications through the platform's \
-accessibility API. You are not a coding assistant and you have no shell, no \
-file system and no command execution.
+done with the tools on this machine: local commands and files through `bash`, \
+web pages through a managed browser, and native applications through the \
+platform's accessibility API.
 
-When a task names an application, open that application with the `app` tool \
-rather than looking for a web page about it. That is about finding the \
-*application* only.
+Use `bash` for local command-line tools, repository inspection, and file work. \
+When a task names a CLI you do not already know, investigate it first with \
+commands such as `command -v NAME` and `NAME --help`, then use the installed \
+program. Do not invent a dedicated integration when its CLI can do the work.
+
+When a task names a graphical application, open that application with the \
+`app` tool rather than looking for a web page about it. That is about finding \
+the graphical application only; command-line programs belong in `bash`.
 
 When a task says to match something that already exists — a product, a site, \
 a design, another document — find it and read it **first**, before you make \
@@ -900,6 +899,150 @@ impl Tool for App {
     }
 }
 
+/// Run a local command through Bash in the turn's working directory.
+struct Bash {
+    reporter: Arc<Reporter>,
+    cwd: PathBuf,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl Tool for Bash {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Run a Bash command on this machine. Use it to inspect repositories and \
+         files, discover installed CLI programs with `command -v`, inspect \
+         their help, and invoke them. Commands start in the current project \
+         directory. This is non-interactive; use bounded commands that finish."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "the Bash command to execute"
+                },
+                "intent": {
+                    "type": "string",
+                    "description": "a short present-participle description of why this command is running"
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "description": "deadline for the command; defaults to 120 seconds"
+                }
+            },
+            "required": ["command", "intent"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(&self, args: Value) -> metalcraft::Result<Value> {
+        let command = field(&args, "command");
+        let intent = field(&args, "intent");
+        let timeout_seconds = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(120)
+            .clamp(1, 300);
+        let summary = ActionSummary {
+            kind: ActionKind::Bash,
+            target: command.clone(),
+            goal: intent.clone(),
+            text: None,
+        };
+        let reporter = Arc::clone(&self.reporter);
+        observed(&reporter, summary, async {
+            let command = command
+                .ok_or_else(|| ToolError::Shell("`bash` needs a non-empty `command`".to_owned()))?;
+            let _intent = intent
+                .ok_or_else(|| ToolError::Shell("`bash` needs a non-empty `intent`".to_owned()))?;
+            run_bash(
+                &command,
+                &self.cwd,
+                Duration::from_secs(timeout_seconds),
+                &self.cancel,
+            )
+            .await
+        })
+        .await
+    }
+}
+
+async fn run_bash(
+    command: &str,
+    cwd: &Path,
+    timeout: Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, ToolError> {
+    if !cwd.is_dir() {
+        return Err(ToolError::Shell(format!(
+            "working directory {} does not exist",
+            cwd.display()
+        )));
+    }
+    let mut process = Command::new("bash");
+    process
+        .arg("-lc")
+        .arg(command)
+        .current_dir(cwd)
+        .env("PAGER", "cat")
+        .env("GIT_PAGER", "cat")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::select! {
+        _ = cancel.cancelled() => return Err(ToolError::Cancelled(CoreError::Cancelled)),
+        result = tokio::time::timeout(timeout, process.output()) => {
+            match result {
+                Ok(Ok(output)) => output,
+                Ok(Err(error)) => {
+                    return Err(ToolError::Shell(format!("could not start or wait for bash: {error}")));
+                }
+                Err(_) => {
+                    return Err(ToolError::Shell(format!(
+                        "command timed out after {} seconds",
+                        timeout.as_secs()
+                    )));
+                }
+            }
+        }
+    };
+    Ok(render_command_output(&output))
+}
+
+fn render_command_output(output: &std::process::Output) -> String {
+    const LIMIT: usize = 24_000;
+
+    let status = match output.status.code() {
+        Some(code) => format!("exit {code}"),
+        None => format!("terminated by signal ({})", output.status),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut rendered = format!("{status}\nstdout:\n{stdout}");
+    if !stderr.is_empty() {
+        rendered.push_str("\nstderr:\n");
+        rendered.push_str(&stderr);
+    }
+    if stdout.is_empty() && stderr.is_empty() {
+        rendered.push_str("\n(no output)");
+    }
+    if rendered.chars().count() <= LIMIT {
+        return rendered;
+    }
+    let mut clipped: String = rendered.chars().take(LIMIT).collect();
+    clipped.push_str("\n… output truncated");
+    clipped
+}
+
 /// Run one of an installed pack's routines: the `routine` tool (06 §4.2).
 ///
 /// The reason this exists beside `app`: an `app` call is one navigator run
@@ -1167,13 +1310,13 @@ async fn observed(
 
 /// The tool a step's action kind came from, for the span that reports it.
 ///
-/// `ax` reports itself as an `app` step — the wire vocabulary has four
-/// action kinds and none of them is "inspect" — so the two share a name
-/// here as they already do on a card.
+/// `ax` reports itself as an `app` step because both inspect the native
+/// application surface.
 const fn tool_name(kind: ActionKind) -> &'static str {
     match kind {
         ActionKind::Browse => "browse",
         ActionKind::App => "app",
+        ActionKind::Bash => "bash",
         ActionKind::Answer => "answer",
         ActionKind::Ask => "ask",
     }
@@ -1491,12 +1634,26 @@ fn registry(reporter: &Arc<Reporter>, request: &ChatRequest, settings: &Settings
             run: request.run,
             cancel: request.cancel.clone(),
         })
+        .register(Bash {
+            reporter: Arc::clone(reporter),
+            cwd: bash_working_directory(request),
+            cancel: request.cancel.clone(),
+        })
         .register(RunRoutine {
             reporter: Arc::clone(reporter),
             run: request.run,
             cancel: request.cancel.clone(),
             screen: request.screen,
         })
+}
+
+fn bash_working_directory(request: &ChatRequest) -> PathBuf {
+    request
+        .cwd
+        .clone()
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// The one number the turn is bounded by, said plainly.
@@ -2284,6 +2441,79 @@ mod tests {
                 other => format!("other {other:?}"),
             })
             .collect()
+    }
+
+    /// The graph chooses the real Bash tool, Bash discovers a CLI from `PATH`,
+    /// and the observation returns through Metalcraft for the next model call.
+    #[tokio::test]
+    async fn metalcraft_bash_discovers_and_runs_a_local_cli() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut fixture = Fixture::new(CancellationToken::new());
+        let workspace = tempfile::tempdir().expect("a temporary project");
+        let bin = workspace.path().join("bin");
+        std::fs::create_dir(&bin).expect("the project bin directory exists");
+        let executable = bin.join("octaweave");
+        std::fs::write(
+            &executable,
+            "#!/usr/bin/env bash\nprintf 'octaweave:%s:%s\\n' \"$1\" \"$PWD\"\n",
+        )
+        .expect("the fake CLI is written");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("the fake CLI has metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).expect("the fake CLI is executable");
+        fixture.request.cwd = Some(workspace.path().to_owned());
+
+        let (reporter, cards) = fixture.reporter();
+        let model = Scripted::new(vec![
+            vec![Reply::Call {
+                name: "bash",
+                arguments: json!({
+                    "command": "PATH=\"$PWD/bin:$PATH\"; command -v octaweave; octaweave cards",
+                    "intent": "Locating and querying Octaweave"
+                }),
+            }],
+            vec![Reply::Text(
+                "Octaweave is installed and returned its cards.",
+            )],
+        ]);
+        let tools = ToolRegistry::new().register(Bash {
+            reporter: Arc::clone(&reporter),
+            cwd: bash_working_directory(&fixture.request),
+            cancel: fixture.request.cancel.clone(),
+        });
+
+        let outcome = drive(
+            &reporter,
+            cards,
+            &fixture.request,
+            &fixture.inference(),
+            model,
+            tools,
+        )
+        .await
+        .expect("the Metalcraft turn completes");
+
+        assert_eq!(
+            outcome.text,
+            "Octaweave is installed and returned its cards."
+        );
+        assert_eq!(outcome.steps.len(), 1);
+        let step = &outcome.steps[0];
+        assert_eq!(step.action.kind, ActionKind::Bash);
+        assert!(
+            step.observation.contains("bin/octaweave"),
+            "the CLI was not discovered: {}",
+            step.observation
+        );
+        assert!(
+            step.observation
+                .contains(&format!("octaweave:cards:{}", workspace.path().display())),
+            "the CLI did not run in the project root: {}",
+            step.observation
+        );
     }
 
     /// A model's own half of a multi-step turn has to survive into the next

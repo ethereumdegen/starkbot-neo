@@ -22,6 +22,27 @@ struct Login {
     handle: Arc<LoginHandle>,
     wait: JoinHandle<()>,
 }
+/// The loopback Spice Lab bundled into this desktop process.
+///
+/// The server receives the same `Arc<Runtime>` as every Tauri command, so a
+/// key saved in Connections is immediately the key an evaluation uses.
+pub struct EvalUi {
+    url: String,
+}
+
+impl EvalUi {
+    #[must_use]
+    pub fn new(address: std::net::SocketAddr) -> Self {
+        Self {
+            url: format!("http://{address}"),
+        }
+    }
+
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
 
 pub struct Desktop {
     runtime: Arc<Runtime>,

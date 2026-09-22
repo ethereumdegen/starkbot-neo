@@ -41,6 +41,8 @@ pub enum App {
     /// degen-paint's Studio: the fourth media app, and the one that works on
     /// Linux (A37). The target of the S8d smoke test.
     DegenPaint,
+    /// The Octaweave command-line client used by the project heartbeat.
+    Octaweave,
 }
 
 impl App {
@@ -64,6 +66,7 @@ impl App {
             Self::Powermove => &["Powermove"],
             Self::DegenMediaStudio => &["Degen Media Studio", "DegenMediaStudio"],
             Self::DegenPaint => &["dev.degenpaint.studio", "degen-paint"],
+            Self::Octaweave => &["octaweave"],
         }
     }
 
@@ -76,6 +79,9 @@ impl App {
     /// for.
     #[must_use]
     pub fn selector(self) -> String {
+        if self == Self::Octaweave {
+            return "octaweave".to_owned();
+        }
         self.resolved()
             .map(|app| app.id)
             .unwrap_or_else(|| self.selectors()[0].to_owned())
@@ -92,6 +98,7 @@ impl App {
             Self::Powermove => "Powermove",
             Self::DegenMediaStudio => "Degen Media Studio",
             Self::DegenPaint => "degen-paint Studio",
+            Self::Octaweave => "Octaweave CLI",
         }
     }
 
@@ -106,12 +113,15 @@ impl App {
     /// decisions.
     #[must_use]
     pub fn installed(self) -> Option<PathBuf> {
+        if self == Self::Octaweave {
+            return command_path("octaweave");
+        }
         self.resolved().map(|app| app.path)
     }
 }
 
 /// Every target this suite knows, in the order a report lists them.
-pub const ALL: [App; 8] = [
+pub const ALL: [App; 9] = [
     App::Chrome,
     App::TextEdit,
     App::LibreOffice,
@@ -120,7 +130,21 @@ pub const ALL: [App; 8] = [
     App::Powermove,
     App::DegenMediaStudio,
     App::DegenPaint,
+    App::Octaweave,
 ];
+
+/// Resolve one executable exactly as Bash would search `PATH`.
+#[must_use]
+pub fn command_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
 
 /// Every target and whether it is present, for a report header and for skip
 /// decisions.

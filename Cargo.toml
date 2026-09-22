@@ -43,6 +43,7 @@ http = "1"
 bytes = "1"
 zeroize = "1"
 security-framework = "3"
+axum = "0.8"
 # The login Keychain's Linux twin: whatever owns `org.freedesktop.secrets`
 # on the session bus. `rt-tokio-crypto-rust` points its I/O at the reactor
 # the rest of the workspace already runs on and keeps the session's
@@ -97,6 +98,7 @@ neo-keys = { path = "crates/neo-keys" }
 neo-core = { path = "crates/neo-core" }
 neo-eval = { path = "crates/neo-eval" }
 neo-agent = { path = "crates/neo-agent" }
+tokio-stream = { version = "0.1", features = ["sync"] }
 neo-ax = { path = "crates/neo-ax" }
 neo-judge = { path = "crates/neo-judge" }
 neo-store = { path = "crates/neo-store" }
@@ -104,7 +106,7 @@ neo-tui = { path = "crates/neo-tui" }
 neo-otel = { path = "crates/neo-otel" }
 neo-voice = { path = "crates/neo-voice" }
 jev-nav = { path = "crates/jev-nav" }
-spice-framework = "0.2"
+spice-framework = { git = "https://github.com/rust4ai/spice.git", tag = "v0.3.0", features = ["jev"] }
 metalcraft = { version = "1.2.0", features = ["rig"] }
 # `macos-private-api` stays on the desktop package rather than this workspace
 # dependency: no other Tauri consumer needs it. Tauri validates dependency

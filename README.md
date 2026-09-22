@@ -4,11 +4,10 @@ Starkbot Neo is a local-first desktop agent in active development, running on
 macOS and, as of the Linux port, on Linux too. It drives a browser over CDP and
 native apps over the platform accessibility API — macOS Accessibility, AT-SPI on
 Linux — with the Jev navigator, a classifier that answers one operation head, one
-target head and the safety heads per step, and puts that loop behind an agent that
-takes work by voice or text. The product it is being built into is a go-to-market
-marketing and media harness: SEO and GTM workflows on the web, and media made by
-operating real media apps rather than by generating files itself. It is not a shell
-or coding agent; there is no `bash` tool and no general file access.
+target head and the safety heads per step, and puts that loop behind a
+Metalcraft ReAct agent that takes work by voice or text. Its tool registry
+includes Bash for local CLI, repository, and file work alongside Neo's Jev
+browser and accessibility tools.
 
 Status, as observed in this tree rather than as planned:
 
@@ -20,11 +19,11 @@ Status, as observed in this tree rather than as planned:
   except the Apple signing identity, which is still waiting on the user
   (00-decisions, *Still open* #1) and is what M1 is formally blocked on.
 - M3's web navigator runs, the accessibility path with it (`neo nav`,
-  `neo app`), together with a slice of M5: a streaming ReAct agent loop over
-  the `browse`, `app` and `ax` tools.
-- M4's deterministic rules, Jev safety heads, confirmation queue and
-  user-question cards are live in both interactive front ends. A tripped action
-  pauses for approval instead of silently proceeding or ending the run.
+  the `neo app` path), and the same tools are registered on the Metalcraft
+  Conversation loop.
+- M4's deterministic rules, Jev safety heads, confirmation queue, user-question
+  cards, streaming Metalcraft trace, and Spice evaluation adapter are live.
+  Project heartbeats use that same loop and run Bash from the project root.
 - Voice is push-to-talk in the terminal and start/stop dictation in the GUI;
   transcripts are editable before sending. There is no speech out.
 - Media through apps, packs and the GTM workflows are unbuilt.
@@ -191,6 +190,17 @@ cargo run -- tui                      # terminal front end, full agent loop
 cargo run -- nav https://example.com "click the More information link"
 cargo run -- app com.apple.Numbers "pick the Blank template"
 ```
+
+Spice evaluations have a local Axum dashboard:
+
+```sh
+cargo run -- eval-ui                # http://127.0.0.1:3030
+```
+
+It lists every case and its machine availability. A run shows live Metalcraft
+steps, the persisted per-turn trajectory, deterministic assertions, and the
+final Jev score or provider error. The listener is local-only by default; use
+`--host` and `--port` explicitly to change it.
 
 Projects keep standing context in `soul.md`, recurring work in
 `heartbeat.md`, and an independent heartbeat clock (four hours by default):

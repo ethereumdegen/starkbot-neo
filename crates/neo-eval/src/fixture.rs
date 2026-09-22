@@ -347,8 +347,8 @@ fn open_text_document() -> Result<std::path::PathBuf, ProbeError> {
     Ok(path)
 }
 
-/// Hand one fixed path to `/usr/bin/open`. Harness code: the model cannot
-/// reach it, so P3's "no command execution" is about the agent, not this.
+/// Hand one fixed path to `/usr/bin/open`. This is deterministic harness setup,
+/// not a model-selected Metalcraft tool call.
 fn open_path(path: &std::path::Path) -> Result<(), ProbeError> {
     let status = std::process::Command::new("/usr/bin/open")
         .arg(path)

@@ -279,7 +279,11 @@ impl Observer for AxObserver {
                 .and_then(|index| table.guard_for(index))
             {
                 Some(guard) => guard,
-                None => return Ok(Some("that element is not in the current observation".into())),
+                None => {
+                    return Ok(Some(
+                        "that element is not in the current observation".into(),
+                    ));
+                }
             },
             None => table.guard_window(),
         };

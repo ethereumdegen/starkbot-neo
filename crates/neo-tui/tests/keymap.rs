@@ -73,6 +73,50 @@ fn slash_commands_open_pages_and_q_returns_to_chat() {
 }
 
 #[test]
+fn evals_opens_an_index_then_runs_the_selected_mode_in_mind() {
+    let mut state = common::state();
+    assert_eq!(run_line(&mut state, "evals"), Some(Command::EvalList));
+
+    let cases = neo_eval::list_cases();
+    let runnable = cases
+        .iter()
+        .position(neo_eval::CaseListing::runnable)
+        .expect("this test machine has at least the browser cases");
+    let id = cases[runnable].id.clone();
+    state.show_evals(cases);
+    state.eval_row = runnable;
+    assert_eq!(state.focus, Pane::Evals);
+    assert!(!state.eval_detail);
+
+    assert_eq!(feed(&mut state, press(KeyCode::Enter)), None);
+    assert!(state.eval_detail);
+    assert_eq!(feed(&mut state, press(KeyCode::Left)), None);
+    assert!(!state.eval_detail, "Back returns to the test index");
+
+    feed(&mut state, press(KeyCode::Enter));
+    feed(&mut state, press(KeyCode::Char('j')));
+    assert_eq!(
+        feed(&mut state, press(KeyCode::Enter)),
+        Some(Command::Eval {
+            selection: Selection {
+                filter: None,
+                exact_id: Some(id),
+                tags: Vec::new(),
+                once: false,
+            },
+        })
+    );
+    state.start_run(common::run_id(99), RunKind::Eval, "selected case");
+    assert_eq!(feed(&mut state, press(KeyCode::Enter)), None);
+    assert!(
+        state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("already running"))
+    );
+}
+
+#[test]
 fn project_page_opens_a_project_and_edits_its_clock() {
     let mut state = common::state();
     state.projects.push(common::project());
@@ -531,6 +575,7 @@ fn eval_parses_its_selection_and_refuses_a_second_concurrent_suite() {
         Some(Command::Eval {
             selection: Selection {
                 filter: Some("numbers".into()),
+                exact_id: None,
                 tags: vec!["browser".into(), "known-gap".into()],
                 once: true,
             }

@@ -179,7 +179,10 @@ fn header_line(state: &State) -> Paragraph<'_> {
     let idle = Style::new().fg(GREY);
     if state.view == View::Panes && state.focus == Pane::Conversation {
         spans.push(Span::styled("chat", active));
-        spans.push(Span::styled("  /project · /model · /login · /help", idle));
+        spans.push(Span::styled(
+            "  /project · /evals · /model · /login · /help",
+            idle,
+        ));
     } else {
         spans.push(Span::styled("Esc/q chat", idle));
         spans.push(Span::styled("  ", idle));
@@ -188,6 +191,7 @@ fn header_line(state: &State) -> Paragraph<'_> {
             (View::Settings, _, Some(Section::Connections)) => "login",
             (View::Settings, _, _) => "settings",
             (_, Pane::Projects, _) => "projects",
+            (_, Pane::Evals, _) => "evals",
             (_, Pane::Runs, _) => "runs",
             (_, Pane::Mind, _) if state.selected_run.is_some() => "mind",
             (_, Pane::Mind, _) => "activity",
@@ -230,6 +234,12 @@ fn pane_title(state: &State, pane: Pane) -> String {
                 format!(" Project · {} ", project.name)
             }
             _ => format!(" Projects ({}) ", state.projects.len()),
+        },
+        Pane::Evals => match state.eval_cases.get(state.eval_row) {
+            Some(case) if state.eval_detail => {
+                format!(" Eval · {} ", case.name.as_deref().unwrap_or(&case.id))
+            }
+            _ => format!(" Evals ({}) ", state.eval_cases.len()),
         },
     }
 }
@@ -282,6 +292,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &State, pane: Pane) -> Opti
             Pane::Runs => runs_lines(state),
             Pane::Mind => mind_lines(state),
             Pane::Projects => project_lines(state),
+            Pane::Evals => eval_lines(state),
             Pane::Conversation => Vec::new(),
         };
         frame.render_widget(
@@ -413,6 +424,133 @@ fn project_lines(state: &State) -> Vec<Line<'static>> {
         "j/k moves · Enter opens · Esc/q chat",
         Style::new().fg(GREY),
     ));
+    lines
+}
+
+fn eval_lines(state: &State) -> Vec<Line<'static>> {
+    let Some(selected) = state.eval_cases.get(state.eval_row) else {
+        return vec![
+            Line::styled("No evaluation tests are available.", Style::new().fg(GREY)),
+            Line::styled("Esc/q returns to chat.", Style::new().fg(GREY)),
+        ];
+    };
+    if state.eval_detail {
+        let control = |row: usize, label: String| {
+            Line::styled(
+                format!(
+                    "{} {label}",
+                    if row == state.eval_mode_row {
+                        "▸"
+                    } else {
+                        " "
+                    }
+                ),
+                if row == state.eval_mode_row {
+                    Style::new().fg(Color::Cyan).bold()
+                } else {
+                    Style::new()
+                },
+            )
+        };
+        let mut lines = vec![
+            Line::styled(
+                selected.name.clone().unwrap_or_else(|| selected.id.clone()),
+                Style::new().fg(Color::Cyan).bold(),
+            ),
+            Line::styled(
+                format!(
+                    "{} · {} · {}",
+                    selected.app.label(),
+                    if selected.runnable() {
+                        "ready"
+                    } else {
+                        "not installed"
+                    },
+                    selected.tags.join(" ")
+                ),
+                Style::new().fg(GREY),
+            ),
+            Line::raw(""),
+            Line::styled("User turn", Style::new().bold()),
+            Line::raw(selected.message.clone()),
+        ];
+        for judge in &selected.judges {
+            lines.extend([
+                Line::raw(""),
+                Line::styled(
+                    format!("Jev rubric · threshold {:.0}%", judge.threshold * 100.0),
+                    Style::new().fg(Color::Yellow).bold(),
+                ),
+                Line::raw(judge.rubric.clone()),
+            ]);
+        }
+        if selected.judges.is_empty() {
+            lines.extend([
+                Line::raw(""),
+                Line::styled("Deterministic assertions only", Style::new().fg(GREY)),
+            ]);
+        }
+        lines.extend([
+            Line::raw(""),
+            Line::styled("Run", Style::new().bold()),
+            control(0, "Run once".to_owned()),
+            control(
+                1,
+                match (selected.consensus_required, selected.consensus_runs) {
+                    (Some(required), Some(runs)) => {
+                        format!("Run consensus ({required} of {runs} required)")
+                    }
+                    _ => "Run consensus".to_owned(),
+                },
+            ),
+            Line::raw(""),
+            Line::styled(
+                "j/k moves · Enter starts and opens its turn trace · Backspace/← index · Esc/q chat",
+                Style::new().fg(GREY),
+            ),
+        ]);
+        return lines;
+    }
+
+    let mut lines = vec![
+        Line::styled("Select a test and press Enter.", Style::new().fg(GREY)),
+        Line::raw(""),
+    ];
+    for (index, case) in state.eval_cases.iter().enumerate() {
+        let selected = index == state.eval_row;
+        lines.push(Line::styled(
+            format!(
+                "{} {}",
+                if selected { "▸" } else { " " },
+                case.name.as_deref().unwrap_or(&case.id)
+            ),
+            if selected {
+                Style::new().fg(Color::Cyan).bold()
+            } else {
+                Style::new()
+            },
+        ));
+        lines.push(Line::styled(
+            format!(
+                "  {} · {} · {}",
+                case.app.label(),
+                if case.runnable() {
+                    "ready"
+                } else {
+                    "not installed"
+                },
+                case.tags.join(" ")
+            ),
+            Style::new().fg(GREY),
+        ));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled(
+            "j/k moves · Enter opens · Esc/q chat",
+            Style::new().fg(GREY),
+        ),
+    ]);
     lines
 }
 
@@ -872,7 +1010,7 @@ fn composer_line(state: &State) -> Paragraph<'_> {
     ];
     if typed.is_empty() {
         let hint = match state.mode {
-            Mode::Command => "Tab completes · try project, model, login, sessions",
+            Mode::Command => "Tab completes · try project, evals, model, login, sessions",
             Mode::Insert => state.composer_hint(),
             Mode::Normal | Mode::Card => "/ opens commands · i starts typing",
         };

@@ -4,7 +4,7 @@ import type { KeyRow, KeyState } from "../bridge/api";
 import { Pill, type Tone } from "./Pill";
 
 const STATE: Record<KeyState, { tone: Tone; label: string }> = {
-  present: { tone: "ok", label: "Present" },
+  present: { tone: "ok", label: "Stored" },
   limited: { tone: "warn", label: "Limited" },
   invalid: { tone: "fail", label: "Rejected" },
   unchecked: { tone: "unknown", label: "Unchecked" },

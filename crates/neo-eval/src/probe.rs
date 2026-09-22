@@ -58,6 +58,10 @@ pub enum Probe {
     /// only mutation path and leaves side channels read-only. The agent still
     /// has to have *operated the Studio* to change what this returns.
     Grounding { app: String, base: String },
+    /// Where an executable resolves from the same `PATH` the agent inherits.
+    CommandPath { app: String, command: String },
+    /// The current columns and cards of one Octaweave project.
+    OctaweaveProject { app: String, project: String },
 }
 
 impl Probe {
@@ -81,6 +85,14 @@ impl Probe {
                 app,
                 base: probe.get("base").and_then(Value::as_str)?.to_owned(),
             }),
+            "command_path" => Some(Self::CommandPath {
+                app,
+                command: probe.get("command").and_then(Value::as_str)?.to_owned(),
+            }),
+            "octaweave_project" => Some(Self::OctaweaveProject {
+                app,
+                project: probe.get("project").and_then(Value::as_str)?.to_owned(),
+            }),
             _ => None,
         }
     }
@@ -100,6 +112,18 @@ impl Probe {
             Self::Grounding { app, base } => {
                 json!({ "probe": { "kind": "grounding", "app": app, "base": base } })
             }
+            Self::CommandPath { app, command } => {
+                json!({ "probe": { "kind": "command_path", "app": app, "command": command } })
+            }
+            Self::OctaweaveProject { app, project } => {
+                json!({
+                    "probe": {
+                        "kind": "octaweave_project",
+                        "app": app,
+                        "project": project
+                    }
+                })
+            }
         }
     }
 
@@ -110,7 +134,9 @@ impl Probe {
             | Self::Cell { app, .. }
             | Self::Surface { app }
             | Self::Page { app, .. }
-            | Self::Grounding { app, .. } => app,
+            | Self::Grounding { app, .. }
+            | Self::CommandPath { app, .. }
+            | Self::OctaweaveProject { app, .. } => app,
         }
     }
 }
@@ -270,6 +296,38 @@ pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeE
     if let Probe::Grounding { app, base } = probe {
         return read_grounding(app, base).await;
     }
+    if let Probe::CommandPath { command, .. } = probe {
+        let path = crate::apps::command_path(command).ok_or_else(|| {
+            ProbeError::Command(format!("`{command}` is not installed or is not on PATH"))
+        })?;
+        return Ok(json!({
+            "command": command,
+            "path": path,
+        }));
+    }
+    if let Probe::OctaweaveProject { project, .. } = probe {
+        let executable = crate::apps::command_path("octaweave").ok_or_else(|| {
+            ProbeError::Command("`octaweave` is not installed or is not on PATH".to_owned())
+        })?;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new(executable)
+                .args(["project", "get", project, "--compact"])
+                .output(),
+        )
+        .await
+        .map_err(|_| ProbeError::Command("`octaweave project get` timed out".to_owned()))?
+        .map_err(|error| ProbeError::Command(error.to_string()))?;
+        if !output.status.success() {
+            return Err(ProbeError::Command(format!(
+                "`octaweave project get` exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        return serde_json::from_slice(&output.stdout)
+            .map_err(|error| ProbeError::Command(format!("invalid Octaweave JSON: {error}")));
+    }
     if !AxHandle::trusted() {
         return Err(ProbeError::NotTrusted);
     }
@@ -387,6 +445,10 @@ pub async fn run_probe(runtime: &Runtime, probe: &Probe) -> Result<Value, ProbeE
         // Both answered above, before the accessibility handle was taken.
         Probe::Page { url, .. } => crate::pages::read_state(runtime.data_dir(), url).await,
         Probe::Grounding { app, base } => read_grounding(app, base).await,
+        Probe::CommandPath { .. } => unreachable!("command probes return before accessibility"),
+        Probe::OctaweaveProject { .. } => {
+            unreachable!("Octaweave probes return before accessibility")
+        }
     }
 }
 
@@ -417,6 +479,8 @@ pub enum ProbeError {
     Fixtures(String),
     #[error("could not read the page back: {0}")]
     Browser(String),
+    #[error("could not resolve the command: {0}")]
+    Command(String),
 }
 
 #[cfg(test)]
@@ -441,6 +505,14 @@ mod tests {
             Probe::Page {
                 app: "com.google.Chrome".into(),
                 url: "http://127.0.0.1:8787/nav-state.html".into(),
+            },
+            Probe::CommandPath {
+                app: "Octaweave CLI".into(),
+                command: "octaweave".into(),
+            },
+            Probe::OctaweaveProject {
+                app: "Octaweave CLI".into(),
+                project: "starkbot-neo".into(),
             },
         ] {
             let config = AgentConfig {

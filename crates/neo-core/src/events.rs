@@ -168,13 +168,14 @@ pub struct ModelRegistryView {
     pub models: Vec<crate::ModelInfo>,
 }
 
-/// Which of the four things a step did, as a value a front end can switch on
-/// rather than a sentence it has to parse.
+/// Which kind of action a step performed, as a value a front end can switch
+/// on rather than a sentence it has to parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     Browse,
     App,
+    Bash,
     Answer,
     Ask,
 }
@@ -189,12 +190,11 @@ pub enum ActionKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionSummary {
     pub kind: ActionKind,
-    /// The URL or the application named; `None` for `answer` and `ask`.
+    /// The URL, application, or shell command; `None` for `answer` and `ask`.
     pub target: Option<String>,
-    /// The one-sentence outcome asked of the surface; `None` for `answer` and
-    /// `ask`.
+    /// The requested outcome or command intent; `None` for `answer` and `ask`.
     pub goal: Option<String>,
-    /// The answer, or the question; `None` for `browse` and `app`.
+    /// The answer, or the question; `None` for surface and command tools.
     pub text: Option<String>,
 }
 
@@ -210,6 +210,10 @@ impl fmt::Display for ActionSummary {
                 let target = self.target.as_deref().unwrap_or("?");
                 let goal = self.goal.as_deref().unwrap_or("?");
                 write!(formatter, "{verb} {target} — {goal}")
+            }
+            ActionKind::Bash => {
+                let command = self.target.as_deref().unwrap_or("?");
+                write!(formatter, "bash {command}")
             }
             ActionKind::Answer => formatter.write_str("answer"),
             ActionKind::Ask => formatter.write_str("ask the user"),

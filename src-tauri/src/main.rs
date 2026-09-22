@@ -48,6 +48,26 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
+    let eval_listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("neo-desktop: could not bind the built-in Spice Lab: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let eval_address = match eval_listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => {
+            eprintln!("neo-desktop: could not read the Spice Lab address: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    if let Err(error) = eval_listener.set_nonblocking(true) {
+        eprintln!("neo-desktop: could not prepare the built-in Spice Lab: {error}");
+        return std::process::ExitCode::from(2);
+    }
+    let eval_ui = state::EvalUi::new(eval_address);
+    eprintln!("neo-desktop: Spice Lab listening at {}", eval_ui.url());
     eprintln!("neo-desktop: runtime open at {}", data_dir.display());
     // Derived once, from the directory the runtime was opened on: a
     // `--data-dir` window and the default one are different agents, and each
@@ -57,6 +77,7 @@ fn main() -> std::process::ExitCode {
 
     let app = tauri::Builder::default()
         .manage(desktop)
+        .manage(eval_ui)
         .manage(voice::Voice::default())
         .manage(window_mode::WindowMode::default())
         .manage(mode_control::ModeControl::default())
@@ -77,6 +98,7 @@ fn main() -> std::process::ExitCode {
             mode_control::complete_window_mode,
             commands::list_projects,
             commands::create_project,
+            commands::delete_project,
             commands::show_project,
             commands::save_project_document,
             commands::configure_project_heartbeat,
@@ -111,6 +133,7 @@ fn main() -> std::process::ExitCode {
             commands::run_app_goal,
             commands::run_ax,
             commands::list_eval_cases,
+            commands::eval_ui_url,
             commands::run_eval,
         ])
         .setup(move |app| {
@@ -123,6 +146,20 @@ fn main() -> std::process::ExitCode {
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = scheduler.start_heartbeat_scheduler().await {
                     eprintln!("neo-desktop: heartbeat scheduler stopped: {error}");
+                }
+            });
+            let eval_runtime = runtime.clone();
+            tauri::async_runtime::spawn(async move {
+                let eval_listener = match tokio::net::TcpListener::from_std(eval_listener) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        eprintln!("neo-desktop: built-in Spice Lab could not start: {error}");
+                        return;
+                    }
+                };
+                if let Err(error) = neo_eval::web::serve_listener(eval_runtime, eval_listener).await
+                {
+                    eprintln!("neo-desktop: built-in Spice Lab stopped: {error}");
                 }
             });
             events::forward(app.handle().clone(), &runtime);

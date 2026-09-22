@@ -397,6 +397,36 @@ fn project_command_opens_index_and_configurable_detail_page() {
 }
 
 #[test]
+fn eval_menu_replaces_its_index_with_the_selected_test() {
+    let mut state = common::state();
+    let cases = neo_eval::list_cases();
+    let first = cases[0].name.as_deref().unwrap_or(&cases[0].id).to_owned();
+    let second = cases[1].name.as_deref().unwrap_or(&cases[1].id).to_owned();
+    state.show_evals(cases);
+
+    let index = common::render(&state, 100, 32);
+    assert!(index.contains(&first));
+    assert!(index.contains(&second));
+    assert!(!index.contains("Run once"));
+
+    press(&mut state, KeyCode::Enter);
+    let detail = common::render(&state, 100, 32);
+    for expected in [
+        "User turn",
+        "Run once",
+        "Run consensus",
+        "Backspace/← index",
+    ] {
+        assert!(detail.contains(expected), "missing {expected}\n{detail}");
+    }
+    assert!(detail.contains(&first));
+    assert!(
+        !detail.contains(&second),
+        "the test index remained visible behind the show page"
+    );
+}
+
+#[test]
 fn the_settings_view_renders_the_four_k6_paths_and_the_doctor_facts() {
     let mut state = common::state();
     open_settings(&mut state);

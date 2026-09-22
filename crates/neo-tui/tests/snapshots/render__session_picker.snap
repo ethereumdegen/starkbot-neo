@@ -2,7 +2,7 @@
 source: crates/neo-tui/tests/render.rs
 expression: frame
 ---
-Stark  ○ NO MIC YET  v dictates   chat  /project · /model · /login · /help
+Stark  ○ NO MIC YET  v dictates   chat  /project · /evals · /model · /login · /help
 Ask Starkbot to do something in an app or on the web.
 Type a message and press Enter · / opens commands
 
@@ -51,7 +51,7 @@ fg=Cyan bg=Reset mod=NONE  ┌ Conversations ───────────�
 fg=Cyan bg=Reset mod=NONE  └ j k moves · Enter opens · Ctrl-N new · /rename retitles · Esc closes ────────┘
 fg=Cyan bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 fg=Cyan bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-fg=DarkGray bg=Reset mod=NONE  /project · /model · /login · /help
+fg=DarkGray bg=Reset mod=NONE  /project · /evals · /model · /login · /help
 fg=DarkGray bg=Reset mod=NONE  2026-09-18 09:41 UTC
 fg=DarkGray bg=Reset mod=NONE  2026-09-18 17:02 UTC
 fg=DarkGray bg=Reset mod=NONE  2026-09-19 08:14 UTC

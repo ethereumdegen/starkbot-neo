@@ -7,6 +7,7 @@ import {
   onLoginFailed,
   type BootstrapView,
   type Fix,
+  type KeyRow,
 } from "../bridge/api";
 import { DoctorList } from "../components/DoctorList";
 import { KeyCard } from "../components/KeyCard";
@@ -37,17 +38,29 @@ export function Connections() {
    */
   const verify = useCallback(async (painted: BootstrapView) => {
     try {
-      const [connections, openai, anthropic] = await Promise.all([
+      const storedTypeSafe = painted.keys.find(
+        (row) => row.account === "typesafe" && row.state !== "missing",
+      );
+      const [connections, openai, anthropic, typeSafe] = await Promise.all([
         api.connections(),
         api.listModels("openai"),
         api.listModels("anthropic"),
+        storedTypeSafe === undefined ? Promise.resolve(null) : api.checkKey("typesafe"),
       ]);
       const changed = connections.some(
         (row, index) => row.status !== painted.connections[index]?.status,
       );
       // A verification that moved a row also moved the store, so the rest of
       // the screen (runtime options, doctor) needs re-reading with it.
-      setBoot(changed ? await api.getBootstrap() : { ...painted, connections });
+      const refreshed = changed ? await api.getBootstrap() : { ...painted, connections };
+      setBoot(
+        typeSafe === null
+          ? refreshed
+          : {
+              ...refreshed,
+              keys: refreshed.keys.map((row) => (row.account === typeSafe.account ? typeSafe : row)),
+            },
+      );
       setModels({ openai: openai.length, anthropic: anthropic.length });
     } catch (thrown) {
       setBanner({ tone: "warn", text: errorOf(thrown).message });
@@ -58,11 +71,23 @@ export function Connections() {
    * Paint from the store: `get_bootstrap` touches no credential, so the
    * window is up immediately. Verification follows on its own.
    */
-  const refresh = useCallback(async () => {
-    const painted = await api.getBootstrap();
-    setBoot(painted);
-    void verify(painted);
-  }, [verify]);
+  const refresh = useCallback(
+    async (checked?: KeyRow) => {
+      const bootstrap = await api.getBootstrap();
+      const painted =
+        checked === undefined
+          ? bootstrap
+          : {
+              ...bootstrap,
+              keys: bootstrap.keys.map((row) =>
+                row.account === checked.account ? checked : row,
+              ),
+            };
+      setBoot(painted);
+      void verify(painted);
+    },
+    [verify],
+  );
 
   /** One place where a command's failure becomes something the user can read. */
   const run = useCallback(
@@ -314,15 +339,27 @@ export function Connections() {
                 onSave={(value) =>
                   run(async () => {
                     const saved = await api.setKey(row.account, value);
-                    setBanner({ tone: "ok", text: `${saved.label}: ${saved.state}.` });
-                    await refresh();
+                    const tone =
+                      saved.state === "invalid"
+                        ? "fail"
+                        : saved.state === "present"
+                          ? "ok"
+                          : "warn";
+                    setBanner({ tone, text: `${saved.label}: ${saved.state}.` });
+                    await refresh(saved);
                   })
                 }
                 onCheck={() =>
                   void run(async () => {
                     const checked = await api.checkKey(row.account);
-                    setBanner({ tone: "ok", text: `${checked.label}: ${checked.state}.` });
-                    await refresh();
+                    const tone =
+                      checked.state === "invalid"
+                        ? "fail"
+                        : checked.state === "present"
+                          ? "ok"
+                          : "warn";
+                    setBanner({ tone, text: `${checked.label}: ${checked.state}.` });
+                    await refresh(checked);
                   })
                 }
                 onRemove={() =>

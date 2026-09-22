@@ -45,6 +45,7 @@ pub async fn run(data_dir: Option<PathBuf>, options: EvalOptions) -> Result<()> 
 
     let selection = Selection {
         filter: options.filter,
+        exact_id: None,
         tags: options.tags,
         once: options.once,
     };

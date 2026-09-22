@@ -20,7 +20,7 @@ use neo_agent::doctor::DoctorReport;
 use neo_agent::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthProvider};
 use neo_agent::runtime::{Bootstrap, LoginHandle, Runtime, RuntimeError};
 use neo_core::{Envelope, RunId};
-use neo_eval::Selection;
+use neo_eval::{Selection, SuiteReport};
 use neo_voice::{Microphone, Transcriber};
 use ratatui::backend::Backend;
 use ratatui::{DefaultTerminal, Terminal};
@@ -31,7 +31,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::keys::{Action, KeyMap};
 use crate::runs::RunKind;
-use crate::state::{Command, Login, LoginPhase, NavSpec, SessionRow, State, key_label, plan_title};
+use crate::state::{
+    Command, Login, LoginPhase, Mode, NavSpec, Pane, SessionRow, State, View, key_label, plan_title,
+};
 use crate::ui;
 
 /// How often this process refreshes its roster row and its leases. A third of
@@ -305,6 +307,7 @@ enum Chore {
         ticks: Vec<neo_core::HeartbeatTick>,
         note: Option<String>,
     },
+    EvalCases(Vec<neo_eval::CaseListing>),
 }
 
 /// Work started from a keystroke and answered later.
@@ -851,6 +854,7 @@ fn poll_chores(state: &mut State, chores: &mut Chores) {
                     state.note(note);
                 }
             }
+            Chore::EvalCases(cases) => state.show_evals(cases),
         }
     }
 }
@@ -1076,7 +1080,19 @@ fn dispatch<B: Backend>(
         Command::AppGoal { app, goal } => app_goal(runtime, state, context, app, goal),
         Command::Ax { request } => ax(runtime, state, context, request),
         Command::Eval { selection } => eval(runtime, state, context, selection),
-        Command::EvalList => eval_list(state),
+        Command::EvalList => {
+            spawn_chore(
+                &context.chores,
+                state,
+                "evals — loading the test index",
+                async {
+                    match tokio::task::spawn_blocking(neo_eval::list_cases).await {
+                        Ok(cases) => Chore::EvalCases(cases),
+                        Err(error) => Chore::Said(format!("eval index could not load: {error}")),
+                    }
+                },
+            );
+        }
         // Every doctor check is local, but "local" is not "instant": with no
         // OpenAI key stored, the dictation row asks macOS whether the
         // microphone, Siri dictation and speech recognition are available,
@@ -1592,22 +1608,28 @@ fn eval(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, selection
         if selection.once { " · once" } else { "" }
     );
     state.start_run(run, RunKind::Eval, title);
+    state.view = View::Panes;
+    state.focus = Pane::Mind;
+    state.mode = Mode::Normal;
+    state.selected_run = Some(run);
+    state.follow[Pane::Mind.index()] = true;
+    state.scroll[Pane::Mind.index()] = 0;
     state.note("one case at a time — they share the keyboard and the frontmost app");
     let handle = Arc::clone(runtime);
+    let case_id = selection.exact_id.clone();
     context.jobs.spawn(run, move |cancel| async move {
+        let existing_traces = case_id
+            .as_deref()
+            .map_or(0, |case| neo_eval::saved_traces(&handle, case).len());
         match neo_eval::run_suite(&handle, selection, run, &cancel).await {
             Ok(report) => {
-                let detail = report
-                    .tests
-                    .iter()
-                    .map(|test| {
-                        format!(
-                            "{} {}",
-                            if test.passed { "pass" } else { "FAIL" },
-                            test.test_id
-                        )
-                    })
-                    .collect();
+                let traces = case_id.as_deref().map_or_else(Vec::new, |case| {
+                    neo_eval::saved_traces(&handle, case)
+                        .into_iter()
+                        .skip(existing_traces)
+                        .collect()
+                });
+                let detail = eval_detail(&report, &traces);
                 Ok((
                     detail,
                     format!(
@@ -1621,30 +1643,82 @@ fn eval(runtime: &Arc<Runtime>, state: &mut State, context: &mut Loop, selection
     });
 }
 
-/// What `neo eval --list` prints: every case and whether this machine can run
-/// it, without spending a token. Not a run, so it goes to the event ring the
-/// Mind pane falls back to rather than into the runs list.
-fn eval_list(state: &mut State) {
-    for (app, installed) in neo_eval::availability() {
-        state.note(format!(
-            "{} {}",
-            app.label(),
-            installed.map_or_else(
-                || "not installed — its cases are skipped".to_owned(),
-                |path| path.display().to_string()
-            )
-        ));
+/// A completed eval in the Mind pane reads like the conversation that
+/// produced it: turn text, tool calls/results, final answer, then grading.
+fn eval_detail(report: &SuiteReport, traces: &[serde_json::Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (attempt, trace) in traces.iter().enumerate() {
+        lines.push(format!("attempt {}", attempt + 1));
+        let output = &trace["output"];
+        if let Some(turns) = output["turns"].as_array() {
+            for turn in turns {
+                let index = turn["index"].as_u64().unwrap_or(0) + 1;
+                lines.push(format!("turn {index}"));
+                if let Some(text) = turn["output_text"].as_str()
+                    && !text.is_empty()
+                {
+                    lines.push(format!("  agent  {}", clipped(text, 1_000)));
+                }
+                if let Some(calls) = turn["tool_calls"].as_array() {
+                    for call in calls {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        lines.push(format!(
+                            "  tool   {name} {}",
+                            compact_json(&call["arguments"], 700)
+                        ));
+                    }
+                }
+                if let Some(results) = turn["tool_results"].as_array() {
+                    for result in results {
+                        lines.push(format!("  result {}", compact_json(result, 700)));
+                    }
+                }
+            }
+        }
+        if let Some(answer) = output["final_text"].as_str()
+            && !answer.is_empty()
+        {
+            lines.push(format!("final answer  {}", clipped(answer, 1_500)));
+        }
     }
-    let cases = neo_eval::list_cases();
-    for case in &cases {
-        state.note(format!(
-            "{} {} [{}]",
-            if case.runnable() { "run " } else { "skip" },
-            case.id,
-            case.tags.join(" ")
-        ));
+    for test in &report.tests {
+        for judge in &test.judge_results {
+            lines.push(format!(
+                "Jev {} · {:.0}% / {:.0}% · {}",
+                if judge.passed { "pass" } else { "FAIL" },
+                judge.score * 100.0,
+                judge.threshold * 100.0,
+                clipped(&judge.reason, 800)
+            ));
+        }
+        for assertion in &test.assertion_results {
+            let detail = serde_json::to_value(assertion)
+                .map_or_else(|_| "{}".to_owned(), |value| compact_json(&value, 800));
+            lines.push(format!(
+                "assertion {} · {detail}",
+                if assertion.passed { "pass" } else { "FAIL" }
+            ));
+        }
+        if let Some(error) = test.error.as_deref() {
+            lines.push(format!("case error · {}", clipped(error, 800)));
+        }
     }
-    state.note(format!("{} case(s) — `/eval` runs them", cases.len()));
+    lines
+}
+
+fn compact_json(value: &serde_json::Value, limit: usize) -> String {
+    clipped(
+        &serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned()),
+        limit,
+    )
+}
+
+fn clipped(text: &str, limit: usize) -> String {
+    let mut clipped = text.chars().take(limit).collect::<String>();
+    if text.chars().count() > limit {
+        clipped.push('…');
+    }
+    clipped
 }
 
 /// A stored timestamp as a date and a minute, which is what a switcher row

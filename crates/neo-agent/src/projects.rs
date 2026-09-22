@@ -99,6 +99,12 @@ impl Runtime {
         Ok(self.store.projects().get(slug)?)
     }
 
+    /// Forget a project and its activity without deleting either project
+    /// document from the attached folder.
+    pub fn delete_project(&self, slug: &str) -> Result<(), ProjectError> {
+        Ok(self.store.projects().delete(slug)?)
+    }
+
     pub fn project_ticks(
         &self,
         slug: &str,
@@ -246,7 +252,8 @@ impl Runtime {
         let conversation = self.new_conversation(Some(format!("{} heartbeat", project.name)))?;
         let message = ChatMessage::user(prompt);
         self.record_message(conversation.id, &message, false)?;
-        let request = ChatRequest::new(conversation.id, vec![message]);
+        let request =
+            ChatRequest::new(conversation.id, vec![message]).with_cwd(PathBuf::from(&project.root));
         let gated = Arc::new(AtomicBool::new(false));
         let context = HeartbeatContext {
             gate: project.on_gate,

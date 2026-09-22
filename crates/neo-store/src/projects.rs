@@ -94,6 +94,21 @@ impl ProjectRepository {
         })
     }
 
+    /// Remove a project and its recorded heartbeat activity.
+    ///
+    /// The project documents live outside SQLite and are deliberately left
+    /// untouched: a root may be an existing folder the user attached.
+    pub fn delete(&self, slug: &str) -> Result<()> {
+        let slug = slug.to_owned();
+        self.writer.execute(move |connection| {
+            let changed = connection.execute("DELETE FROM projects WHERE slug = ?1", [&slug])?;
+            if changed == 0 {
+                return Err(StoreError::UnknownProject(slug));
+            }
+            Ok(())
+        })
+    }
+
     /// Enabled projects whose clock has reached `now`, oldest deadline first.
     pub fn due(&self, now: TimestampMs) -> Result<Vec<Project>> {
         self.readers.read(move |connection| {

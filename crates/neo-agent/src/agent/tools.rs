@@ -185,6 +185,8 @@ pub enum ToolError {
     Browser(String),
     #[error("could not drive `{app}`: {detail}")]
     App { app: String, detail: String },
+    #[error("could not run bash: {0}")]
+    Shell(String),
     /// The run was stopped on purpose. Distinct from every other failure
     /// because a front end must not show a stopped run as a broken one.
     #[error(transparent)]

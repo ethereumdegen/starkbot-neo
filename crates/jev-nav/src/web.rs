@@ -154,11 +154,15 @@ impl CdpObserver {
         {
             Err(error) if context_lost(&error) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation".into()))
+                Err(ObserveError::Stale(
+                    "document changed during evaluation".into(),
+                ))
             }
             Err(CdpError::Exception(_)) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation".into()))
+                Err(ObserveError::Stale(
+                    "document changed during evaluation".into(),
+                ))
             }
             other => Ok(other?),
         }
@@ -180,11 +184,13 @@ impl CdpObserver {
                     if let Some(frame_id) = action.get("frame_id").and_then(Value::as_str) {
                         self.frame_contexts.remove(frame_id);
                     }
-                    Err(ObserveError::Stale("frame changed during evaluation".into()))
+                    Err(ObserveError::Stale(
+                        "frame changed during evaluation".into(),
+                    ))
                 }
-                Err(CdpError::Exception(_)) => {
-                    Err(ObserveError::Stale("frame changed during evaluation".into()))
-                }
+                Err(CdpError::Exception(_)) => Err(ObserveError::Stale(
+                    "frame changed during evaluation".into(),
+                )),
                 other => Ok(other?),
             };
         }
@@ -196,11 +202,15 @@ impl CdpObserver {
         {
             Err(error) if context_lost(&error) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation".into()))
+                Err(ObserveError::Stale(
+                    "document changed during evaluation".into(),
+                ))
             }
             Err(CdpError::Exception(_)) => {
                 self.context_id = None;
-                Err(ObserveError::Stale("document changed during evaluation".into()))
+                Err(ObserveError::Stale(
+                    "document changed during evaluation".into(),
+                ))
             }
             other => Ok(other?),
         }
@@ -391,7 +401,9 @@ impl Observer for CdpObserver {
                 Ok(Value::Null) | Err(ObserveError::Stale(_)) if attempt < 9 => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                Ok(Value::Null) => return Err(ObserveError::Stale("document is navigating".into())),
+                Ok(Value::Null) => {
+                    return Err(ObserveError::Stale("document is navigating".into()));
+                }
                 Ok(mut observation) => {
                     if self.attachments.is_empty()
                         && let Some(actions) = observation["actions"].as_array_mut()
@@ -521,7 +533,9 @@ impl Observer for CdpObserver {
                     .get("local_node")
                     .or_else(|| action.get("node"))
                     .and_then(Value::as_u64)
-                    .ok_or(ObserveError::Stale("file input has no observed node".into()))?;
+                    .ok_or(ObserveError::Stale(
+                        "file input has no observed node".into(),
+                    ))?;
                 if self.attachments.is_empty() {
                     return Err(ObserveError::Stale("no attachment was supplied".into()));
                 }

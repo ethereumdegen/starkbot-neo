@@ -64,7 +64,7 @@ export * from "./generated";
 // not re-wrap it, so these types mirror `crates/neo-core/src/events.rs`.
 // ---------------------------------------------------------------------------
 
-export type ActionKind = "browse" | "app" | "answer" | "ask";
+export type ActionKind = "browse" | "app" | "bash" | "answer" | "ask";
 
 export interface ActionSummary {
   kind: ActionKind;
@@ -304,6 +304,7 @@ export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
   createProject: (name: string, root?: string) =>
     invoke<ProjectDetailView>("create_project", { name, root: root?.trim() || null }),
+  deleteProject: (slug: string) => invoke<Project[]>("delete_project", { slug }),
   showProject: (slug: string) => invoke<ProjectDetailView>("show_project", { slug }),
   saveProjectDocument: (slug: string, document: "soul.md" | "heartbeat.md", content: string) =>
     invoke<ProjectDetailView>("save_project_document", { slug, document, content }),
@@ -368,6 +369,7 @@ export const api = {
   runAx: (request: AxRequestView) => invoke<AxResponseView>("run_ax", { request }),
 
   // Eval.
+  evalUiUrl: () => invoke<string>("eval_ui_url"),
   listEvalCases: () => invoke<CaseListingView[]>("list_eval_cases"),
   runEval: (filter: string | null, tags: string[], once: boolean) =>
     invoke<RunId>("run_eval", { filter, tags, once }),

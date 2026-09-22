@@ -2,7 +2,7 @@
 source: crates/neo-tui/tests/render.rs
 expression: "common::render(&state, 120, 40)"
 ---
-Stark  ⊘ MUTED  MacBook Pro Microphone   chat  /project · /model · /login · /help
+Stark  ⊘ MUTED  MacBook Pro Microphone   chat  /project · /evals · /model · /login · /help
 Ask Starkbot to do something in an app or on the web.
 Type a message and press Enter · / opens commands
 
@@ -48,7 +48,7 @@ fg=Cyan bg=Reset mod=NONE  >
 fg=Cyan bg=Reset mod=NONE  │
 fg=Cyan bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 fg=Cyan bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-fg=DarkGray bg=Reset mod=NONE  /project · /model · /login · /help
+fg=DarkGray bg=Reset mod=NONE  /project · /evals · /model · /login · /help
 fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
 fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
 fg=DarkGray bg=Reset mod=NONE  INSERT │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/gpt-5.6-sol │ keys present │ account none

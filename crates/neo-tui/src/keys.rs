@@ -44,6 +44,8 @@ pub enum Action {
     LineCancel,
     OpenProject,
     ProjectBack,
+    OpenEval,
+    EvalBack,
     SelectNext,
     SelectPrevious,
     SelectFirst,
@@ -346,6 +348,13 @@ fn normal_key(key: KeyEvent, control: bool, state: &State) -> Action {
             KeyCode::Backspace | KeyCode::Left if state.project_detail.is_some() => {
                 return Action::ProjectBack;
             }
+            _ => {}
+        }
+    }
+    if state.focus == Pane::Evals {
+        match key.code {
+            KeyCode::Enter => return Action::OpenEval,
+            KeyCode::Backspace | KeyCode::Left if state.eval_detail => return Action::EvalBack,
             _ => {}
         }
     }

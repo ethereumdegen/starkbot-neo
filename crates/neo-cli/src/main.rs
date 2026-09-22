@@ -183,6 +183,15 @@ enum CommandKind {
         #[arg(long)]
         list: bool,
     },
+    /// Browse and run every Spice evaluation in a local web UI.
+    EvalUi {
+        /// Interface to listen on. The default is local-only.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// HTTP port.
+        #[arg(long, default_value_t = 3030)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -463,6 +472,14 @@ async fn run(
                 },
             )
             .await
+        }
+        CommandKind::EvalUi { host, port } => {
+            let runtime = std::sync::Arc::new(open_runtime(data_dir)?);
+            let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
+            let address = listener.local_addr()?;
+            println!("Starkbot Spice Lab: http://{address}");
+            neo_eval::web::serve_listener(runtime, listener).await?;
+            Ok(())
         }
         CommandKind::Models { command } => run_models(data_dir, command).await,
     }

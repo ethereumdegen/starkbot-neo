@@ -1,32 +1,15 @@
-//! The agent loop: a message from the user becomes work in real applications.
+//! The agent loop: a message from the user becomes one Metalcraft ReAct turn.
 //!
-//! One turn is a ReAct loop — show the model the conversation, take back
-//! either an answer or tool calls, run them, show it what they produced,
-//! repeat — and it is metalcraft's loop, not one written here. This module
-//! owns the *contract*: [`ChatRequest`] in, [`TurnOutcome`] out, and every
-//! step of the middle published as an [`AppEvent`] any number of front ends
-//! can watch. [`metal`] owns the mechanism.
+//! Neo owns the product-facing contract: [`ChatRequest`] in,
+//! [`TurnOutcome`] out, persisted Conversation rows, live [`AppEvent`]s,
+//! cancellation, steering, and the concrete tool registry. Metalcraft owns
+//! model/tool orchestration and streams tokens and graph events back through
+//! that contract.
 //!
-//! # Why metalcraft rather than one JSON action per step
-//!
-//! It used to be one strict-JSON action per step through `Runtime::ask_json`,
-//! which was the only primitive both subscription runtimes shared. That loop
-//! could not stream: the answer arrived whole, in one round trip, so a turn
-//! was a spinner followed by a wall of text. It also had no seam to reach a
-//! run that was already going, which is what made "let me correct that while
-//! you work" impossible, and it re-expressed every vendor's tool calling as a
-//! schema Neo maintained. metalcraft supplies all three — token events, a
-//! mailbox polled at every step boundary, and native tool calls — so the
-//! hand-rolled loop is gone rather than kept beside it.
-//!
-//! # What the model may do
-//!
-//! Only what P2′ and P3 allow: operate the browser, operate a native macOS
-//! application, read what an application is showing, or answer. There is no
-//! shell action, no file action and no "run this command" action. Every tool
-//! that touches an application goes through the same `jev-nav` policy, the
-//! same element budget and the same safety heads as `neo nav` — this module
-//! chooses *which* surface to drive, never *how* to drive it.
+//! Project heartbeats use the same loop with the project root as their working
+//! directory. The `bash` tool is part of the Metalcraft registry, so local
+//! programs such as Octaweave are discovered and invoked as ordinary CLIs
+//! rather than through dedicated adapters or a second agent process.
 
 use std::sync::Arc;
 
@@ -130,6 +113,12 @@ pub struct ChatRequest {
     /// is recorded against it.
     pub conversation: ConversationId,
     pub history: Vec<ChatMessage>,
+    /// Working directory for local command execution.
+    ///
+    /// Ordinary chat uses the user's home. A project run sets its own root,
+    /// so Metalcraft's `bash` tool starts in that repository or managed project
+    /// directory.
+    pub cwd: Option<std::path::PathBuf>,
     pub max_steps: usize,
     pub cancel: CancellationToken,
     /// The screen hold this turn runs inside, when it runs inside one.
@@ -152,6 +141,7 @@ impl ChatRequest {
             run: RunId::new(),
             conversation,
             history,
+            cwd: None,
             max_steps: DEFAULT_MAX_STEPS,
             cancel: CancellationToken::new(),
             screen: None,
@@ -161,6 +151,12 @@ impl ChatRequest {
     #[must_use]
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cwd(mut self, cwd: impl Into<std::path::PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
         self
     }
 
@@ -280,8 +276,8 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Fails when there is no key for the selected runtime, when the model
-    /// cannot be reached, or when a node of the graph fails.
+    /// Fails when the selected inference runtime cannot be prepared or the
+    /// Metalcraft graph or one of its tools fails.
     pub async fn chat(self: &Arc<Self>, req: ChatRequest) -> Result<TurnOutcome, AgentError> {
         let settings = self.settings()?;
         let runtime = Arc::clone(self);

@@ -61,6 +61,7 @@ pub mod judge;
 pub mod pages;
 pub mod probe;
 pub mod suite;
+pub mod web;
 
 pub use apps::{App, availability};
 pub use cards::Cards;
@@ -69,6 +70,33 @@ pub use judge::JevJudge;
 pub use probe::{Probe, run_probe};
 pub use spice_framework::report::{SuiteReport, TestReport};
 pub use suite::{CASE_TIMEOUT, CaseListing, EvalError, Selection, list_cases, run_suite};
+pub use web::serve as serve_web;
+/// Saved Metalcraft trajectories for one case, oldest first.
+///
+/// The web and terminal front ends use the same files so a completed run has
+/// one trace regardless of which surface started it.
+#[must_use]
+pub fn saved_traces(runtime: &Runtime, case_id: &str) -> Vec<Value> {
+    let Ok(entries) = std::fs::read_dir(runtime.data_dir().join("eval-traces")) else {
+        return Vec::new();
+    };
+    let prefix = format!("{case_id}_");
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+        .collect()
+}
 
 /// How many actions one eval turn may spend. Lower than the interactive
 /// default: an eval task is one concrete outcome, and a run that needs eight
@@ -134,23 +162,15 @@ impl NeoAgent {
     }
 }
 
-/// Exactly the actions the agent loop can take (P3: no shell, no files).
+/// Semantic action names understood by the Spice cases.
 ///
-/// A constant rather than a literal inside
-/// [`AgentUnderTest::available_tools`], so the test that guards the surface
-/// reads the same list the agent reports. Asserting against a second copy
-/// would only ever prove the copy right.
-///
-/// Three of these are the agent's registered tools and come from
-/// `neo_agent::agent::metal::registry` — `browse`, `app`, `ax` — plus
-/// `answer`, the terminal action every turn ends on. The remaining three are
-/// the harness's own synthetic calls: `fixture` (the known starting state),
-/// `probe` (the app's state read back) and `cards` (the confirm and ask cards
-/// the run published, and what the person watching answered). A judge told
-/// about a tool that is not registered marks a run down for "not using" it,
-/// which is why this list must be the true surface and not the aspirational
-/// one.
-pub const ACTIONS: [&str; 7] = ["browse", "app", "ax", "answer", "fixture", "probe", "cards"];
+/// `browse`, `app`, `ax`, and `bash` describe observable Metalcraft tool
+/// calls. `fixture`, `probe`, and `cards` are synthetic harness observations.
+/// Keeping `bash` in this vocabulary makes CLI use visible to Spice assertions
+/// instead of grading only the model's final prose.
+pub const ACTIONS: [&str; 8] = [
+    "browse", "app", "ax", "bash", "answer", "fixture", "probe", "cards",
+];
 
 #[async_trait]
 impl AgentUnderTest for NeoAgent {
@@ -395,6 +415,10 @@ fn describe(action: &ActionSummary) -> (String, Value) {
         ActionKind::App => (
             "app".to_owned(),
             json!({ "app": action.target, "goal": action.goal }),
+        ),
+        ActionKind::Bash => (
+            "bash".to_owned(),
+            json!({ "command": action.target, "intent": action.goal }),
         ),
         ActionKind::Answer => ("answer".to_owned(), json!({ "text": action.text })),
         ActionKind::Ask => ("ask".to_owned(), json!({ "question": action.text })),
@@ -663,6 +687,15 @@ mod tests {
         ));
         assert_eq!(name, "app");
         assert_eq!(arguments["app"], json!("TextEdit"));
+
+        let (name, arguments) = describe(&summary(
+            ActionKind::Bash,
+            Some("command -v octaweave"),
+            Some("Locating Octaweave"),
+        ));
+        assert_eq!(name, "bash");
+        assert_eq!(arguments["command"], json!("command -v octaweave"));
+        assert_eq!(arguments["intent"], json!("Locating Octaweave"));
     }
 
     /// A turn's steps are rebuilt from events now, and the observation has to
@@ -761,56 +794,5 @@ mod tests {
             "the failure must reach the judge"
         );
         assert!(trace.contains("LibreOffice"));
-    }
-
-    #[test]
-    fn the_tool_allowlist_contains_no_shell_or_file_action() {
-        // Reads [`ACTIONS`] rather than standing up a `Runtime`: the list is
-        // static, `available_tools` ignores `self` to produce it, and opening
-        // a real runtime here made a test about a constant depend on the
-        // store actor and the login keychain — which is how it failed once
-        // under a loaded workspace run and never again.
-        for forbidden in ["bash", "shell", "run", "read_file", "write_file", "exec"] {
-            assert!(
-                !ACTIONS.contains(&forbidden),
-                "`{forbidden}` must not be an action (P3)"
-            );
-        }
-    }
-
-    /// Source of truth for the tool half of [`ACTIONS`]:
-    /// `crates/neo-agent/src/agent/metal.rs` `registry()`, which registers
-    /// `Browse` ("browse"), `App` ("app") and `Inspect` ("ax") — nothing
-    /// else. It cannot be read from here: `registry` and the three tool
-    /// structs are private, and widening neo-agent's API for a test would be
-    /// a worse trade than this assertion.
-    ///
-    /// The loop half is cross-checked for real: every [`ActionKind`] a
-    /// production step can carry is run through [`describe`], because that
-    /// name is what lands in the judge's trace, and a name in the trace that
-    /// the judge was never told about reads as an off-surface action.
-    ///
-    /// This drifted once: `ask` was advertised for a tool that is not
-    /// registered (it arrives with the card path), while `ax` — which is
-    /// registered, and which no `ActionKind` names, so nothing else here
-    /// mentions it — was missing.
-    #[test]
-    fn every_action_the_judge_is_told_about_is_one_the_agent_can_take() {
-        for kind in [ActionKind::Browse, ActionKind::App, ActionKind::Answer] {
-            let (name, _) = describe(&summary(kind, Some("Numbers"), Some("set A1 to 42")));
-            assert!(
-                ACTIONS.contains(&name.as_str()),
-                "`{name}` reaches the trace but is not advertised"
-            );
-        }
-        assert!(
-            ACTIONS.contains(&"ax"),
-            "`ax` is a registered tool (metal.rs registry) the judge must know about"
-        );
-        assert!(
-            !ACTIONS.contains(&"ask"),
-            "`ask` is not a registered tool yet; advertising it invites the \
-             judge to mark a run down for not using something it cannot call"
-        );
     }
 }

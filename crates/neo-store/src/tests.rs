@@ -991,4 +991,26 @@ fn project_clock_round_trips_detail_due_state_and_ticks() {
             .next_due_at,
         Some(602_100)
     );
+
+    projects
+        .delete("launch")
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        projects
+            .list()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .is_empty(),
+        "the deleted project leaves the project index"
+    );
+    assert!(
+        projects
+            .ticks("launch", 10)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .is_empty(),
+        "deleting a project cascades to its heartbeat activity"
+    );
+    assert!(matches!(
+        projects.delete("launch"),
+        Err(StoreError::UnknownProject(slug)) if slug == "launch"
+    ));
 }

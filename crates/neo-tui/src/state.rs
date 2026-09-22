@@ -18,7 +18,7 @@ use neo_core::{
     Project, ProviderAccount, ProviderAccountStatus, ProviderId, ReasoningEffort, ResolutionVia,
     RunId, Settings, TaskId, TimestampMs, TurnUsage, Usd,
 };
-use neo_eval::Selection;
+use neo_eval::{CaseListing, Selection};
 use serde_json::{Value, json};
 
 use crate::keys::Action;
@@ -68,6 +68,7 @@ pub enum Pane {
     Runs,
     Mind,
     Projects,
+    Evals,
 }
 
 impl Pane {
@@ -77,6 +78,7 @@ impl Pane {
             Self::Runs => 1,
             Self::Mind => 2,
             Self::Projects => 3,
+            Self::Evals => 4,
         }
     }
 }
@@ -1281,6 +1283,12 @@ pub struct State {
     pub project_detail: Option<(ProjectDocuments, Vec<neo_core::HeartbeatTick>)>,
     /// The selected control on an open project page.
     pub project_detail_row: usize,
+    pub eval_cases: Vec<CaseListing>,
+    pub eval_row: usize,
+    /// The selected case's prompt, rubric, and run-mode controls are open.
+    pub eval_detail: bool,
+    /// `0` is one run; `1` is the case's configured consensus.
+    pub eval_mode_row: usize,
 
     pub listen: Option<ListenState>,
     pub mic_device: Option<String>,
@@ -1290,8 +1298,8 @@ pub struct State {
     pub settings_section: Option<Section>,
     pub mode: Mode,
     pub focus: Pane,
-    pub scroll: [u16; 4],
-    pub follow: [bool; 4],
+    pub scroll: [u16; 5],
+    pub follow: [bool; 5],
 
     /// The conversation, oldest first.
     pub thread: Vec<ThreadRow>,
@@ -1388,14 +1396,18 @@ impl State {
             project_row: 0,
             project_detail: None,
             project_detail_row: 0,
+            eval_cases: Vec::new(),
+            eval_row: 0,
+            eval_detail: false,
+            eval_mode_row: 0,
             listen: None,
             mic_device: None,
             view: View::Panes,
             settings_section: None,
             mode: Mode::Insert,
             focus: Pane::Conversation,
-            scroll: [0; 4],
-            follow: [true; 4],
+            scroll: [0; 5],
+            follow: [true; 5],
             thread: Vec::new(),
             conversation: None,
             conversation_title: None,
@@ -2303,6 +2315,11 @@ impl State {
                 self.project_detail = None;
                 self.project_detail_row = 0;
             }
+            Action::OpenEval => return self.open_eval(),
+            Action::EvalBack => {
+                self.eval_detail = false;
+                self.eval_mode_row = 0;
+            }
             Action::ToggleFollow => {
                 let index = self.focus.index();
                 self.follow[index] = !self.follow[index];
@@ -2679,6 +2696,53 @@ impl State {
         self.project_detail_row = self.project_detail_row.min(5);
         self.dirty = true;
     }
+    /// Replace the eval catalogue and open its index.
+    pub fn show_evals(&mut self, cases: Vec<CaseListing>) {
+        self.eval_cases = cases;
+        self.eval_row = self.eval_row.min(self.eval_cases.len().saturating_sub(1));
+        self.eval_detail = false;
+        self.eval_mode_row = 0;
+        self.view = View::Panes;
+        self.focus = Pane::Evals;
+        self.mode = Mode::Normal;
+        self.dirty = true;
+    }
+
+    fn selected_eval(&self) -> Option<&CaseListing> {
+        self.eval_cases.get(self.eval_row)
+    }
+
+    /// Index → case page → one concrete suite run.
+    fn open_eval(&mut self) -> Option<Command> {
+        if !self.eval_detail {
+            if self.selected_eval().is_some() {
+                self.eval_detail = true;
+                self.eval_mode_row = 0;
+            }
+            return None;
+        }
+        if self
+            .runs
+            .iter()
+            .any(|run| run.kind == RunKind::Eval && run.is_live())
+        {
+            self.status = Some("an evaluation is already running — open /mind to watch it".into());
+            return None;
+        }
+        let case = self.selected_eval()?;
+        if !case.runnable() {
+            self.status = Some(format!("{} is not installed", case.app.label()));
+            return None;
+        }
+        Some(Command::Eval {
+            selection: Selection {
+                filter: None,
+                exact_id: Some(case.id.clone()),
+                tags: Vec::new(),
+                once: self.eval_mode_row == 0,
+            },
+        })
+    }
 
     /// `x` and `/stop`: cancel the run being traced.
     ///
@@ -2738,6 +2802,13 @@ impl State {
                     self.project_row = 0;
                 }
             }
+            (_, Pane::Evals) => {
+                if self.eval_detail {
+                    self.eval_mode_row = 0;
+                } else {
+                    self.eval_row = 0;
+                }
+            }
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, u16::MAX),
             (_, Pane::Mind) => self.scroll_to(Pane::Mind, 0),
         }
@@ -2756,6 +2827,13 @@ impl State {
                     self.project_detail_row = 5;
                 } else {
                     self.project_row = self.projects.len().saturating_sub(1);
+                }
+            }
+            (_, Pane::Evals) => {
+                if self.eval_detail {
+                    self.eval_mode_row = 1;
+                } else {
+                    self.eval_row = self.eval_cases.len().saturating_sub(1);
                 }
             }
             (_, Pane::Conversation) => self.scroll_to(Pane::Conversation, 0),
@@ -2796,6 +2874,13 @@ impl State {
                 .selected_run()
                 .map_or(self.activity.len(), |run| run.trace.len()),
             Pane::Projects => self.projects.len().saturating_mul(3),
+            Pane::Evals => {
+                if self.eval_detail {
+                    16
+                } else {
+                    self.eval_cases.len().saturating_mul(3)
+                }
+            }
         }
     }
 
@@ -2837,6 +2922,20 @@ impl State {
             }
             return;
         }
+        if self.focus == Pane::Evals {
+            if self.eval_detail {
+                let next =
+                    i64::from(i32::try_from(self.eval_mode_row).unwrap_or(0) + delta.signum())
+                        .clamp(0, 1);
+                self.eval_mode_row = usize::try_from(next).unwrap_or(0);
+            } else {
+                let last = self.eval_cases.len().saturating_sub(1);
+                let next = i64::from(i32::try_from(self.eval_row).unwrap_or(0) + delta.signum())
+                    .clamp(0, i64::try_from(last).unwrap_or(0));
+                self.eval_row = usize::try_from(next).unwrap_or(0);
+            }
+            return;
+        }
         // The conversation reads oldest-first and is anchored to its bottom,
         // so its `scroll` counts rows *back* from the newest: up must add and
         // down must subtract. Sharing the sign with the top-anchored panes
@@ -2875,6 +2974,7 @@ impl State {
                 self.project_detail_row = 0;
                 self.mode = Mode::Normal;
             }
+            "evals" => return Some(Command::EvalList),
             "runs" => {
                 self.view = View::Panes;
                 self.focus = Pane::Runs;
@@ -4084,7 +4184,7 @@ pub struct CommandSpec {
     pub unavailable: Option<&'static str>,
 }
 
-pub const COMMAND_LINE: [CommandSpec; 26] = [
+pub const COMMAND_LINE: [CommandSpec; 27] = [
     CommandSpec {
         name: "project",
         args: "",
@@ -4155,6 +4255,12 @@ pub const COMMAND_LINE: [CommandSpec; 26] = [
         name: "ax",
         args: "trusted|apps|table|press|set|menu|type|key",
         help: "one direct accessibility call",
+        unavailable: None,
+    },
+    CommandSpec {
+        name: "evals",
+        args: "",
+        help: "open the evaluation test index",
         unavailable: None,
     },
     CommandSpec {

@@ -27,6 +27,7 @@ Type a m│Esc leaves typing. Esc again stops a live run; q asks before quitting
         │  /nav      <url> <goal> [--headless] [--profile P] [--no-safety]drive a web page to a goal           │
         │  /app      <app> <goal>                                  drive a native application to a goal        │
         │  /ax       trusted|apps|table|press|set|menu|type|key    one direct accessibility call               │
+        │  /evals                                                  open the evaluation test index              │
         │  /eval     [--filter F] [--tag T] [--once] [--list]      run the app-control suite                   │
         │  /stop                                                   cancel the selected run                     │
         │  /kill                                                   cancel every live run                       │
@@ -36,11 +37,10 @@ Type a m│Esc leaves typing. Esc again stops a live run; q asks before quitting
         │  /doctor                                                 re-run readiness checks                     │
         │  /help                                                   show commands and keys                      │
         │  /quit                                                   leave Starkbot Neo                          │
-        │  /packs                                                  capability packs — not built yet            │
-        │  /soul                                                   edit soul.md — not built yet                │  ▼ live
-╭───────│  /pause                                                  pause the queue — not built yet             │───────╮
-│ > / op│  /resume                                                 resume the queue — not built yet            │       │
-╰───────│  /listen   on|off                                        microphone — not built yet                  │───────╯
+        │  /packs                                                  capability packs — not built yet            │  ▼ live
+╭───────│  /soul                                                   edit soul.md — not built yet                │───────╮
+│ > / op│  /pause                                                  pause the queue — not built yet             │       │
+╰───────│  /resume                                                 resume the queue — not built yet            │───────╯
 NORMAL │└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  slash commands
@@ -52,9 +52,9 @@ fg=Cyan bg=Reset mod=NONE  │  /ax
 fg=Cyan bg=Reset mod=NONE  │  /chat
 fg=Cyan bg=Reset mod=NONE  │  /doctor
 fg=Cyan bg=Reset mod=NONE  │  /eval
+fg=Cyan bg=Reset mod=NONE  │  /evals
 fg=Cyan bg=Reset mod=NONE  │  /help
 fg=Cyan bg=Reset mod=NONE  │  /kill
-fg=Cyan bg=Reset mod=NONE  │  /listen
 fg=Cyan bg=Reset mod=NONE  │  /login
 fg=Cyan bg=Reset mod=NONE  │  /mind
 fg=Cyan bg=Reset mod=NONE  │  /model
@@ -85,7 +85,6 @@ fg=DarkGray bg=Reset mod=NONE  [--filter F] [--tag T] [--once] [--list]
 fg=DarkGray bg=Reset mod=NONE  [refresh]
 fg=DarkGray bg=Reset mod=NONE  [section]
 fg=DarkGray bg=Reset mod=NONE  [title]
-fg=DarkGray bg=Reset mod=NONE  on|off
 fg=DarkGray bg=Reset mod=NONE  trusted|apps|table|press|set|menu|type|key
 fg=DarkGray bg=Reset mod=NONE  ───────╮
 fg=DarkGray bg=Reset mod=NONE  ───────╯
@@ -98,6 +97,5 @@ fg=Reset bg=Reset mod=BOLD  Stark
 fg=Yellow bg=Reset mod=NONE  NORMAL │
 fg=Yellow bg=Reset mod=NONE  capability packs — not built yet
 fg=Yellow bg=Reset mod=NONE  edit soul.md — not built yet
-fg=Yellow bg=Reset mod=NONE  microphone — not built yet
 fg=Yellow bg=Reset mod=NONE  pause the queue — not built yet
 fg=Yellow bg=Reset mod=NONE  resume the queue — not built yet

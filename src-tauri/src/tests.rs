@@ -65,6 +65,65 @@ async fn bootstrap_describes_a_fresh_install() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Deleting a project removes it and its activity from Starkbot, but never
+/// removes documents from a folder the user attached.
+#[tokio::test]
+async fn projects_can_be_deleted_without_deleting_their_files() {
+    let dir = scratch("project-delete");
+    let root = dir.join("attached");
+    std::fs::create_dir_all(&root).expect("the attached project root is created");
+    std::fs::write(root.join("soul.md"), "Keep this.").expect("the project document is written");
+    let app = app(&dir);
+    let created = commands::create_project(
+        app.state(),
+        "Attached work".to_owned(),
+        Some(root.to_string_lossy().into_owned()),
+    )
+    .await
+    .expect("the attached project is created");
+
+    let rows = commands::delete_project(app.state(), created.project.slug)
+        .await
+        .expect("the project can be deleted");
+    assert!(rows.is_empty(), "the deleted project leaves the index");
+    assert_eq!(
+        std::fs::read_to_string(root.join("soul.md"))
+            .expect("the attached project document remains"),
+        "Keep this."
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The local project API persists each project's heartbeat cadence independently.
+#[tokio::test]
+async fn project_heartbeat_interval_is_configurable() {
+    let dir = scratch("project-heartbeat-interval");
+    let app = app(&dir);
+    let created = commands::create_project(app.state(), "Release train".to_owned(), None)
+        .await
+        .expect("the project is created");
+
+    let configured = commands::configure_project_heartbeat(
+        app.state(),
+        created.project.slug.clone(),
+        true,
+        900,
+        neo_core::HeartbeatGate::Hold,
+    )
+    .await
+    .expect("the heartbeat interval is configurable");
+    assert!(configured.project.heartbeat_enabled);
+    assert_eq!(configured.project.heartbeat_every_seconds, 900);
+
+    let shown = commands::show_project(app.state(), created.project.slug)
+        .await
+        .expect("the configured project can be read back");
+    assert_eq!(shown.project.heartbeat_every_seconds, 900);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Every failing doctor row the window can act on carries the control, not a
 /// `neo` command line.
 #[tokio::test]
