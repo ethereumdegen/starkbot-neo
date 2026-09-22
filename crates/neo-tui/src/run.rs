@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use neo_agent::agent::{
@@ -422,14 +422,29 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn new() -> io::Result<Self> {
-        Ok(Self {
-            terminal: ratatui::try_init()?,
-        })
+        let terminal = ratatui::try_init()?;
+        // The wheel as well as the keyboard. Without this the terminal keeps
+        // it for its own scrollback, and scrolling up inside a full-screen
+        // app shows the shell history behind it rather than the transcript —
+        // the front end looks like it never took the screen over at all.
+        //
+        // The cost is the terminal's own selection: with mouse reporting on,
+        // Terminal.app and iTerm2 want Option held down to select text with
+        // the drag. That is why the release below is not optional — a
+        // process that exits still holding the mouse leaves the shell it
+        // returns to printing escape sequences at every click.
+        if let Err(error) = execute!(io::stdout(), EnableMouseCapture) {
+            tracing::warn!(%error, "could not take the mouse");
+        }
+        Ok(Self { terminal })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        if let Err(error) = execute!(io::stdout(), DisableMouseCapture) {
+            tracing::warn!(%error, "could not give the mouse back");
+        }
         if let Err(error) = ratatui::try_restore() {
             tracing::warn!(%error, "could not restore the terminal");
         }
@@ -541,6 +556,30 @@ fn frames(
                     }
                     if let Some(command) = state.apply_action(action) {
                         execute(runtime, terminal, state, context, command)?;
+                    }
+                }
+                // The wheel, and nothing else the mouse does: a click does
+                // not move the focus and a drag selects nothing, so motion
+                // and buttons are dropped without a frame. Middle-click paste
+                // is the terminal's own and never reaches us.
+                Event::Mouse(mouse) => {
+                    // Reporting the wheel means reporting every motion too,
+                    // and those arrive in bursts. They are dropped here
+                    // rather than by a `continue`: the polls below this match
+                    // are the loop's heartbeat, and a hand moving across the
+                    // terminal must not starve them.
+                    let wheel = match mouse.kind {
+                        MouseEventKind::ScrollUp => Some(true),
+                        MouseEventKind::ScrollDown => Some(false),
+                        _ => None,
+                    };
+                    if let Some(up) = wheel {
+                        let action = keymap.wheel(up, state);
+                        if action != Action::None
+                            && let Some(command) = state.apply_action(action)
+                        {
+                            execute(runtime, terminal, state, context, command)?;
+                        }
                     }
                 }
                 Event::Resize(..) => state.dirty = true,
@@ -1692,6 +1731,9 @@ fn with_terminal_released<B: Backend, T>(
     terminal: &mut Terminal<B>,
     body: impl FnOnce() -> T,
 ) -> T {
+    if let Err(error) = execute!(io::stdout(), DisableMouseCapture) {
+        tracing::warn!(%error, "could not hand the mouse over");
+    }
     if let Err(error) = ratatui::try_restore() {
         tracing::warn!(%error, "could not hand the terminal over");
     }
@@ -1705,7 +1747,7 @@ fn with_terminal_released<B: Backend, T>(
 /// Re-enter the alternate screen and make the next frame a full repaint.
 fn reclaim_terminal<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     terminal
         .clear()
         .map_err(|error| io::Error::other(error.to_string()))

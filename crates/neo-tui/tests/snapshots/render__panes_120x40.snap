@@ -37,14 +37,17 @@ Type a message and press Enter · / opens commands
 
 
 
-
-
                                                                                                                   ▼ live
-> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ > Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 INSERT │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys present │ account none
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  chat
 fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+fg=Cyan bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 fg=DarkGray bg=Reset mod=NONE  /project · /model · /login · /help
 fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
 fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves insert

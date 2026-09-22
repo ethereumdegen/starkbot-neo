@@ -2,53 +2,102 @@
 source: crates/neo-tui/tests/render.rs
 expression: "common::render(&state, 120, 40)"
 ---
-Stark  ○ NO MIC YET  v dictates   chat  /project · /model · /login · /help
-Ask Starkbot to do something in an app or on the web.
-Type a message and press Enter · / opens commands
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                                                                                                                  ▼ live
-> ?
-INSERT │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+Stark  ○┌ Help ────────────────────────────────────────────────────────────────────────────────────────────────┐
+Ask Star│Chat opens ready to type. Enter sends; / opens the command line.                                      │
+Type a m│Esc leaves typing. Esc again stops a live run; q asks before quitting.                                │
+        │On a page, Esc or q returns to chat.                                                                  │
+        │j/k or arrows move · Enter opens or changes · Backspace/← returns to an index                         │
+        │The wheel scrolls what is under it · PageUp/PageDown read back while typing                           │
+        │Ctrl-N starts a conversation · Ctrl-V dictates · Ctrl-Q quits now                                     │
+        │Ctrl-C kill switch · Ctrl-L redraw · x stops the selected run                                         │
+        │Cards: y/n confirms · j/k picks · 1-9 answers · i types a free answer                                 │
+        │Login: c signs in · d signs out · s sets a key · x removes · K checks                                 │
+        │Models: Enter edits or cycles · r refreshes the catalogue                                             │
+        │                                                                                                      │
+        │slash commands                                                                                        │
+        │  /project                                                open the project index                      │
+        │  /model    [refresh]                                     configure models or refresh the active catal│
+        │  /login                                                  configure connections, keys, and subscriptio│
+        │  /settings [section]                                     open all settings or one named section      │
+        │  /runs                                                   show work started by this TUI               │
+        │  /mind                                                   show the selected run trace                 │
+        │  /activity                                               show recent core activity                   │
+        │  /chat                                                   return to the conversation                  │
+        │  /search   <text>                                        find text in the conversation               │
+        │  /nav      <url> <goal> [--headless] [--profile P] [--no-safety]drive a web page to a goal           │
+        │  /app      <app> <goal>                                  drive a native application to a goal        │
+        │  /ax       trusted|apps|table|press|set|menu|type|key    one direct accessibility call               │
+        │  /eval     [--filter F] [--tag T] [--once] [--list]      run the app-control suite                   │
+        │  /stop                                                   cancel the selected run                     │
+        │  /kill                                                   cancel every live run                       │
+        │  /new      [title]                                       start a conversation                        │
+        │  /sessions                                               switch conversation                         │
+        │  /rename   <title>                                       retitle this conversation                   │
+        │  /doctor                                                 re-run readiness checks                     │
+        │  /help                                                   show commands and keys                      │
+        │  /quit                                                   leave Starkbot Neo                          │
+        │  /packs                                                  capability packs — not built yet            │
+        │  /soul                                                   edit soul.md — not built yet                │  ▼ live
+╭───────│  /pause                                                  pause the queue — not built yet             │───────╮
+│ > / op│  /resume                                                 resume the queue — not built yet            │       │
+╰───────│  /listen   on|off                                        microphone — not built yet                  │───────╯
+NORMAL │└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
 --- styles ---
-fg=Cyan bg=Reset mod=BOLD  chat
+fg=Cyan bg=Reset mod=BOLD  slash commands
 fg=Cyan bg=Reset mod=NONE  >
-fg=DarkGray bg=Reset mod=NONE  /project · /model · /login · /help
-fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
-fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  │  /activity
+fg=Cyan bg=Reset mod=NONE  │  /app
+fg=Cyan bg=Reset mod=NONE  │  /ax
+fg=Cyan bg=Reset mod=NONE  │  /chat
+fg=Cyan bg=Reset mod=NONE  │  /doctor
+fg=Cyan bg=Reset mod=NONE  │  /eval
+fg=Cyan bg=Reset mod=NONE  │  /help
+fg=Cyan bg=Reset mod=NONE  │  /kill
+fg=Cyan bg=Reset mod=NONE  │  /listen
+fg=Cyan bg=Reset mod=NONE  │  /login
+fg=Cyan bg=Reset mod=NONE  │  /mind
+fg=Cyan bg=Reset mod=NONE  │  /model
+fg=Cyan bg=Reset mod=NONE  │  /nav
+fg=Cyan bg=Reset mod=NONE  │  /new
+fg=Cyan bg=Reset mod=NONE  │  /packs
+fg=Cyan bg=Reset mod=NONE  │  /pause
+fg=Cyan bg=Reset mod=NONE  │  /project
+fg=Cyan bg=Reset mod=NONE  │  /quit
+fg=Cyan bg=Reset mod=NONE  │  /rename
+fg=Cyan bg=Reset mod=NONE  │  /resume
+fg=Cyan bg=Reset mod=NONE  │  /runs
+fg=Cyan bg=Reset mod=NONE  │  /search
+fg=Cyan bg=Reset mod=NONE  │  /sessions
+fg=Cyan bg=Reset mod=NONE  │  /settings
+fg=Cyan bg=Reset mod=NONE  │  /soul
+fg=Cyan bg=Reset mod=NONE  │  /stop
+fg=Cyan bg=Reset mod=NONE  ┌ Help ────────────────────────────────────────────────────────────────────────────────────────────────┐
+fg=Cyan bg=Reset mod=NONE  └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+fg=DarkGray bg=Reset mod=NONE  / op
+fg=DarkGray bg=Reset mod=NONE  <app> <goal>
+fg=DarkGray bg=Reset mod=NONE  <text>
+fg=DarkGray bg=Reset mod=NONE  <title>
+fg=DarkGray bg=Reset mod=NONE  <url> <goal> [--headless] [--profile P] [--no-safety]
+fg=DarkGray bg=Reset mod=NONE  Ask Star
+fg=DarkGray bg=Reset mod=NONE  Type a m
+fg=DarkGray bg=Reset mod=NONE  [--filter F] [--tag T] [--once] [--list]
+fg=DarkGray bg=Reset mod=NONE  [refresh]
+fg=DarkGray bg=Reset mod=NONE  [section]
+fg=DarkGray bg=Reset mod=NONE  [title]
+fg=DarkGray bg=Reset mod=NONE  on|off
+fg=DarkGray bg=Reset mod=NONE  trusted|apps|table|press|set|menu|type|key
+fg=DarkGray bg=Reset mod=NONE  ───────╮
+fg=DarkGray bg=Reset mod=NONE  ───────╯
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ╭───────
+fg=DarkGray bg=Reset mod=NONE  ╰───────
 fg=DarkGray bg=Reset mod=NONE  ▼ live
-fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
+fg=DarkGray bg=Reset mod=NONE  ○
 fg=Reset bg=Reset mod=BOLD  Stark
-fg=Yellow bg=Reset mod=NONE  INSERT │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic │ account none
+fg=Yellow bg=Reset mod=NONE  NORMAL │
+fg=Yellow bg=Reset mod=NONE  capability packs — not built yet
+fg=Yellow bg=Reset mod=NONE  edit soul.md — not built yet
+fg=Yellow bg=Reset mod=NONE  microphone — not built yet
+fg=Yellow bg=Reset mod=NONE  pause the queue — not built yet
+fg=Yellow bg=Reset mod=NONE  resume the queue — not built yet

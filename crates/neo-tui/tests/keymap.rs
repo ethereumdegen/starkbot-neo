@@ -965,3 +965,21 @@ fn row_index(state: &State, label: &str) -> usize {
         .position(|row| row.label == label)
         .unwrap_or_else(|| panic!("no {label} row"))
 }
+
+/// The wheel is not typing: it reads the transcript while the composer keeps
+/// the keyboard, and it stops at whatever owns the screen.
+#[test]
+fn the_wheel_scrolls_under_the_pointer_but_not_through_a_card() {
+    let mut state = common::state();
+    assert_eq!(state.mode, Mode::Insert, "chat opens ready to type");
+    assert_eq!(KeyMap.wheel(true, &state), Action::SelectPrevious);
+    assert_eq!(KeyMap.wheel(false, &state), Action::SelectNext);
+
+    state.apply(common::envelope(1));
+    assert_eq!(state.mode, Mode::Card);
+    assert_eq!(
+        KeyMap.wheel(true, &state),
+        Action::None,
+        "a card owns the screen; scrolling what is behind it helps nobody"
+    );
+}

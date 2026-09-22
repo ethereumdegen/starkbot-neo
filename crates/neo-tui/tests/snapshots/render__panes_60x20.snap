@@ -17,15 +17,18 @@ Type a message and press Enter · / opens commands
 
 
 
-
-
                                                       ▼ live
-> Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves ins
+╭──────────────────────────────────────────────────────────╮
+│ > Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves │
+╰──────────────────────────────────────────────────────────╯
 INSERT │ ○ NO MIC YET │ /fixtures/neo/neo.db v3
 --- styles ---
 fg=Cyan bg=Reset mod=NONE  >
+fg=Cyan bg=Reset mod=NONE  │
+fg=Cyan bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────╮
+fg=Cyan bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────╯
 fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
-fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves ins
+fg=DarkGray bg=Reset mod=NONE  Enter sends · Alt-Enter or Ctrl-J newline · Esc leaves
 fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
 fg=DarkGray bg=Reset mod=NONE  ▼ live
 fg=Yellow bg=Reset mod=NONE  INSERT │ ○ NO MIC YET │ /fixtures/neo/neo.db v3

@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 
 use crate::runs::{Run, RunState, TraceKind};
 use crate::state::{
@@ -26,6 +26,9 @@ const GREY: Color = Color::DarkGray;
 
 /// The card overlay's width. Wide enough for a sentence plus a URL on one
 /// wrap, narrow enough to leave the frame around it readable.
+/// The composer's own rows: a rule, the draft, a rule.
+const COMPOSER_HEIGHT: u16 = 3;
+
 const CARD_WIDTH: u16 = 72;
 /// Below this a card is not drawn at all: there is no honest way to put a
 /// sentence, its context and two keys in less.
@@ -66,7 +69,14 @@ pub fn draw(frame: &mut Frame, state: &State) -> Painted {
     }
 
     let header_height = u16::from(area.height >= 24);
-    let composer_height = u16::from(state.view == View::Panes && state.focus == Pane::Conversation);
+    // Three rows, not one: the rule above and below the draft is what makes
+    // the composer read as a field to type in rather than as the last line of
+    // the transcript. The pane above gives up the two rows.
+    let composer_height = if state.view == View::Panes && state.focus == Pane::Conversation {
+        COMPOSER_HEIGHT
+    } else {
+        0
+    };
     let [header, body, composer, status] = Layout::vertical([
         Constraint::Length(header_height),
         Constraint::Min(3),
@@ -86,7 +96,7 @@ pub fn draw(frame: &mut Frame, state: &State) -> Painted {
         }
     };
     if composer_height > 0 {
-        frame.render_widget(composer_line(state), composer);
+        render_composer(frame, composer, state);
     }
     frame.render_widget(status_line(state, header_height == 0, status.width), status);
 
@@ -801,6 +811,49 @@ fn connection_value_style(value: &str) -> Style {
 
 // ----------------------------------------------------------- composer/status
 
+/// The draft, in a box of its own.
+///
+/// The border is the focus indicator as well as the frame: it lights up
+/// while the keyboard belongs to the composer and stays grey when a motion
+/// key would scroll the transcript instead, so the mode word in the status
+/// line is never the only thing saying which it is.
+fn render_composer(frame: &mut Frame, area: Rect, state: &State) {
+    let typing = matches!(state.mode, Mode::Insert | Mode::Command);
+    let border = if typing {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new().fg(GREY)
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(composer_line(state), inner);
+    // A terminal cursor, where the next character will land. The draft is
+    // append-only — there is no left arrow in the composer — so it sits at
+    // the end of what has been typed, and nowhere at all when the keyboard
+    // is somewhere else.
+    if typing && inner.height > 0 {
+        let typed = if state.mode == Mode::Command {
+            state.line.chars().count()
+        } else {
+            state.composer.chars().count()
+        };
+        let prefix = if state.mode == Mode::Command { 1 } else { 2 };
+        let column = inner
+            .x
+            .saturating_add(
+                u16::try_from(typed)
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(prefix),
+            )
+            .min(inner.x + inner.width.saturating_sub(1));
+        frame.set_cursor_position((column, inner.y));
+    }
+}
+
 fn composer_line(state: &State) -> Paragraph<'_> {
     let draft = state.composer.replace('\n', "⏎");
     let prefix = if state.mode == Mode::Command {
@@ -955,6 +1008,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "Esc leaves typing. Esc again stops a live run; q asks before quitting.",
         "On a page, Esc or q returns to chat.",
         "j/k or arrows move · Enter opens or changes · Backspace/← returns to an index",
+        "The wheel scrolls what is under it · PageUp/PageDown read back while typing",
         "Ctrl-N starts a conversation · Ctrl-V dictates · Ctrl-Q quits now",
         "Ctrl-C kill switch · Ctrl-L redraw · x stops the selected run",
         "Cards: y/n confirms · j/k picks · 1-9 answers · i types a free answer",

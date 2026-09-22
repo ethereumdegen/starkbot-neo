@@ -103,6 +103,34 @@ pub enum Action {
 pub struct KeyMap;
 
 impl KeyMap {
+    /// One notch of the wheel, in whatever the pane under it scrolls by.
+    ///
+    /// A notch is one line, not a page: a trackpad sends a burst of them for
+    /// a single swipe, and five lines each would throw the transcript past
+    /// what the eye was following. The mode is not consulted — the wheel is
+    /// not typing, so it reads the transcript while the composer keeps the
+    /// keyboard. An overlay that owns the keyboard owns the wheel too: the
+    /// session picker moves its cursor, and a card swallows it, because
+    /// scrolling something the user cannot see is worse than doing nothing.
+    #[must_use]
+    pub fn wheel(&self, up: bool, state: &State) -> Action {
+        if state.card.is_some() || state.login.is_some() || state.prompt.is_some() || state.help {
+            return Action::None;
+        }
+        if state.sessions.is_some() {
+            return if up {
+                Action::SessionPrevious
+            } else {
+                Action::SessionNext
+            };
+        }
+        if up {
+            Action::SelectPrevious
+        } else {
+            Action::SelectNext
+        }
+    }
+
     #[must_use]
     pub fn resolve(&self, key: KeyEvent, state: &State) -> Action {
         if key.kind == KeyEventKind::Release {

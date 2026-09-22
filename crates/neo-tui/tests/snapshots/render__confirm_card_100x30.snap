@@ -27,10 +27,10 @@ Type a message and press Enter · / opens commands
 
 
 
-
-
                                                                                               ▼ live
-> / opens commands · i starts typing
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ > / opens commands · i starts typing                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 CARD │ /fixtures/neo/neo.db v3 │ OpenAI API key · openai/sol-latest │ keys missing: anthropic
 --- styles ---
 fg=Cyan bg=Reset mod=BOLD  chat
@@ -41,6 +41,9 @@ fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the 
 fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
 fg=DarkGray bg=Reset mod=NONE  where
 fg=DarkGray bg=Reset mod=NONE  why
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+fg=DarkGray bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 fg=DarkGray bg=Reset mod=NONE  ▼ live
 fg=DarkGray bg=Reset mod=NONE  ○ NO MIC YET  v dictates
 fg=Green bg=Reset mod=NONE  [y]

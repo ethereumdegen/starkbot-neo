@@ -17,10 +17,10 @@ Type a message and press Enter · / opens commands
 │[y] yes   [n] no                                          │
 └ y approves · n denies · Enter is not an answer ──────────┘
 
-
-
                                                       ▼ live
-> / opens commands · i starts typing
+╭──────────────────────────────────────────────────────────╮
+│ > / opens commands · i starts typing                     │
+╰──────────────────────────────────────────────────────────╯
 CARD │ ○ NO MIC YET │ /fixtures/neo/neo.db v3
 --- styles ---
 fg=Cyan bg=Reset mod=NONE  >
@@ -29,6 +29,9 @@ fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the 
 fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
 fg=DarkGray bg=Reset mod=NONE  where
 fg=DarkGray bg=Reset mod=NONE  why
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────╮
+fg=DarkGray bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────╯
 fg=DarkGray bg=Reset mod=NONE  ▼ live
 fg=Green bg=Reset mod=NONE  [y]
 fg=Red bg=Reset mod=NONE  [n]

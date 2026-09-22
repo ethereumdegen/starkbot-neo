@@ -435,6 +435,10 @@ fn the_masked_key_prompt_never_renders_the_key() {
 #[test]
 fn the_help_overlay_lists_the_live_keymap() {
     let mut state = common::state();
+    // Out of the composer first: chat opens ready to type, where `?` is a
+    // question mark and not a key. This golden was drawing a frame with a
+    // `?` in the draft and no overlay at all.
+    press(&mut state, KeyCode::Esc);
     press(&mut state, KeyCode::Char('?'));
     insta::assert_snapshot!("help_overlay", common::render(&state, 120, 40));
 }

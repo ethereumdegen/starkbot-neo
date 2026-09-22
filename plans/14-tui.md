@@ -85,6 +85,8 @@ Modal, vim-ish: **NORMAL** (keys are commands), **INSERT** (the composer owns th
 | Lists | `j` `k` / `↓` `↑` | move the selection | — |
 | Lists | `Ctrl-D` `Ctrl-U` / `Ctrl-F` `Ctrl-B` | half page · page | — |
 | Lists | `gg` / `G` | first · last item | — |
+| Any mode | wheel up / down | scroll whatever is under the pointer, one line a notch (the front end takes the mouse, so selecting text wants Option held) | — |
+| Insert | `PageUp` / `PageDown` | read back through the transcript without leaving the composer | — |
 | Lists | `Space` / `h` `l` | expand / collapse (trace item, Steer line, task card) | — |
 | Lists | `Enter` | open detail (full Jev state, full observation, raw JSON) | `get_trace_item_detail` |
 | Conversation | `Enter` on `enqueue?` / `ignored` | accept the chip · force-enqueue | `accept_enqueue` · `force_enqueue` |

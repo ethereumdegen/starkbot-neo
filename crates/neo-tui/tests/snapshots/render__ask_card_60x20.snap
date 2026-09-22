@@ -17,10 +17,10 @@ Type a message and press Enter · / opens commands
 └ i types the answer · the card stays until it is answered ┘
 
 
-
-
                                                       ▼ live
-> / opens commands · i starts typing
+╭──────────────────────────────────────────────────────────╮
+│ > / opens commands · i starts typing                     │
+╰──────────────────────────────────────────────────────────╯
 CARD │ ○ NO MIC YET │ /fixtures/neo/neo.db v3
 --- styles ---
 fg=Cyan bg=Reset mod=NONE  >
@@ -31,6 +31,9 @@ fg=Cyan bg=Reset mod=NONE  └ i types the answer · the card stays until it is 
 fg=DarkGray bg=Reset mod=NONE  / opens commands · i starts typing
 fg=DarkGray bg=Reset mod=NONE  Ask Starkbot to do something in an app or on the web.
 fg=DarkGray bg=Reset mod=NONE  Type a message and press Enter · / opens commands
+fg=DarkGray bg=Reset mod=NONE  │
+fg=DarkGray bg=Reset mod=NONE  ╭──────────────────────────────────────────────────────────╮
+fg=DarkGray bg=Reset mod=NONE  ╰──────────────────────────────────────────────────────────╯
 fg=DarkGray bg=Reset mod=NONE  ▼ live
 fg=White bg=Reset mod=BOLD  Tell me what goes in “Invoice number” and I'll carry on.
 fg=Yellow bg=Reset mod=NONE  CARD │ ○ NO MIC YET │ /fixtures/neo/neo.db v3
