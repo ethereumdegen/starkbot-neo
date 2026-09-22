@@ -448,6 +448,23 @@ struct Loop {
     started: Instant,
 }
 
+/// The thread the TUI starts in: an empty one, every time.
+///
+/// Starting where the last session stopped meant the first frame was a wall of
+/// somebody else's conversation — half of it a run that had already finished —
+/// and the first thing to do was clear it. Older threads are not thrown away:
+/// they are one `/sessions` away, and the switcher lists them newest first.
+///
+/// The latest thread is reused when it is already empty, so quitting and
+/// starting again does not leave a trail of blank rows in that switcher.
+fn blank_conversation(runtime: &Arc<Runtime>) -> Result<neo_core::Conversation, RuntimeError> {
+    let latest = runtime.open_conversation()?;
+    if runtime.thread(latest.id, 1)?.is_empty() {
+        return Ok(latest);
+    }
+    runtime.new_conversation(None)
+}
+
 fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<(), TuiError> {
     // Join the machine-local roster, so another Starkbot can see this one and
     // so this one's app runs can take the keyboard lease. Dropping the guard
@@ -456,13 +473,8 @@ fn event_loop(runtime: &Arc<Runtime>, terminal: &mut DefaultTerminal) -> Result<
     let heartbeat_scheduler = runtime.start_heartbeat_scheduler();
     let mut receiver = runtime.subscribe();
     let mut state = State::new(runtime.bootstrap()?);
-    // The thread is loaded from the store, so closing the TUI does not throw
-    // the conversation away.
-    match runtime.open_conversation() {
-        Ok(conversation) => {
-            let messages = runtime.thread(conversation.id, THREAD_LIMIT)?;
-            state.load_thread(conversation.id, conversation.title, &messages);
-        }
+    match blank_conversation(runtime) {
+        Ok(conversation) => state.load_thread(conversation.id, conversation.title, &[]),
         Err(error) => state.note(format!("the conversation could not be opened: {error}")),
     }
     let mut context = Loop {
@@ -2008,6 +2020,35 @@ mod tests {
                 }
             });
         });
+    }
+
+    /// Booting must not drop the user into the last session's thread, and
+    /// must not leave a blank thread behind every time it does so.
+    #[test]
+    fn a_boot_starts_in_an_empty_thread_and_reuses_the_empty_one() {
+        let dir = scratch("blank-thread");
+        let core = Arc::new(Runtime::open(&dir).expect("the store opens"));
+
+        let first = blank_conversation(&core).expect("a thread to start in");
+        assert!(
+            core.thread(first.id, 1).expect("the thread reads").is_empty(),
+            "the first boot of a fresh store starts empty"
+        );
+
+        core.record_message(first.id, &ChatMessage::user("hello"), false)
+            .expect("the line is recorded");
+        let second = blank_conversation(&core).expect("a thread to start in");
+        assert_ne!(
+            second.id, first.id,
+            "a thread with a line in it is left alone, not reopened"
+        );
+
+        // Quitting and starting again without typing anything: the same empty
+        // thread, so the switcher does not fill with blank rows.
+        let third = blank_conversation(&core).expect("a thread to start in");
+        assert_eq!(third.id, second.id, "an empty thread is reused");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The smallest bootstrap `State::new` accepts. Nothing here is
