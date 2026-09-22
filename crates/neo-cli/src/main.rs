@@ -32,6 +32,15 @@ struct Cli {
     command: CommandKind,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WindowAction {
+    Mini,
+    Full,
+    Toggle,
+    Status,
+}
+
 #[derive(Subcommand)]
 enum CommandKind {
     /// Subscription connections (K6 paths b and d). `--provider` chooses which
@@ -145,6 +154,11 @@ enum CommandKind {
         /// Name the thread. The default is the message itself, shortened.
         #[arg(long, value_name = "TITLE")]
         title: Option<String>,
+    },
+    /// Change or inspect the mode of the desktop window that is already open.
+    Window {
+        #[arg(value_enum)]
+        mode: WindowAction,
     },
     /// Run the app-control evaluation suite (agent in the loop, real apps).
     Eval {
@@ -424,6 +438,9 @@ async fn run(
         CommandKind::Doctor => run_doctor(data_dir),
         CommandKind::Sessions => run_sessions(data_dir),
         CommandKind::Say { text, title } => run_say(data_dir, text, title).await,
+        CommandKind::Window { mode } => {
+            run_control(data_dir, serde_json::json!({ "window_mode": mode })).await
+        }
         CommandKind::Tui => run_tui(data_dir).await,
         CommandKind::Gui { build } => run_gui(build).await,
         CommandKind::Eval {
@@ -673,6 +690,18 @@ async fn run_routine(
 /// nothing happened. With no window to hand it to, the honest answer is to
 /// say so and exit non-zero.
 async fn run_say(data_dir: Option<PathBuf>, text: String, title: Option<String>) -> Result<()> {
+    let mut request = serde_json::Map::new();
+    request.insert("say".to_owned(), serde_json::Value::String(text));
+    // Omitted rather than sent as null when unset, so the window applies its
+    // own default instead of being told to have none.
+    if let Some(title) = title {
+        request.insert("title".to_owned(), serde_json::Value::String(title));
+    }
+    run_control(data_dir, serde_json::Value::Object(request)).await
+}
+
+/// Both shell verbs use the running desktop's private JSON-lines socket.
+async fn run_control(data_dir: Option<PathBuf>, request: serde_json::Value) -> Result<()> {
     let data_dir = match data_dir {
         Some(path) => path,
         None => default_data_dir()?,
@@ -687,14 +716,7 @@ async fn run_say(data_dir: Option<PathBuf>, text: String, title: Option<String>)
             )
         })?;
 
-    let mut request = serde_json::Map::new();
-    request.insert("say".to_owned(), serde_json::Value::String(text));
-    // Omitted rather than sent as null when unset, so the window applies its
-    // own default instead of being told to have none.
-    if let Some(title) = title {
-        request.insert("title".to_owned(), serde_json::Value::String(title));
-    }
-    let line = format!("{}\n", serde_json::Value::Object(request));
+    let line = format!("{request}\n");
     stream
         .write_all(line.as_bytes())
         .await
@@ -705,10 +727,13 @@ async fn run_say(data_dir: Option<PathBuf>, text: String, title: Option<String>)
         .context("the Starkbot window closed before it could be told")?;
 
     let mut answer = String::new();
-    tokio::io::BufReader::new(stream)
-        .read_line(&mut answer)
-        .await
-        .context("the Starkbot window closed before it answered")?;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::io::BufReader::new(stream).read_line(&mut answer),
+    )
+    .await
+    .context("the Starkbot window did not answer within 15 seconds")?
+    .context("the Starkbot window closed before it answered")?;
     let answer: serde_json::Value = serde_json::from_str(answer.trim())
         .with_context(|| format!("the Starkbot window answered with {answer:?}"))?;
     print_json(&answer)?;
@@ -722,7 +747,7 @@ async fn run_say(data_dir: Option<PathBuf>, text: String, title: Option<String>)
         answer
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("the Starkbot window refused the message")
+            .unwrap_or("the Starkbot window refused the request")
     ))
 }
 

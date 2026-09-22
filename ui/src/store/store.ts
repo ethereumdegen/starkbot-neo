@@ -78,7 +78,7 @@ interface Actions {
   newConversation: (title?: string) => Promise<void>;
   renameConversation: (id: ConversationId, title: string) => Promise<void>;
   deleteConversation: (id: ConversationId) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string) => Promise<boolean>;
   stop: (run: RunId) => Promise<void>;
   /**
    * Answer a card. Pressing twice sends once: the second press finds the
@@ -348,7 +348,7 @@ export const useStore = create<Store>()((set, get) => {
      * never received.
      */
     send: async (text) => {
-      await guard(async () => {
+      return (await guard(async () => {
         // Typing into an empty window used to answer "Start a conversation
         // first" — the thread is bookkeeping and the message is the intent,
         // so the first message opens one instead of being refused.
@@ -363,14 +363,15 @@ export const useStore = create<Store>()((set, get) => {
         // `false` is the race, not a refusal: the turn ended between the
         // keystroke and the command, so what was typed becomes a new turn.
         if (live !== null && live.status === "running" && (await api.steerRun(live.run, text))) {
-          return;
+          return true;
         }
         const run = await api.sendMessage(conversation, text);
         set((state) => ({
           runs: registerRun(state.runs, run, "chat", Date.now(), conversation),
           ui: { ...state.ui, selectedRun: run },
         }));
-      });
+        return true;
+      })) === true;
     },
 
     /**

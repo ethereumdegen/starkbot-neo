@@ -17,6 +17,7 @@ cpal.workspace = true
 hound.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
+rustfft = "6.4.1"
 audioadapter-buffers.workspace = true
 reqwest.workspace = true
 serde.workspace = true

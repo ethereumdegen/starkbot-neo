@@ -292,6 +292,21 @@ pub fn render(routines: &[Routine]) -> String {
         if !params.is_empty() {
             out.push_str(&format!(" · params: {params}"));
         }
+        // One example, the pack's own wording. 06 §4.2 says the description
+        // *and* the examples are what a routine is chosen by, and it is
+        // right: `dp-import-file`'s description said "from a URL" and was
+        // never called; its example says "import https://…/favicon.svg as a
+        // layer so I can work from the real mark", which is the sentence
+        // that makes the possibility real.
+        let examples: Vec<String> = routine
+            .examples
+            .iter()
+            .take(3)
+            .map(|example| format!("\"{example}\""))
+            .collect();
+        if !examples.is_empty() {
+            out.push_str(&format!(" · e.g. {}", examples.join(", ")));
+        }
     }
     out
 }
@@ -337,8 +352,11 @@ fn filled_args(args: &Value, params: &Map<String, Value>) -> Value {
         // arguments are an object, and rendering them into `"{args}"` would
         // hand the app a JSON string where it wants a JSON object. Anywhere
         // else in a sentence, a value still renders as text.
-        Value::String(text) => match whole_placeholder(text).and_then(|key| params.get(key)) {
-            Some(value) => value.clone(),
+        Value::String(text) => match whole_placeholder(text) {
+            // Absent or null, it is `null` on the wire — the app's own
+            // default applies. Rendered as text it would be the literal
+            // `{mode}`, which no schema accepts and no default covers.
+            Some(key) => params.get(key).cloned().unwrap_or(Value::Null),
             None => Value::String(fill(text, params)),
         },
         Value::Array(items) => {
@@ -560,8 +578,18 @@ pub async fn run(
     })
 }
 
+/// One line per step, and a short one: the full result of the last step is
+/// the routine's observation and is rendered in full beneath the list, so
+/// a step line that repeated it would put a two-kilobyte digest in the
+/// model's context twice.
 fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().trim().to_owned()
+    const STEP_LINE: usize = 160;
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= STEP_LINE {
+        return line.to_owned();
+    }
+    let kept: String = line.chars().take(STEP_LINE).collect();
+    format!("{kept}…")
 }
 
 fn stopped(routine: &Routine, steps: Vec<String>, observation: String, why: &str) -> RoutineRun {
@@ -758,6 +786,20 @@ mod tests {
         assert!(filled["params"]["args"].is_object(), "{filled}");
         assert_eq!(filled["params"]["args"]["cx"], 512);
         assert_eq!(filled["params"]["op"], "vector.object.add-ellipse");
+    }
+
+    /// A whole placeholder nobody supplied is `null`, never the literal
+    /// `{name}`: the app then applies its own default instead of refusing a
+    /// value that was never meant to be one.
+    #[test]
+    fn an_unsupplied_whole_placeholder_is_null() {
+        let filled = filled_args(
+            &serde_json::json!({ "params": { "path": "{path}", "mode": "{mode}" } }),
+            &params(&[("path", Value::String("x.svg".into()))]),
+        );
+
+        assert_eq!(filled["params"]["path"], "x.svg");
+        assert!(filled["params"]["mode"].is_null(), "{filled}");
     }
 
     /// A placeholder inside a sentence still renders as text, or a navigate

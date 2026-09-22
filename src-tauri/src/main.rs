@@ -16,8 +16,11 @@ mod commands;
 mod control;
 mod error;
 mod events;
+mod mode_control;
 mod state;
 mod view;
+mod voice;
+mod window_mode;
 
 #[cfg(test)]
 mod tests;
@@ -54,9 +57,24 @@ fn main() -> std::process::ExitCode {
 
     let app = tauri::Builder::default()
         .manage(desktop)
+        .manage(voice::Voice::default())
+        .manage(window_mode::WindowMode::default())
+        .manage(mode_control::ModeControl::default())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                tauri::Manager::state::<voice::Voice>(window).shutdown();
+                tauri::Manager::state::<mode_control::ModeControl>(window).shutdown();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::handshake,
             commands::get_bootstrap,
+            voice::voice_start,
+            voice::voice_status,
+            voice::voice_stop,
+            voice::voice_cancel,
+            window_mode::window_compositor,
+            mode_control::complete_window_mode,
             commands::list_projects,
             commands::create_project,
             commands::show_project,
@@ -112,7 +130,7 @@ fn main() -> std::process::ExitCode {
             // carrying it to the window. On the app's own async runtime: the
             // turns it spawns must outlive the connections that asked for
             // them, and end with the window.
-            let control = control::serve(listen_on, runtime, runs);
+            let control = control::serve(listen_on, runtime, runs, app.handle().clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = control.await {
                     eprintln!(

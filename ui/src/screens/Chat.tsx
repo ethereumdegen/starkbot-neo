@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { MessageView } from "../bridge/api";
 import { AskCard, ConfirmCard } from "../components/GateCard";
@@ -62,13 +62,12 @@ function Bubble({ message, steered }: { message: MessageView; steered: boolean }
   );
 }
 
-export function Chat() {
+export function Chat({ composer }: { composer: ReactNode }) {
   const conversations = useStore((state) => state.conversation.conversations);
   const activeId = useStore((state) => state.conversation.activeId);
   const messages = useStore((state) => state.conversation.messages);
   const runs = useStore((state) => state.runs);
   const busy = useStore((state) => state.ui.busy);
-  const send = useStore((state) => state.send);
   const stop = useStore((state) => state.stop);
   const select = useStore((state) => state.selectConversation);
   const create = useStore((state) => state.newConversation);
@@ -80,7 +79,6 @@ export function Chat() {
   const resolveConfirm = useStore((state) => state.resolveConfirm);
   const answerAsk = useStore((state) => state.answerAsk);
 
-  const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [showTurn, setShowTurn] = useState(false);
@@ -133,25 +131,6 @@ export function Chat() {
     return () => window.clearInterval(timer);
   }, [live]);
 
-  /**
-   * Escape stops the turn, wherever the focus is.
-   *
-   * The Stop button is across the window from the composer, which is where
-   * the hands are when a turn goes wrong; a key that only worked while the
-   * button had focus would be a key nobody could reach in time.
-   */
-  useEffect(() => {
-    if (liveRun === null) {
-      return;
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        void stop(liveRun);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [liveRun, stop]);
 
   // A card raised below a long thread is a card nobody sees, and the run
   // waits for it — so it scrolls itself into view like the rest of the tail.
@@ -162,14 +141,6 @@ export function Chat() {
 
   const active = conversations.find((row) => row.id === activeId) ?? null;
 
-  const submit = () => {
-    const text = draft.trim();
-    if (text === "" || busy) {
-      return;
-    }
-    setDraft("");
-    void send(text);
-  };
 
   return (
     <div className={`${panes.columns} ${showTurn ? panes.chat : panes.chatWide}`}>
@@ -346,33 +317,7 @@ export function Chat() {
             {current.usage?.input_tokens ?? "—"} in / {current.usage?.output_tokens ?? "—"} out
           </div>
         )}
-        <form
-          className={chat.composer}
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
-        >
-          <textarea
-            rows={2}
-            value={draft}
-            placeholder={live ? "Say something into this turn" : "Ask for something"}
-            aria-label="Message"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
-          {/* A turn is already running: what is typed steers it rather than
-              starting a second one, and the label says so before it is
-              pressed. */}
-          <button type="submit" className="primary" disabled={busy}>
-            {live ? "Steer" : "Send"}
-          </button>
-        </form>
+        {composer}
       </section>
 
       {showTurn && (

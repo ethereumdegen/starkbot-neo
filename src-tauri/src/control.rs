@@ -23,8 +23,10 @@ use neo_core::{ConversationId, RunId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tauri::{AppHandle, Manager};
 
 use crate::commands;
+use crate::mode_control::{ModeControl, WindowAction, WindowMode};
 use crate::state::Runs;
 
 /// The most a request may be. A peer that opens the socket and writes without
@@ -38,16 +40,17 @@ const MAX_REQUEST: u64 = 64 * 1024;
 /// not to push the rest of the row off it.
 const TITLE_LIMIT: usize = 60;
 
-/// One request, one connection. `title` is optional because most callers have
-/// nothing better to say than what they already said in `say`.
+/// A turn or an acknowledged window-mode change, never both.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Request {
-    say: String,
+    say: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    window_mode: Option<WindowAction>,
 }
 
-/// The answer, in the two shapes a caller has to tell apart.
+/// A started turn, an acknowledged window mode, or an explicit failure.
 ///
 /// `ok` is a field rather than a tag because the caller is often a shell
 /// pipeline: `.ok` is one `jq` away, and a client that only knows this much
@@ -61,6 +64,10 @@ pub enum Response {
         ok: bool,
         conversation: ConversationId,
         run: RunId,
+    },
+    WindowMode {
+        ok: bool,
+        mode: WindowMode,
     },
     Failed {
         ok: bool,
@@ -91,7 +98,12 @@ impl Response {
 /// caller reports and then lives without: a window with no control channel is
 /// still a window, and refusing to open one because a stale file could not be
 /// removed would be a worse failure than the one being reported.
-pub async fn serve(socket: PathBuf, runtime: Arc<Runtime>, runs: Arc<Runs>) -> io::Result<()> {
+pub async fn serve<R: tauri::Runtime>(
+    socket: PathBuf,
+    runtime: Arc<Runtime>,
+    runs: Arc<Runs>,
+    app: AppHandle<R>,
+) -> io::Result<()> {
     let listener = bind(&socket)?;
     eprintln!("neo-desktop: control socket at {}", socket.display());
     loop {
@@ -108,10 +120,11 @@ pub async fn serve(socket: PathBuf, runtime: Arc<Runtime>, runs: Arc<Runs>) -> i
         };
         let runtime = Arc::clone(&runtime);
         let runs = Arc::clone(&runs);
+        let app = app.clone();
         // Each connection on its own task: a peer that stops reading half way
         // through the answer must not hold up the next caller.
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, runtime, runs).await {
+            if let Err(error) = serve_connection(stream, runtime, runs, app).await {
                 eprintln!("neo-desktop: control connection ended: {error}");
             }
         });
@@ -150,17 +163,18 @@ fn bind(socket: &Path) -> io::Result<UnixListener> {
 }
 
 /// One request and one answer, then the peer is closed.
-async fn serve_connection(
+async fn serve_connection<R: tauri::Runtime>(
     stream: UnixStream,
     runtime: Arc<Runtime>,
     runs: Arc<Runs>,
+    app: AppHandle<R>,
 ) -> io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut line = String::new();
     BufReader::new(reader.take(MAX_REQUEST))
         .read_line(&mut line)
         .await?;
-    let response = handle(&line, runtime, runs).await;
+    let response = handle(&line, runtime, runs, app).await;
     // The newline is part of the protocol, not decoration: it is what lets a
     // caller read one answer without waiting for the socket to close.
     writer.write_all(encode(&response).as_bytes()).await?;
@@ -171,14 +185,29 @@ async fn serve_connection(
 /// Answer one request line. Every failure becomes a `Failed` response rather
 /// than an error: the caller is owed words it can print, and a connection
 /// that dropped silently would look to a shell like the window ignoring it.
-pub(crate) async fn handle(line: &str, runtime: Arc<Runtime>, runs: Arc<Runs>) -> Response {
+pub(crate) async fn handle<R: tauri::Runtime>(
+    line: &str,
+    runtime: Arc<Runtime>,
+    runs: Arc<Runs>,
+    app: AppHandle<R>,
+) -> Response {
     let request: Request = match serde_json::from_str(line.trim()) {
         Ok(request) => request,
         Err(error) => {
             return Response::failed(format!(
-                "expected one JSON object of the form {{\"say\": \"…\"}}: {error}"
+                "expected {{\"say\":\"…\"}} or {{\"window_mode\":\"mini|full|toggle|status\"}}: {error}"
             ));
         }
+    };
+    let say = match (request.say, request.window_mode) {
+        (Some(say), None) => say,
+        (None, Some(desired)) if request.title.is_none() => {
+            return match app.state::<ModeControl>().request(&app, desired).await {
+                Ok(mode) => Response::WindowMode { ok: true, mode },
+                Err(error) => Response::failed(error.message),
+            };
+        }
+        _ => return Response::failed("provide exactly one of say or window_mode; title applies only to say"),
     };
 
     // Its own thread, always. A control message arrives with no idea what the
@@ -188,7 +217,7 @@ pub(crate) async fn handle(line: &str, runtime: Arc<Runtime>, runs: Arc<Runs>) -
     let title = request
         .title
         .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| thread_title(&request.say));
+        .unwrap_or_else(|| thread_title(&say));
     let conversation = {
         let runtime = Arc::clone(&runtime);
         match commands::blocking(move || runtime.new_conversation(Some(title))).await {
@@ -200,7 +229,7 @@ pub(crate) async fn handle(line: &str, runtime: Arc<Runtime>, runs: Arc<Runs>) -
     // The same path the composer takes, on this process's runtime — which is
     // the whole point of the socket, because that runtime is the one whose
     // `AppEvent`s the open window is subscribed to.
-    match commands::start_turn(runtime, runs, conversation.id, request.say).await {
+    match commands::start_turn(runtime, runs, conversation.id, say).await {
         Ok(run) => Response::started(conversation.id, run),
         Err(error) => Response::failed(error.message),
     }

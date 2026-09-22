@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 import { useAppEvents } from "./bridge/events";
+import { api, errorOf, onWindowModeRequest, type WindowMode, type WindowModeRequest } from "./bridge/api";
+import { setMiniMode } from "./bridge/window";
+import { AgentComposer, type InputMode } from "./components/AgentComposer";
+import { MiniMode } from "./components/MiniMode";
+import { useDictation } from "./hooks/useDictation";
+import { currentChatRun } from "./store/runs";
 import { Chat } from "./screens/Chat";
 import { Connections } from "./screens/Connections";
 import { Inspect } from "./screens/Inspect";
@@ -23,10 +30,14 @@ const TABS: { id: Screen; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-function Screens({ screen, projectsEpoch }: { screen: Screen; projectsEpoch: number }) {
+function Screens({ screen, projectsEpoch, composer }: {
+  screen: Screen;
+  projectsEpoch: number;
+  composer: ReactNode;
+}) {
   switch (screen) {
     case "chat":
-      return <Chat />;
+      return <Chat composer={composer} />;
     case "runs":
       return <Runs />;
     case "projects":
@@ -40,9 +51,96 @@ function Screens({ screen, projectsEpoch }: { screen: Screen; projectsEpoch: num
   }
 }
 
+interface ModeResult {
+  mode: WindowMode;
+  error: string | null;
+}
+
 export function App() {
   useAppEvents();
   const [projectsEpoch, setProjectsEpoch] = useState(0);
+  const [mini, setMini] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const currentMode = useRef<WindowMode>("full");
+  const transitions = useRef<Promise<unknown>>(Promise.resolve());
+  const queued = useRef(0);
+  const [modeError, setModeError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [inputMode, setInputMode] = useState<InputMode>("typing");
+  const appendTranscript = useCallback((text: string) => {
+    setDraft((value) => value.trim() === "" ? text : `${value.trimEnd()} ${text}`);
+  }, []);
+  const dictation = useDictation(appendTranscript);
+
+  const changeMode = useCallback((request: WindowModeRequest): Promise<ModeResult> => {
+    queued.current++;
+    setSwitching(true);
+    const operation = transitions.current.then(async (): Promise<ModeResult> => {
+      if (request === "status") return { mode: currentMode.current, error: null };
+      const next = request === "toggle" ? (currentMode.current === "mini" ? "full" : "mini") : request;
+      setModeError(null);
+      try {
+        // Release the full layout's minimum content size before GTK shrinks
+        // the webview. Keep mini rendered until expansion finishes on return.
+        if (next === "mini") flushSync(() => setMini(true));
+        await setMiniMode(next === "mini");
+        currentMode.current = next;
+        setMini(next === "mini");
+        return { mode: next, error: null };
+      } catch (error) {
+        setMini(currentMode.current === "mini");
+        const message = errorOf(error).message;
+        setModeError(message);
+        return { mode: currentMode.current, error: message };
+      }
+    }).finally(() => {
+      queued.current--;
+      if (queued.current === 0) setSwitching(false);
+    });
+    transitions.current = operation;
+    return operation;
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const listener = onWindowModeRequest(([requestId, desired]) => {
+      if (!active) return;
+      void changeMode(desired)
+        .then((result) => api.completeWindowMode(requestId, result.mode, result.error))
+        .catch((error) => setModeError(errorOf(error).message));
+    });
+    void listener.catch((error) => {
+      if (active) setModeError(errorOf(error).message);
+    });
+    return () => {
+      active = false;
+      void listener.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [changeMode]);
+
+  const openFull = (target?: Screen) => {
+    if (target !== undefined) useStore.getState().setScreen(target);
+    void changeMode("full");
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.repeat && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        void changeMode("toggle");
+      } else if (event.key === "Escape") {
+        if (dictation.status !== "idle") {
+          void dictation.cancel();
+        } else {
+          const state = useStore.getState();
+          const run = currentChatRun(state.runs, state.conversation.activeId);
+          if (run?.status === "running") void state.stop(run.run);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [changeMode, dictation.status, dictation.cancel]);
 
   const screen = useStore((state) => state.ui.screen);
   const setScreen = useStore((state) => state.setScreen);
@@ -68,6 +166,33 @@ export function App() {
    * from state rather than set, so storing the key clears it.
    */
   const missingKey = useStore((state) => missingRequiredKey(state.catalog.keys, state.health));
+  const composer = (
+    <AgentComposer draft={draft} setDraft={setDraft} inputMode={inputMode}
+      setInputMode={setInputMode} dictation={dictation}
+      onConnections={() => openFull("connections")} />
+  );
+  const notices = (
+    <>
+      {modeError !== null && (
+        <div className={`${shell.banner} fail`} role="alert">
+          <span>{modeError}</span>
+          <button className="link" onClick={() => setModeError(null)}>Dismiss</button>
+        </div>
+      )}
+      {missingKey !== null && (
+        <div className={`${shell.banner} fail`} role="alert">
+          <span>No {missingKey} key is stored, so nothing can run yet.</span>
+          <button className="link" onClick={() => openFull("connections")}>Open Connections</button>
+        </div>
+      )}
+      {banner !== null && (
+        <div className={`${shell.banner} ${banner.tone}`} role="status">
+          <span>{banner.text}</span>
+          <button className="link" onClick={dismiss}>Dismiss</button>
+        </div>
+      )}
+    </>
+  );
 
   // Before anything else: a window built against another `BRIDGE_VERSION`
   // renders the refusal and nothing else. Painting the shell over a bridge
@@ -86,7 +211,13 @@ export function App() {
   }
 
   return (
-    <div className={shell.shell}>
+    <>
+    {mini && (
+      <MiniMode composer={composer} expand={() => openFull("chat")}
+        switching={switching} notice={notices}
+        onError={(error) => setModeError(errorOf(error).message)} />
+    )}
+    <div className={shell.shell} hidden={mini}>
       <nav className={shell.rail} aria-label="Screens">
         <div className={shell.wordmark}>Starkbot Neo</div>
         {TABS.map((tab) => (
@@ -95,6 +226,7 @@ export function App() {
             className={shell.tab}
             aria-current={screen === tab.id ? "page" : undefined}
             onClick={() => {
+              if (tab.id !== "chat") void dictation.cancel();
               setScreen(tab.id);
               if (tab.id === "projects") {
                 setProjectsEpoch((value) => value + 1);
@@ -110,6 +242,10 @@ export function App() {
           </button>
         ))}
         <div className={shell.railFoot}>
+        <button className={shell.miniToggle} disabled={switching || !ready}
+          onClick={() => void changeMode("mini")} title="Mini mode (Ctrl+Shift+M)">
+          Mini mode <span aria-hidden="true">↙</span>
+        </button>
           <span>bridge v{catalog.bridgeVersion}</span>
           <span>{catalog.storePath}</span>
           {gaps > 0 && <span>{gaps} event gaps repaired</span>}
@@ -117,33 +253,16 @@ export function App() {
       </nav>
 
       <main className={shell.main}>
-        {missingKey !== null && (
-          <div className={`${shell.banner} fail`} role="alert">
-            <span>
-              No {missingKey} key is stored, so nothing can run yet. Connections is where it
-              goes.
-            </span>
-            <button className="link" onClick={() => setScreen("connections")}>
-              Open Connections
-            </button>
-          </div>
-        )}
-        {banner !== null && (
-          <div className={`${shell.banner} ${banner.tone}`} role="status">
-            <span>{banner.text}</span>
-            <button className="link" onClick={dismiss}>
-              Dismiss
-            </button>
-          </div>
-        )}
+        {notices}
         <div className={shell.screen}>
           {ready ? (
-            <Screens screen={screen} projectsEpoch={projectsEpoch} />
+            <Screens screen={screen} projectsEpoch={projectsEpoch} composer={mini ? null : composer} />
           ) : (
             <p className={shell.loading}>opening the store…</p>
           )}
         </div>
       </main>
     </div>
+    </>
   );
 }

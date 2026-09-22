@@ -17,6 +17,7 @@ fn app(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
     let desktop = Desktop::open(dir).expect("the runtime opens on a fresh directory");
     mock_builder()
         .manage(desktop)
+        .manage(crate::mode_control::ModeControl::default())
         .build(mock_context(noop_assets()))
         .expect("the mock app builds")
 }
@@ -601,6 +602,7 @@ async fn a_control_message_becomes_a_thread_with_the_user_in_it() {
             r#"{"say":"make a cool logo for starkbot"}"#,
             desktop.runtime(),
             desktop.runs(),
+            app.handle().clone(),
         ),
     )
     .await
@@ -650,38 +652,27 @@ async fn a_control_message_becomes_a_thread_with_the_user_in_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A peer that writes nonsense gets words back and nothing else happens. The
-/// listener serves the window; it may not be taken down by whatever arrives
-/// on it, and a caller that guessed the protocol wrong is owed an answer it
-/// can print rather than a closed socket.
+/// Malformed JSON, invalid modes and ambiguous actions cannot create a turn.
 #[tokio::test]
 async fn a_malformed_control_line_is_answered_not_fatal() {
     let dir = scratch("control-junk");
     let app = app(&dir);
     let desktop = app.state::<Desktop>();
 
-    let answer = crate::control::handle("{ not json", desktop.runtime(), desktop.runs()).await;
-    let answer = serde_json::to_value(&answer).expect("the response is JSON");
-    assert_eq!(
-        answer.get("ok").and_then(serde_json::Value::as_bool),
-        Some(false)
-    );
-    assert!(
-        answer
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|error| error.contains("say")),
-        "the refusal names the field the caller missed: {answer}"
-    );
-
+    for line in [
+        "{ not json",
+        r#"{"window_mode":"unknown"}"#,
+        r#"{"say":"do not send this","window_mode":"mini"}"#,
+    ] {
+        let answer = crate::control::handle(
+            line, desktop.runtime(), desktop.runs(), app.handle().clone(),
+        ).await;
+        let answer = serde_json::to_value(&answer).expect("the response is JSON");
+        assert_eq!(answer.get("ok").and_then(serde_json::Value::as_bool), Some(false));
+    }
     let rows = commands::list_conversations(app.state(), None)
-        .await
-        .expect("threads are listable");
-    assert!(
-        rows.is_empty(),
-        "a request that could not be read started nothing"
-    );
-
+        .await.expect("threads are listable");
+    assert!(rows.is_empty(), "a rejected request must not create a conversation");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -706,6 +697,7 @@ async fn the_control_socket_answers_a_line_and_is_private() {
         socket.clone(),
         desktop.runtime(),
         desktop.runs(),
+        app.handle().clone(),
     ));
     let mut stream = connect(&socket).await;
 

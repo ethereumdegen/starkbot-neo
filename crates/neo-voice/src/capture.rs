@@ -26,6 +26,7 @@ use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
 use crate::error::VoiceError;
 use crate::resample::{self, TARGET_RATE};
+use crate::spectrum::{Analyzer, SPECTRUM_BINS, Spectrum};
 
 /// The longest single utterance push-to-talk will keep.
 ///
@@ -144,6 +145,7 @@ struct Captured {
 struct Session {
     stop: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
+    spectrum: Arc<Spectrum>,
     done: Receiver<Result<Captured, VoiceError>>,
     thread: JoinHandle<()>,
 }
@@ -250,16 +252,24 @@ impl Microphone {
 
         let stop = Arc::new(AtomicBool::new(false));
         let level = Arc::new(AtomicU32::new(0));
+        let spectrum = Arc::new(Spectrum::default());
         let (ready_tx, ready_rx) = sync_channel::<Result<(), VoiceError>>(1);
         let (done_tx, done_rx) = sync_channel::<Result<Captured, VoiceError>>(1);
 
         let device_id = self.device_id.clone();
         let thread_stop = Arc::clone(&stop);
         let thread_level = Arc::clone(&level);
+        let thread_spectrum = Arc::clone(&spectrum);
         let thread = std::thread::Builder::new()
             .name("neo-voice-capture".into())
             .spawn(move || {
-                let outcome = capture(device_id, &thread_stop, &thread_level, &ready_tx);
+                let outcome = capture(
+                    device_id,
+                    &thread_stop,
+                    &thread_level,
+                    &thread_spectrum,
+                    &ready_tx,
+                );
                 // The receiver is gone only if the caller dropped the
                 // microphone mid-recording; the samples die with it.
                 let _ = done_tx.send(outcome);
@@ -273,6 +283,7 @@ impl Microphone {
                 self.session = Some(Session {
                     stop,
                     level,
+                    spectrum,
                     done: done_rx,
                     thread,
                 });
@@ -361,6 +372,28 @@ impl Microphone {
             None => 0.0,
         }
     }
+
+    /// Whether the capture thread has ended (device loss or the duration cap).
+    ///
+    /// Call [`Self::stop`] to retrieve the recording or its terminal error.
+    #[must_use]
+    pub fn capture_finished(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.thread.is_finished())
+    }
+
+    /// Log-spaced FFT magnitudes from actual input, normalized to `0.0..=1.0`.
+    ///
+    /// The first read enables analysis on the capture thread; clients using
+    /// only the peak meter pay no FFT cost. At most 25 frames are computed
+    /// per second. Silence and a stopped microphone read as zero.
+    #[must_use]
+    pub fn spectrum(&self) -> [f32; SPECTRUM_BINS] {
+        self.session
+            .as_ref()
+            .map_or([0.0; SPECTRUM_BINS], |session| session.spectrum.read())
+    }
 }
 
 impl Drop for Microphone {
@@ -398,6 +431,7 @@ fn capture(
     device_id: Option<String>,
     stop: &AtomicBool,
     level: &AtomicU32,
+    spectrum: &Spectrum,
     ready: &SyncSender<Result<(), VoiceError>>,
 ) -> Result<Captured, VoiceError> {
     let started = match open_stream(device_id.as_deref()) {
@@ -420,6 +454,7 @@ fn capture(
 
     let mut accumulator = Accumulator::new(sample_rate, MAX_UTTERANCE);
     let mut peak = 0.0f32;
+    let mut analyzer = None;
     let failed = loop {
         let finishing = stop.load(Ordering::Relaxed);
         let mut batch_peak = 0.0f32;
@@ -431,6 +466,11 @@ fn capture(
         }
         peak = batch_peak.max(peak * LEVEL_DECAY);
         level.store(peak.min(1.0).to_bits(), Ordering::Relaxed);
+        if spectrum.enabled() {
+            analyzer
+                .get_or_insert_with(|| Analyzer::new(sample_rate))
+                .update(&accumulator.samples, spectrum);
+        }
         // Checked every tick rather than only at the end: once the host has
         // torn the stream down no more samples are coming, so draining on is
         // a busy loop over a dead device.
@@ -446,6 +486,7 @@ fn capture(
     // Drop the stream before returning: the orange indicator goes out here.
     drop(stream);
     level.store(0.0f32.to_bits(), Ordering::Relaxed);
+    spectrum.clear();
 
     // Read once more after the stream is gone, for the unplug that lands in
     // the same tick the key was released: without this the caller gets an

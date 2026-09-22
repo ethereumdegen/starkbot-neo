@@ -1001,6 +1001,25 @@ impl Runtime {
         Ok(neo_voice::transcriber(key.as_deref(), base.as_ref())?)
     }
 
+    /// Build a named speech-to-text backend without falling back to another.
+    ///
+    /// Uses the same cached credential and endpoint as [`Self::transcriber`].
+    /// Desktop dictation explicitly selects OpenAI, including on macOS.
+    pub fn transcriber_for(
+        &self,
+        backend: neo_voice::Backend,
+    ) -> Result<Box<dyn neo_voice::Transcriber>, RuntimeError> {
+        let key = self.secret(neo_keys::ACCOUNT_OPENAI)?;
+        let base = std::env::var("OPENAI_BASE_URL")
+            .ok()
+            .and_then(|value| Url::parse(&value).ok());
+        Ok(neo_voice::transcriber_for(
+            backend,
+            key.as_deref(),
+            base.as_ref(),
+        )?)
+    }
+
     /// Announce this process on the machine-local roster (cross-process
     /// coordination).
     ///

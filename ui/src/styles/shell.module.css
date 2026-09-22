@@ -17,6 +17,10 @@
   height: 100%;
 }
 
+.shell[hidden] {
+  display: none;
+}
+
 .rail {
   border-right: 1px solid var(--border);
   background: var(--surface);
@@ -78,6 +82,18 @@
   flex-direction: column;
   gap: var(--space-1);
   overflow-wrap: anywhere;
+}
+
+.miniToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  color: var(--text);
+  font-size: var(--meta);
 }
 
 .main {

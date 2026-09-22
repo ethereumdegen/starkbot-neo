@@ -25,6 +25,7 @@ mod capture;
 mod error;
 mod permission;
 mod resample;
+mod spectrum;
 mod stt;
 
 pub use capture::{DeviceInfo, MAX_UTTERANCE, Microphone, Utterance};
@@ -34,6 +35,7 @@ pub use permission::{
     SpeechAuth, dictation_enabled, microphone_status, speech_status,
 };
 pub use resample::TARGET_RATE;
+pub use spectrum::SPECTRUM_BINS;
 pub use stt::{
     BACKENDS, Backend, OpenAiTranscriber, Transcriber, Transcript, transcriber, transcriber_for,
 };

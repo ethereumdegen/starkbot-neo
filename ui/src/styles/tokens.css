@@ -3,6 +3,8 @@
   --bg: #0b0d10;
   --surface: rgba(255, 255, 255, 0.06);
   --surface-solid: #14171c;
+  --mini-surface: #0d1413;
+  --mini-strip: #201a32;
   --surface-raised: rgba(255, 255, 255, 0.1);
   /* Not in the §2 table: the two literals the first screen had inline, named
      here so the table's rule — one place a colour exists — still holds. */

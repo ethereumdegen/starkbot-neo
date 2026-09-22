@@ -24,6 +24,7 @@ neo-core.workspace = true
 neo-eval.workspace = true
 neo-otel.workspace = true
 neo-store.workspace = true
+neo-voice.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true

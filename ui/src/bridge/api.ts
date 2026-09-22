@@ -274,6 +274,10 @@ export const APP_EVENT = "app://event";
  */
 export const EVENT_GAP = "event_gap";
 
+export type DictationStatus = "idle" | "starting" | "listening" | "transcribing";
+export type WindowMode = "mini" | "full";
+export type WindowModeRequest = WindowMode | "toggle" | "status";
+
 export const api = {
   /**
    * The first call a window makes.
@@ -285,6 +289,16 @@ export const api = {
    * it, instead of an `undefined` three screens in.
    */
   handshake: () => invoke<number>("handshake", { uiVersion: BRIDGE_VERSION }),
+
+  windowCompositor: (action: "capture" | "mini" | "restore" | "clear") =>
+    invoke<boolean>("window_compositor", { action }),
+  completeWindowMode: (requestId: number, actualMode: WindowMode, error: string | null) =>
+    invoke<void>("complete_window_mode", { requestId, actualMode, error }),
+
+  voiceStart: () => invoke<void>("voice_start"),
+  voiceStatus: () => invoke<[DictationStatus, number[]]>("voice_status"),
+  voiceStop: () => invoke<string>("voice_stop"),
+  voiceCancel: () => invoke<void>("voice_cancel"),
 
   getBootstrap: () => invoke<BootstrapView>("get_bootstrap"),
   listProjects: () => invoke<Project[]>("list_projects"),
@@ -393,6 +407,12 @@ export function onLoginDone(handler: (row: ConnectionRow) => void): Promise<Unli
 
 export function onLoginFailed(handler: (failure: LoginFailed) => void): Promise<UnlistenFn> {
   return listen<LoginFailed>("login:failed", (event) => handler(event.payload));
+}
+
+export function onWindowModeRequest(
+  handler: (request: [number, WindowModeRequest]) => void,
+): Promise<UnlistenFn> {
+  return listen<[number, WindowModeRequest]>("ui://window-mode", (event) => handler(event.payload));
 }
 
 /** Every command rejects with a `UiError`; anything else is a bug worth showing. */
