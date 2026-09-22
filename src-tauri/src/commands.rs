@@ -28,7 +28,7 @@ use crate::state::{Desktop, Runs, provider_by_id};
 use crate::view::{
     AxRequestView, AxResponseView, BootstrapView, CaseListingView, CheckView, ConnectionRow,
     ConversationView, Fix, InferenceView, KeyRow, LoginFailed, LoginStart, MessageView, ModelRow,
-    ProjectDetailView, RunKind, SUBSCRIPTIONS, Session, SettingsView,
+    ProjectDetailView, RunKind, SUBSCRIPTIONS, Session, SettingsView, selectable_models,
 };
 
 /// How much of a thread the window paints, and how many threads the switcher
@@ -496,7 +496,7 @@ pub async fn list_models(
     provider: Option<String>,
 ) -> Result<Vec<ModelRow>, UiError> {
     let runtime = state.runtime();
-    let models = blocking(move || {
+    let (provider, models) = blocking(move || {
         let provider = match provider {
             Some(provider) => provider,
             None => runtime
@@ -507,13 +507,15 @@ pub async fn list_models(
                 .as_str()
                 .to_owned(),
         };
-        runtime.models(&provider)
+        let models = runtime.models(&provider)?;
+        Ok((provider, models))
     })
     .await?;
-    Ok(models
+    let rows = models
         .iter()
         .map(|model| ModelRow::new(&model.info, model.hidden))
-        .collect())
+        .collect();
+    Ok(selectable_models(&provider, rows))
 }
 
 /// Re-read one API-key runtime's catalogue from the vendor.

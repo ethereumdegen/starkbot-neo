@@ -9,6 +9,7 @@ use neo_agent::Runtime;
 use neo_agent::ax::{ActReport, AxRequest, AxResponse, TrustReport};
 use neo_agent::doctor::{Check, DoctorReport, Health};
 use neo_agent::oauth::{ANTHROPIC_OAUTH, OPENAI_CODEX, OauthProvider};
+use neo_agent::runtime::OPENAI_CODEX_DEFAULT_MODEL;
 use neo_core::{
     HeartbeatTick, InferenceConnection, KeyState, KeyStatus, PROVIDER_ANTHROPIC,
     PROVIDER_ANTHROPIC_OAUTH, PROVIDER_OPENAI, PROVIDER_OPENAI_CODEX, Project, ProviderAccount,
@@ -312,6 +313,26 @@ impl ModelRow {
     }
 }
 
+/// Add the model proven to work on a ChatGPT plan when that path has no
+/// catalogue endpoint of its own. The symbolic choice stays available in the
+/// picker; this row lets a user pin the concrete model explicitly.
+#[must_use]
+pub fn selectable_models(provider: &str, mut models: Vec<ModelRow>) -> Vec<ModelRow> {
+    if provider == PROVIDER_OPENAI_CODEX
+        && !models
+            .iter()
+            .any(|model| model.id == OPENAI_CODEX_DEFAULT_MODEL)
+    {
+        models.push(ModelRow {
+            id: OPENAI_CODEX_DEFAULT_MODEL.to_owned(),
+            provider: provider.to_owned(),
+            deprecated: false,
+            hidden: false,
+        });
+    }
+    models
+}
+
 /// The parts of the first frame that [`neo_agent::Bootstrap`] does not carry:
 /// the thread the window opens in, what else it could open, and the work
 /// already in flight.
@@ -394,7 +415,7 @@ impl BootstrapView {
                 .iter()
                 .map(ConversationView::new)
                 .collect(),
-            models: session.models,
+            models: selectable_models(selected, session.models),
             eval_cases: session
                 .eval_cases
                 .iter()

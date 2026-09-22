@@ -1744,13 +1744,16 @@ impl LoginHandle {
     }
 }
 
+/// ChatGPT plan model used while its runtime has no cached catalogue.
+pub const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.6-sol";
+
 /// The model a subscription path uses before any catalogue has been fetched.
 ///
 /// Both are the current general-purpose model of each vendor's plan, which is
 /// what a user on that plan expects a turn to cost against their quota.
 const fn default_model(provider: &OauthProvider) -> &'static str {
     if matches!(provider.id.as_bytes(), b"openai-codex") {
-        "gpt-5.1-codex"
+        OPENAI_CODEX_DEFAULT_MODEL
     } else {
         "claude-sonnet-4-5-20250929"
     }
@@ -2147,6 +2150,17 @@ mod tests {
         assert_eq!(bootstrap.store.application_id, APPLICATION_ID as i32);
         assert!(directory.path().join("backups").is_dir());
         assert_eq!(bootstrap.account, None);
+    }
+
+    #[test]
+    fn chatgpt_sol_latest_uses_the_supported_plan_model_without_a_catalogue() {
+        let (_directory, runtime) = runtime();
+
+        let resolved = runtime
+            .resolved_model(&OPENAI_CODEX, None, neo_core::SOL_LATEST)
+            .expect("the symbolic model resolves");
+
+        assert_eq!(resolved, "gpt-5.6-sol");
     }
 
     #[test]

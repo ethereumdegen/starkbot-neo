@@ -378,3 +378,305 @@
   background: var(--surface-hover);
   border-color: var(--working);
 }
+
+/* Settings owns enough controls to need information architecture, not a row
+   of twelve tabs followed by one undifferentiated form. */
+.settingsLayout {
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+
+.settingsNav {
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.settingsNavHead {
+  padding: var(--space-6) var(--space-5) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.settingsNavHead > span,
+.settingsHeader > span {
+  display: block;
+  color: var(--working);
+  font-size: var(--caption);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.settingsNavHead h1,
+.settingsHeader h2 {
+  margin: var(--space-2) 0 0;
+  font-size: var(--title);
+}
+
+.settingsNavHead p,
+.settingsHeader p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-2);
+  font-size: var(--meta);
+  line-height: 1.45;
+}
+
+.settingsNav nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+}
+
+.settingsNavItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3);
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+
+.settingsNavItem > span {
+  font-weight: 600;
+}
+
+.settingsNavItem small {
+  color: var(--text-3);
+  font-size: var(--caption);
+  line-height: 1.35;
+}
+
+.settingsNavItem:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+
+.settingsNavItem[aria-selected="true"] {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--working);
+}
+
+.settingsHeader {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-solid);
+}
+
+.settingsHeader h2 {
+  font-size: var(--bar);
+}
+
+.settingsBody {
+  padding: var(--space-6);
+}
+
+.settingsForm {
+  width: min(100%, 900px);
+  margin: 0 auto;
+}
+
+.settingsGroups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.settingsGroup,
+.settingsField,
+.settingsToggleRow {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.settingsGroup {
+  overflow: hidden;
+}
+
+.settingsGroupHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.settingsGroupHead h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--emphasis);
+}
+
+.settingsGroupHead code,
+.settingsFieldCopy code {
+  color: var(--text-3);
+  font-size: var(--caption);
+}
+
+.settingsGroupHead > span {
+  color: var(--text-3);
+  font-size: var(--caption);
+  white-space: nowrap;
+}
+
+.settingsFields {
+  display: flex;
+  flex-direction: column;
+}
+
+.settingsFields > :not(:last-child) {
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.settingsFields > .settingsField,
+.settingsFields > .settingsToggleRow {
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
+.settingsFields > :last-child {
+  border-bottom: 0;
+}
+
+.settingsField,
+.settingsToggleRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 64px;
+  padding: var(--space-4) var(--space-5);
+}
+
+.settingsFieldCopy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--body);
+}
+
+.settingsFieldCopy label,
+.settingsFieldCopy > span:first-child {
+  font-weight: 500;
+}
+
+.settingsField input,
+.settingsField textarea {
+  width: 100%;
+}
+
+.settingsToggleRow {
+  cursor: pointer;
+}
+
+.settingsToggle {
+  position: relative;
+  justify-self: end;
+  width: 38px;
+  height: 22px;
+}
+
+.settingsToggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.settingsToggle > span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--field);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.settingsToggle > span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.settingsToggle input:checked + span {
+  border-color: var(--working);
+  background: var(--working);
+}
+
+.settingsToggle input:checked + span::after {
+  background: var(--on-accent);
+  transform: translateX(16px);
+}
+
+.settingsToggle input:focus-visible + span {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.settingsError {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: var(--caption);
+}
+
+.settingsActions {
+  position: sticky;
+  bottom: calc(-1 * var(--space-6));
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: var(--surface-solid);
+  box-shadow: 0 -12px 32px var(--bg);
+}
+
+.settingsActions > div {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settingsActions strong {
+  font-size: var(--meta);
+}
+
+.settingsActions span {
+  color: var(--text-3);
+  font-size: var(--caption);
+}
+
+@media (max-width: 980px) {
+  .settingsLayout {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .settingsNavItem small {
+    display: none;
+  }
+
+  .settingsField,
+  .settingsToggleRow {
+    grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1.3fr);
+    gap: var(--space-4);
+  }
+}

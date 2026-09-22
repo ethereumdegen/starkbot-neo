@@ -280,10 +280,17 @@ export function Connections() {
           <h2>Inference runtime</h2>
           <RuntimePicker
             inference={boot.inference}
+            models={boot.models}
             busy={busy}
             onSelect={(provider) =>
               void run(async () => {
                 await api.setInferenceRuntime(provider);
+                await refresh();
+              })
+            }
+            onModelSelect={(model) =>
+              void run(async () => {
+                await api.setInferenceRuntime(boot.inference.provider, model);
                 await refresh();
               })
             }

@@ -352,6 +352,20 @@ section h2 {
   border-color: var(--working);
 }
 
+.model-picker {
+  display: grid;
+  grid-template-columns: 1fr minmax(220px, auto);
+  gap: var(--space-4);
+  align-items: center;
+  margin-top: var(--space-4);
+}
+
+.model-picker label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-weight: 600;
+}
+
 .banner {
   border-radius: var(--radius-card);
   border: 1px solid currentColor;

@@ -117,6 +117,22 @@ async fn selecting_a_runtime_moves_settings_and_refuses_strangers() {
             .any(|option| option.provider == "anthropic-oauth" && option.selected)
     );
 
+    let chatgpt = commands::set_inference_runtime(
+        app.state(),
+        "openai-codex".to_owned(),
+        Some("sol-latest".to_owned()),
+    )
+    .await
+    .expect("the ChatGPT runtime is selectable");
+    assert_eq!(chatgpt.model, "sol-latest");
+    let models = commands::list_models(app.state(), None)
+        .await
+        .expect("the selected runtime has model choices");
+    assert!(
+        models.iter().any(|model| model.id == "gpt-5.6-sol"),
+        "the model that sol-latest resolves to is available to pin"
+    );
+
     let error = commands::set_inference_runtime(app.state(), "openrouter".to_owned(), None)
         .await
         .expect_err("there is no OpenRouter (K2)");

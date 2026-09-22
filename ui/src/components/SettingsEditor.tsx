@@ -10,6 +10,24 @@ function isObject(value: Json): value is { [key: string]: Json } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const LABEL_WORDS: Record<string, string> = {
+  api: "API",
+  id: "ID",
+  ms: "ms",
+  stt: "STT",
+  tts: "TTS",
+  ui: "UI",
+  url: "URL",
+  usd: "USD",
+};
+
+function labelOf(key: string): string {
+  return key
+    .split("_")
+    .map((word) => LABEL_WORDS[word] ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 /** Replace one leaf of a nested object without mutating what React is holding. */
 function setIn(target: Section, path: string[], value: Json): Section {
   const [head, ...rest] = path;
@@ -32,15 +50,20 @@ function getIn(target: Section, path: string[]): Json {
   return cursor;
 }
 
+function FieldLabel({ id, path }: { id: string; path: string[] }) {
+  return (
+    <div className={panes.settingsFieldCopy}>
+      <label htmlFor={id}>{labelOf(path[path.length - 1])}</label>
+      <code>{path.join(".")}</code>
+    </div>
+  );
+}
+
 /**
  * One setting, rendered from the shape of its value.
  *
- * Driven by the JSON rather than by a hand-written schema: the 12 sections
- * carry some eighty fields whose definitions live in Rust, and a mirrored
- * form would quietly stop showing a field the day someone adds one. A value
- * this cannot lay out — a list, a shape it has no control for — is offered as
- * JSON rather than hidden, because hiding it would make the screen lie about
- * what the section contains.
+ * Driven by the JSON rather than by a hand-written schema: Rust remains the
+ * source of truth, and a newly added setting appears here automatically.
  */
 function Field({
   path,
@@ -51,27 +74,32 @@ function Field({
   value: Json;
   onChange: (path: string[], value: Json) => void;
 }) {
-  const id = path.join(".");
-  const label = path[path.length - 1].replace(/_/g, " ");
+  const id = `setting-${path.join("-")}`;
 
   if (typeof value === "boolean") {
     return (
-      <label className={panes.check}>
-        <input
-          id={id}
-          type="checkbox"
-          checked={value}
-          onChange={(event) => onChange(path, event.target.checked)}
-        />
-        {label}
+      <label className={panes.settingsToggleRow} htmlFor={id}>
+        <span className={panes.settingsFieldCopy}>
+          <span>{labelOf(path[path.length - 1])}</span>
+          <code>{path.join(".")}</code>
+        </span>
+        <span className={panes.settingsToggle}>
+          <input
+            id={id}
+            type="checkbox"
+            checked={value}
+            onChange={(event) => onChange(path, event.target.checked)}
+          />
+          <span aria-hidden="true" />
+        </span>
       </label>
     );
   }
 
   if (typeof value === "number") {
     return (
-      <div className={panes.field}>
-        <label htmlFor={id}>{label}</label>
+      <div className={panes.settingsField}>
+        <FieldLabel id={id} path={path} />
         <input
           id={id}
           type="number"
@@ -88,8 +116,8 @@ function Field({
 
   if (typeof value === "string") {
     return (
-      <div className={panes.field}>
-        <label htmlFor={id}>{label}</label>
+      <div className={panes.settingsField}>
+        <FieldLabel id={id} path={path} />
         <input id={id} value={value} onChange={(event) => onChange(path, event.target.value)} />
       </div>
     );
@@ -97,27 +125,40 @@ function Field({
 
   if (isObject(value)) {
     return (
-      <fieldset className={panes.form}>
-        <h3>{label}</h3>
-        {Object.keys(value).map((key) => (
-          <Field key={key} path={[...path, key]} value={value[key]} onChange={onChange} />
-        ))}
-      </fieldset>
+      <section className={panes.settingsGroup}>
+        <header className={panes.settingsGroupHead}>
+          <div>
+            <h3>{labelOf(path[path.length - 1])}</h3>
+            <code>{path.join(".")}</code>
+          </div>
+          <span>{Object.keys(value).length} fields</span>
+        </header>
+        <div className={panes.settingsFields}>
+          {Object.keys(value).map((key) => (
+            <Field key={key} path={[...path, key]} value={value[key]} onChange={onChange} />
+          ))}
+        </div>
+      </section>
     );
   }
 
-  return <JsonField id={id} label={label} path={path} value={value} onChange={onChange} />;
+  return (
+    <JsonField
+      id={id}
+      path={path}
+      value={value}
+      onChange={onChange}
+    />
+  );
 }
 
 function JsonField({
   id,
-  label,
   path,
   value,
   onChange,
 }: {
   id: string;
-  label: string;
   path: string[];
   value: Json;
   onChange: (path: string[], value: Json) => void;
@@ -131,26 +172,26 @@ function JsonField({
   }, [value]);
 
   return (
-    <div className={panes.field}>
-      <label htmlFor={id}>{label}</label>
-      <textarea
-        id={id}
-        rows={2}
-        value={text}
-        aria-invalid={broken}
-        onChange={(event) => {
-          setText(event.target.value);
-          try {
-            // Parked in local state until it parses: handing the store half a
-            // literal would send Rust a patch nobody typed.
-            onChange(path, JSON.parse(event.target.value) as Json);
-            setBroken(false);
-          } catch {
-            setBroken(true);
-          }
-        }}
-      />
-      {broken && <span className={`${panes.hint} fail`}>Not valid JSON yet — not saved.</span>}
+    <div className={panes.settingsField}>
+      <FieldLabel id={id} path={path} />
+      <div>
+        <textarea
+          id={id}
+          rows={3}
+          value={text}
+          aria-invalid={broken}
+          onChange={(event) => {
+            setText(event.target.value);
+            try {
+              onChange(path, JSON.parse(event.target.value) as Json);
+              setBroken(false);
+            } catch {
+              setBroken(true);
+            }
+          }}
+        />
+        {broken && <span className={`${panes.settingsError} fail`}>Enter valid JSON before saving.</span>}
+      </div>
     </div>
   );
 }
@@ -158,10 +199,8 @@ function JsonField({
 /**
  * One settings section, edited and saved as an RFC 7386 merge patch.
  *
- * Only the top-level keys that changed are sent. Sending the whole section
- * would be a merge patch too, but it would also overwrite anything another
- * front end changed while this form sat open — and the store is shared with
- * the CLI and the TUI.
+ * Only changed top-level keys are sent, so a CLI or TUI edit made while this
+ * form is open is not overwritten by an unrelated save.
  */
 export function SettingsEditor({ section }: { section: SettingsSection }) {
   const settings = useStore((state) => state.settings.settings);
@@ -186,7 +225,7 @@ export function SettingsEditor({ section }: { section: SettingsSection }) {
 
   return (
     <form
-      className={panes.form}
+      className={panes.settingsForm}
       onSubmit={(event) => {
         event.preventDefault();
         const patch: Section = {};
@@ -196,25 +235,31 @@ export function SettingsEditor({ section }: { section: SettingsSection }) {
         void save(section, patch);
       }}
     >
-      <h3>{section}</h3>
-      {Object.keys(draft).map((key) => (
-        <Field
-          key={key}
-          path={[key]}
-          value={getIn(draft, [key])}
-          onChange={(path, value) => setDraft((current) => setIn(current ?? {}, path, value))}
-        />
-      ))}
-      <div className={panes.actions}>
-        <button type="submit" className="primary" disabled={busy || changed.length === 0}>
-          Save {changed.length > 0 ? `${changed.length} change${changed.length === 1 ? "" : "s"}` : ""}
-        </button>
-        <button type="button" disabled={changed.length === 0} onClick={() => setDraft(stored)}>
+      <div className={panes.settingsGroups}>
+        {Object.keys(draft).map((key) => (
+          <Field
+            key={key}
+            path={[key]}
+            value={getIn(draft, [key])}
+            onChange={(path, value) => setDraft((current) => setIn(current ?? {}, path, value))}
+          />
+        ))}
+      </div>
+      <div className={panes.settingsActions}>
+        <div>
+          <strong>
+            {changed.length === 0
+              ? "Everything is saved"
+              : `${changed.length} unsaved change${changed.length === 1 ? "" : "s"}`}
+          </strong>
+          <span>Values are validated by Starkbot before they are stored.</span>
+        </div>
+        <button type="button" disabled={changed.length === 0 || busy} onClick={() => setDraft(stored)}>
           Revert
         </button>
-        <span className={panes.hint}>
-          Rust validates the patch; a refused value comes back as an error and nothing is stored.
-        </span>
+        <button type="submit" className="primary" disabled={busy || changed.length === 0}>
+          {busy ? "Saving…" : "Save changes"}
+        </button>
       </div>
     </form>
   );

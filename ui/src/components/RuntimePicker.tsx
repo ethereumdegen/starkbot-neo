@@ -1,4 +1,4 @@
-import type { InferenceView } from "../bridge/api";
+import type { InferenceView, ModelRow } from "../bridge/api";
 import { Pill } from "./Pill";
 
 /**
@@ -8,13 +8,29 @@ import { Pill } from "./Pill";
  */
 export function RuntimePicker({
   inference,
+  models,
   busy,
   onSelect,
+  onModelSelect,
 }: {
   inference: InferenceView;
+  models: ModelRow[];
   busy: boolean;
   onSelect: (provider: string) => void;
+  onModelSelect: (model: string) => void;
 }) {
+  const modelIds = Array.from(
+    new Set([
+      "sol-latest",
+      inference.model,
+      ...models
+        .filter(
+          (model) =>
+            model.provider === inference.provider && !model.hidden && !model.deprecated,
+        )
+        .map((model) => model.id),
+    ]),
+  );
   return (
     <div className="runtimes">
       {inference.options.map((option) => (
@@ -42,6 +58,24 @@ export function RuntimePicker({
           )}
         </div>
       ))}
+      <div className="model-picker">
+        <div>
+          <label htmlFor="inference-model">Model</label>
+          <div className="meta">Choose Sol automatically or pin a model from this runtime's catalogue.</div>
+        </div>
+        <select
+          id="inference-model"
+          value={inference.model}
+          disabled={busy}
+          onChange={(event) => onModelSelect(event.target.value)}
+        >
+          {modelIds.map((model) => (
+            <option key={model} value={model}>
+              {model === "sol-latest" ? "Sol (latest available)" : model}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
