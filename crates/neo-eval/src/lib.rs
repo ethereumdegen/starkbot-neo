@@ -37,6 +37,8 @@
 //!
 //! A run where the model claims success and the cell is empty fails.
 
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -100,6 +102,11 @@ pub struct NeoAgent {
     /// would therefore have to refuse them; the scope says plainly that this
     /// turn runs inside a lease its caller already holds.
     screen: Option<ScreenScope>,
+    /// Where each event is appended as it happens, when the caller wants a
+    /// breadcrumb trail. The collected trace is only written when the turn
+    /// returns, so a case that hits its timeout leaves nothing — and that is
+    /// the run worth reading.
+    live_log: Option<PathBuf>,
 }
 
 impl NeoAgent {
@@ -115,7 +122,15 @@ impl NeoAgent {
             conversation,
             cancel,
             screen,
+            live_log: None,
         }
+    }
+
+    /// Append every event of every turn to `path` as it arrives.
+    #[must_use]
+    pub fn with_live_log(mut self, path: PathBuf) -> Self {
+        self.live_log = Some(path);
+        self
     }
 }
 
@@ -252,7 +267,12 @@ impl AgentUnderTest for NeoAgent {
             Arc::clone(&self.runtime),
             Cards::from_config(config).unwrap_or_default(),
         );
-        let steps = Collector::attach(self.runtime.subscribe(), request.run, stand.clone());
+        let steps = Collector::attach(
+            self.runtime.subscribe(),
+            request.run,
+            stand.clone(),
+            self.live_log.clone(),
+        );
         let outcome = self.runtime.chat(request).await;
         let collected = steps.finish().await;
 
@@ -425,10 +445,30 @@ struct Collector {
 }
 
 impl Collector {
-    fn attach(mut events: broadcast::Receiver<Envelope>, run: RunId, stand: cards::Stand) -> Self {
+    /// `live` is a file each event is appended to as it arrives.
+    ///
+    /// The trace this collects is only written by `spice` when the turn
+    /// *returns*: a case that hits its timeout is dropped mid-future and
+    /// leaves nothing behind at all, which is precisely the run worth
+    /// looking at. One line per event, flushed as it happens, is what turns
+    /// "it stopped after ten minutes" into "it stopped here".
+    fn attach(
+        mut events: broadcast::Receiver<Envelope>,
+        run: RunId,
+        stand: cards::Stand,
+        live: Option<PathBuf>,
+    ) -> Self {
         let stop = CancellationToken::new();
         let signal = stop.clone();
         let task = tokio::spawn(async move {
+            let started = Instant::now();
+            let mut live = live.and_then(|path| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            });
             let mut collected = Collected::default();
             loop {
                 let envelope = tokio::select! {
@@ -447,6 +487,18 @@ impl Collector {
                 // the turn is an answer that never comes. Cards carry a task
                 // id rather than a run id, and the suite drives one case at a
                 // time (`suite::execute`), so a card in flight is this run's.
+                if let Some(file) = live.as_mut() {
+                    // Name and elapsed time only: enough to see which step
+                    // the clock ran out on, without copying a turn's text
+                    // into a second place.
+                    let _ = writeln!(
+                        file,
+                        "{:>7}ms {}",
+                        started.elapsed().as_millis(),
+                        event_name(&envelope.event)
+                    );
+                    let _ = file.flush();
+                }
                 match &envelope.event {
                     AppEvent::ConfirmRequest { confirm } => {
                         stand.confirm(confirm);
@@ -485,6 +537,21 @@ impl Collector {
 }
 
 /// Fold one event into the trace. Answers whether the turn ended.
+/// The bare name of an event, for the live log.
+fn event_name(event: &AppEvent) -> String {
+    match event {
+        AppEvent::TurnStarted { .. } => "turn started".to_owned(),
+        AppEvent::TurnStep { action, .. } => format!("step {:?} {}", action.kind, action.target.as_deref().unwrap_or("-")),
+        AppEvent::TurnStepDone { .. } => "step done".to_owned(),
+        AppEvent::TurnFinished { .. } => "turn finished".to_owned(),
+        AppEvent::TurnFailed { .. } => "turn failed".to_owned(),
+        AppEvent::NavStep { .. } => "nav step".to_owned(),
+        AppEvent::ConfirmRequest { .. } => "confirm asked".to_owned(),
+        AppEvent::AskRequest { .. } => "question asked".to_owned(),
+        other => format!("{}", serde_json::to_value(other).map(|v| v.get("type").and_then(|t| t.as_str()).unwrap_or("event").to_owned()).unwrap_or_else(|_| "event".to_owned())),
+    }
+}
+
 fn absorb(collected: &mut Collected, run: RunId, event: AppEvent) -> bool {
     match event {
         AppEvent::TurnStep {

@@ -221,12 +221,21 @@ pub async fn run_suite(
         runtime.new_conversation(Some(format!("eval: {}", cases::SUITE_NAME)))
     })?;
 
-    let agent: Arc<dyn AgentUnderTest> = Arc::new(NeoAgent::new(
-        Arc::clone(runtime),
-        conversation.id,
-        cancel.clone(),
-        Some(screen.scope()),
-    ));
+    let trace_dir = runtime.data_dir().join("eval-traces");
+    // Beside the traces, and truncated per suite run so it reads as one
+    // sitting rather than every eval this machine has ever done.
+    let live = trace_dir.join("live.log");
+    let _ = std::fs::create_dir_all(&trace_dir);
+    let _ = std::fs::write(&live, "");
+    let agent: Arc<dyn AgentUnderTest> = Arc::new(
+        NeoAgent::new(
+            Arc::clone(runtime),
+            conversation.id,
+            cancel.clone(),
+            Some(screen.scope()),
+        )
+        .with_live_log(live),
+    );
     // `require_connections` already refused a missing key by name; this
     // covers the rest of what reading a credential can fail on.
     let judge: Arc<dyn Judge> =

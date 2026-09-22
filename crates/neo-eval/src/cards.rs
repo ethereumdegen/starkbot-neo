@@ -237,11 +237,22 @@ impl Stand {
                 }
             }
         };
-        let delivered = answer.as_ref().is_some_and(|answer| {
-            self.runtime
+        // A case with no ask policy has nobody at the desk, and a card left
+        // parked is not neutral: `ask_user` waits `CARD_TIMEOUT` — ten
+        // minutes — which is the whole budget of a case this size. Runs that
+        // browsed into a consent wall spent every second of it there and
+        // timed out with no trace at all. Saying "nobody is answering" ends
+        // the wait at once and lets the case fail on what it measured.
+        let delivered = match answer.as_ref() {
+            Some(answer) => self
+                .runtime
                 .answer_ask(ask.id, answer.clone(), ResolutionVia::Card)
-                .is_ok()
-        });
+                .is_ok(),
+            None => {
+                let _ = self.runtime.cancel_ask(ask.id);
+                false
+            }
+        };
         self.record(
             false,
             json!({
