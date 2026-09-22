@@ -25,7 +25,8 @@ Status, as observed in this tree rather than as planned:
 - M4's deterministic rules, Jev safety heads, confirmation queue and
   user-question cards are live in both interactive front ends. A tripped action
   pauses for approval instead of silently proceeding or ending the run.
-- Voice is push-to-talk capture plus speech-to-text; there is no speech out.
+- Voice is push-to-talk in the terminal and start/stop dictation in the GUI;
+  transcripts are editable before sending. There is no speech out.
 - Media through apps, packs and the GTM workflows are unbuilt.
 
 ## Requirements
@@ -43,9 +44,9 @@ you to find out mid-task:
 
 | | macOS | Linux |
 | --- | --- | --- |
-| Dictation | on-device, no key, no network | none: `gpt-transcribe` with an OpenAI key is the only path in |
+| Dictation | terminal can use on-device recognition; GUI uses OpenAI `gpt-transcribe` | OpenAI `gpt-transcribe`; requires an OpenAI key |
 | `neo app` (native apps) | the Accessibility API | AT-SPI on the session bus; `neo doctor` reports the bus and whether it is enabled. A field that already holds text is the known gap: clearing it needs ⌃A, which a WebKitGTK window under Wayland reads as a bare `a` |
-| Desktop shell | Tauri with the macOS private API and a floating panel | plain webkit2gtk windows; no panel |
+| Desktop shell | Tauri full window and floating mini mode, with Retina-aware positioning | WebKitGTK full window; floating mini mode on Hyprland or X11 |
 
 Credentials go to the login Keychain on macOS and to whatever owns
 `org.freedesktop.secrets` on Linux (gnome-keyring, KWallet, KeePassXC),
@@ -102,11 +103,67 @@ that package alone. Add `--workspace` for the whole thing, as CI does.
 development desktop build loads its window from the dev server and starting
 the binary alone shows an empty one. `neo gui --build` builds it instead.
 
+The sidebar's top toggle collapses navigation into labeled, tooltip-equipped
+icons and expands it again. A focused chat uses the whole content area;
+**‹ Threads** returns to the thread index, and selecting a thread hides
+the index again. Returning to the index does not stop the current agent turn.
+
 `neo nav` and `neo app` drive one surface directly through the navigator —
 a web page over CDP, a native app over the accessibility path — with the same
 policy, element budget and safety heads the agent loop uses. An app is named by
 bundle id, pid, or a substring of its name, and is launched if it is not
 running.
+
+### Mini mode
+
+The **Mini mode** pill is at the bottom of the GUI sidebar, directly above
+the bridge version. It opens a dark, draggable 560×220 composer near the
+bottom of the current display. **Full mode** restores the full window;
+**Ctrl+Shift+M** (or **Cmd+Shift+M** on Mac) toggles either direction.
+The conversation, in-flight agent turn, and unsent draft are shared.
+
+- **Typing** accepts a text query. **Accept** sends it to the current
+  conversation, or steers that conversation's running turn.
+- **Microphone** starts recording and shows **Listening** with a live FFT.
+  **Stop mic** sends the audio to OpenAI `gpt-transcribe` and appends the
+  transcript to the editable query. Nothing is sent to the agent until
+  **Accept**. Configure the OpenAI key in **Connections** on either OS.
+- **Cancel mic** discards the recording. **Escape** cancels dictation, or
+  stops the agent if no dictation is active. Recordings are limited to
+  two minutes and are not written to disk.
+- Pending approvals/questions remain explicit: **Review** expands the
+  full conversation rather than treating Accept as an approval.
+
+The same control is available to scripts and agents without clicking:
+
+```sh
+cargo run -- window mini
+cargo run -- window full
+cargo run -- window toggle
+cargo run -- window status
+```
+
+These commands operate on the already-running GUI, honor `--data-dir`,
+and print `{"ok":true,"mode":"mini"}` (or `"full"`) only after the GUI
+acknowledges completion. The existing private `control.sock` JSON-lines
+API accepts `{"window_mode":"mini"}` with the value `mini`, `full`,
+`toggle`, or `status`, as an alternative to `{"say":"…"}`.
+Errors/timeouts return `ok:false`;
+they do not silently launch another window.
+
+On MacBook, mini mode uses native AppKit window behavior through Tauri,
+with the monitor's work area and scale accounting for Retina, the Dock,
+and the menu bar. The macOS bundle includes the microphone usage
+description and hardened-runtime audio-input entitlement. Allow
+Microphone access when prompted; GUI dictation still requires the OpenAI
+key, not Apple's on-device speech recognizer.
+
+On Hyprland, the app moves only its own window through compositor IPC;
+no desktop configuration is changed. Returning from mini restores the
+previous floating/tiled state (the compositor controls tiled placement).
+Other Wayland compositors currently report unsupported window placement.
+Hyprland raises mini above other windows, but a subsequently focused
+floating window can cover it.
 
 ### Which runtime the agent loop runs on
 

@@ -53,8 +53,7 @@ impl Analyzer {
         let low = resolution.max(60.0);
         let high = (sample_rate as f32 / 2.0).min(8000.0).max(low);
         let edge = |i: usize| {
-            ((low * (high / low).powf(i as f32 / SPECTRUM_BINS as f32) / resolution)
-                as usize)
+            ((low * (high / low).powf(i as f32 / SPECTRUM_BINS as f32) / resolution) as usize)
                 .clamp(1, FFT_SIZE / 2)
         };
         Self {
@@ -85,7 +84,8 @@ impl Analyzer {
         for (i, sample) in recent.iter().enumerate() {
             self.buffer[i] = Complex::new(sample * self.window[i], 0.0);
         }
-        self.fft.process_with_scratch(&mut self.buffer, &mut self.scratch);
+        self.fft
+            .process_with_scratch(&mut self.buffer, &mut self.scratch);
         for (i, &(start, end)) in self.bands.iter().enumerate() {
             let power = self.buffer[start..end]
                 .iter()
@@ -93,8 +93,7 @@ impl Analyzer {
                 .fold(0.0f32, f32::max);
             // Hann coherent gain is 1/2; account for the omitted negative half.
             let amplitude = power.sqrt() * 4.0 / FFT_SIZE as f32;
-            let normalized = ((20.0 * amplitude.max(1e-6).log10() + 60.0) / 60.0)
-                .clamp(0.0, 1.0);
+            let normalized = ((20.0 * amplitude.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
             spectrum.bins[i].store(normalized.to_bits(), Ordering::Relaxed);
         }
     }
@@ -116,11 +115,19 @@ mod tests {
         let tone = Spectrum::default();
         Analyzer::new(16_000).update(&samples, &tone);
         let bins = tone.read();
-        assert!(bins.iter().all(|bin| bin.is_finite() && (0.0..=1.0).contains(bin)));
-        // Band 18 spans approximately 941–1097 Hz at this sample rate.
-        assert!(bins[18] > 0.95, "a full-scale 1 kHz tone must occupy its frequency band");
         assert!(
-            bins.iter().enumerate().all(|(i, bin)| i == 18 || *bin < 0.05),
+            bins.iter()
+                .all(|bin| bin.is_finite() && (0.0..=1.0).contains(bin))
+        );
+        // Band 18 spans approximately 941–1097 Hz at this sample rate.
+        assert!(
+            bins[18] > 0.95,
+            "a full-scale 1 kHz tone must occupy its frequency band"
+        );
+        assert!(
+            bins.iter()
+                .enumerate()
+                .all(|(i, bin)| i == 18 || *bin < 0.05),
             "frequency analysis must not paint the tone across unrelated bands: {bins:?}"
         );
     }

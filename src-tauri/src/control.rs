@@ -21,9 +21,9 @@ use std::sync::Arc;
 use neo_agent::Runtime;
 use neo_core::{ConversationId, RunId};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tauri::{AppHandle, Manager};
 
 use crate::commands;
 use crate::mode_control::{ModeControl, WindowAction, WindowMode};
@@ -207,7 +207,11 @@ pub(crate) async fn handle<R: tauri::Runtime>(
                 Err(error) => Response::failed(error.message),
             };
         }
-        _ => return Response::failed("provide exactly one of say or window_mode; title applies only to say"),
+        _ => {
+            return Response::failed(
+                "provide exactly one of say or window_mode; title applies only to say",
+            );
+        }
     };
 
     // Its own thread, always. A control message arrives with no idea what the

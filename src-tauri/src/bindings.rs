@@ -263,5 +263,4 @@ mod tests {
              const PUBLISHED: (u64, u32) = ({current:#018x}, <the new version>);\n"
         );
     }
-
 }

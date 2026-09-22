@@ -45,7 +45,9 @@ pub struct Voice {
 }
 
 fn lock(session: &Mutex<Session>) -> MutexGuard<'_, Session> {
-    session.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    session
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Voice {
@@ -78,14 +80,19 @@ fn voice_error(error: VoiceError) -> UiError {
     };
     let result = UiError::new(code, error.to_string());
     if matches!(error, VoiceError::MissingOpenAiKey) {
-        result.with_fix(Fix::SetKey { account: "openai".into() })
+        result.with_fix(Fix::SetKey {
+            account: "openai".into(),
+        })
     } else {
         result
     }
 }
 
 #[tauri::command]
-pub async fn voice_start(desktop: State<'_, Desktop>, voice: State<'_, Voice>) -> Result<(), UiError> {
+pub async fn voice_start(
+    desktop: State<'_, Desktop>,
+    voice: State<'_, Voice>,
+) -> Result<(), UiError> {
     let runtime = desktop.runtime();
     let session = Arc::clone(&voice.session);
     let cancel = CancellationToken::new();
@@ -95,7 +102,10 @@ pub async fn voice_start(desktop: State<'_, Desktop>, voice: State<'_, Voice>) -
     {
         let mut state = lock(&session);
         if state.active.is_some() {
-            return Err(UiError::new("voice_busy", "dictation is already active; stop or cancel it first"));
+            return Err(UiError::new(
+                "voice_busy",
+                "dictation is already active; stop or cancel it first",
+            ));
         }
         state.status = "starting";
         state.error = None;
@@ -115,7 +125,11 @@ pub async fn voice_start(desktop: State<'_, Desktop>, voice: State<'_, Voice>) -
             let mut state = lock(&session);
             state.status = "idle";
             state.spectrum.fill(0.0);
-            state.error = outcome.as_ref().err().filter(|error| error.code != CANCELLED).cloned();
+            state.error = outcome
+                .as_ref()
+                .err()
+                .filter(|error| error.code != CANCELLED)
+                .cloned();
             state.active = None;
             finished.cancel();
         }
@@ -126,7 +140,9 @@ pub async fn voice_start(desktop: State<'_, Desktop>, voice: State<'_, Voice>) -
             let _ = reply.send(outcome);
         }
     });
-    ready_rx.await.map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?
+    ready_rx
+        .await
+        .map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?
 }
 
 async fn record(
@@ -139,17 +155,21 @@ async fn record(
 ) -> Result<String, UiError> {
     let start_cancel = cancel.clone();
     let (mut microphone, transcriber) = tokio::task::spawn_blocking(move || {
-        let transcriber = runtime.transcriber_for(Backend::OpenAi).map_err(|error| match error {
-            RuntimeError::Voice(error) => voice_error(error),
-            other => UiError::from(other),
-        })?;
+        let transcriber =
+            runtime
+                .transcriber_for(Backend::OpenAi)
+                .map_err(|error| match error {
+                    RuntimeError::Voice(error) => voice_error(error),
+                    other => UiError::from(other),
+                })?;
         if start_cancel.is_cancelled() {
             return Err(cancelled());
         }
         let mut microphone = Microphone::open(None).map_err(voice_error)?;
         microphone.start().map_err(voice_error)?;
         Ok::<_, UiError>((microphone, transcriber))
-    }).await??;
+    })
+    .await??;
     if cancel.is_cancelled() {
         tokio::task::spawn_blocking(move || drop(microphone)).await?;
         return Err(cancelled());
@@ -193,7 +213,9 @@ async fn record(
             }
         }
     }
-    let utterance = tokio::task::spawn_blocking(move || microphone.stop()).await?.map_err(voice_error)?;
+    let utterance = tokio::task::spawn_blocking(move || microphone.stop())
+        .await?
+        .map_err(voice_error)?;
     tokio::select! {
         biased;
         () = cancel.cancelled() => Err(cancelled()),
@@ -223,15 +245,25 @@ pub async fn voice_stop(voice: State<'_, Voice>) -> Result<String, UiError> {
     {
         let mut state = lock(&voice.session);
         if state.status != "listening" {
-            return Err(UiError::new("voice_busy", "dictation is not listening; wait for the current operation to finish"));
+            return Err(UiError::new(
+                "voice_busy",
+                "dictation is not listening; wait for the current operation to finish",
+            ));
         }
-        let sender = state.active.as_mut().and_then(|active| active.stop.take())
+        let sender = state
+            .active
+            .as_mut()
+            .and_then(|active| active.stop.take())
             .ok_or_else(|| UiError::new("voice_busy", "dictation is already stopping"))?;
-        sender.send(reply).map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?;
+        sender
+            .send(reply)
+            .map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?;
         state.status = "transcribing";
         state.spectrum.fill(0.0);
     }
-    receive.await.map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?
+    receive
+        .await
+        .map_err(|_| UiError::new("voice", "the dictation task stopped unexpectedly"))?
 }
 
 #[tauri::command]

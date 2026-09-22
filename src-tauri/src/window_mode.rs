@@ -16,7 +16,10 @@ pub async fn window_compositor(
     action: String,
 ) -> Result<bool, UiError> {
     if window.label() != "main" {
-        return Err(UiError::new("window_mode", "Only the main window can change mini mode."));
+        return Err(UiError::new(
+            "window_mode",
+            "Only the main window can change mini mode.",
+        ));
     }
     #[cfg(target_os = "linux")]
     {
@@ -77,11 +80,19 @@ mod hyprland {
         let mut stream = UnixStream::connect(socket)
             .map_err(|error| format!("Cannot connect to Hyprland for mini mode: {error}"))?;
         let timeout = Some(Duration::from_secs(2));
-        stream.set_read_timeout(timeout).map_err(|error| error.to_string())?;
-        stream.set_write_timeout(timeout).map_err(|error| error.to_string())?;
-        stream.write_all(command.as_bytes()).map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|error| error.to_string())?;
+        stream
+            .set_write_timeout(timeout)
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(command.as_bytes())
+            .map_err(|error| error.to_string())?;
         let mut response = String::new();
-        stream.take(4 * 1024 * 1024).read_to_string(&mut response)
+        stream
+            .take(4 * 1024 * 1024)
+            .read_to_string(&mut response)
             .map_err(|error| format!("Hyprland mini mode request failed: {error}"))?;
         Ok(response)
     }
@@ -89,9 +100,12 @@ mod hyprland {
     fn dispatch(socket: &Path, command: &str) -> Result<(), String> {
         // Lua dispatch returns a result table; eval itself succeeding does not
         // mean the dispatcher succeeded. Turn a rejected request into an IPC error.
-        let response = request(socket, &format!(
-            "/eval local result = hl.dispatch({command}); if not result or result.ok ~= true then error(result and result.error or 'Window dispatcher failed') end"
-        ))?;
+        let response = request(
+            socket,
+            &format!(
+                "/eval local result = hl.dispatch({command}); if not result or result.ok ~= true then error(result and result.error or 'Window dispatcher failed') end"
+            ),
+        )?;
         if response.trim() == "ok" {
             Ok(())
         } else {
@@ -106,13 +120,17 @@ mod hyprland {
             client.pid == i64::from(std::process::id())
                 && address.is_none_or(|address| client.address == address)
         });
-        let client = own.next().ok_or("Hyprland cannot locate this app's main window.")?;
+        let client = own
+            .next()
+            .ok_or("Hyprland cannot locate this app's main window.")?;
         if own.next().is_some() {
             return Err("Hyprland found more than one main window for this process.".into());
         }
         // Only a compositor-returned, validated address is interpolated into dispatchers.
         if !client.address.starts_with("0x")
-            || !client.address[2..].chars().all(|character| character.is_ascii_hexdigit())
+            || !client.address[2..]
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
             || client.address.len() <= 2
         {
             return Err("Hyprland returned an invalid window address.".into());
@@ -130,22 +148,32 @@ mod hyprland {
         };
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .ok_or("XDG_RUNTIME_DIR is missing; cannot locate Hyprland's control socket.")?;
-        Ok(Some(PathBuf::from(runtime).join("hypr").join(signature).join(".socket.sock")))
+        Ok(Some(
+            PathBuf::from(runtime)
+                .join("hypr")
+                .join(signature)
+                .join(".socket.sock"),
+        ))
     }
 
     fn enter(socket: &Path, snapshot: &mut Snapshot) -> Result<(), String> {
         let mut current = own_client(socket, Some(&snapshot.client.address))?;
         let target = format!("address:{}", current.address);
-        dispatch(socket, &format!(
-            "hl.dsp.window.fullscreen_state({{ internal = 0, client = 0, action = 'set', window = '{target}' }})"
-        ))?;
+        dispatch(
+            socket,
+            &format!(
+                "hl.dsp.window.fullscreen_state({{ internal = 0, client = 0, action = 'set', window = '{target}' }})"
+            ),
+        )?;
         current = own_client(socket, Some(&snapshot.client.address))?;
         if snapshot.normal_bounds.is_none() {
             snapshot.normal_bounds = Some((current.at, current.size));
         }
         let monitors: Vec<Monitor> = serde_json::from_str(&request(socket, "j/monitors")?)
             .map_err(|error| format!("Cannot read Hyprland monitors: {error}"))?;
-        let monitor = monitors.into_iter().find(|monitor| monitor.id == current.monitor)
+        let monitor = monitors
+            .into_iter()
+            .find(|monitor| monitor.id == current.monitor)
             .ok_or("The current monitor is no longer available.")?;
         if !monitor.scale.is_finite() || monitor.scale <= 0.0 {
             return Err("Hyprland returned an invalid monitor scale.".into());
@@ -156,22 +184,40 @@ mod hyprland {
             (monitor.height, monitor.width)
         };
         let width = (physical_width / monitor.scale).round() as i32
-            - monitor.reserved[0] - monitor.reserved[2];
+            - monitor.reserved[0]
+            - monitor.reserved[2];
         let height = (physical_height / monitor.scale).round() as i32
-            - monitor.reserved[1] - monitor.reserved[3];
+            - monitor.reserved[1]
+            - monitor.reserved[3];
         if width < 420 || height < 180 {
-            return Err("The monitor work area is too small for mini mode (420 × 180 minimum).".into());
+            return Err(
+                "The monitor work area is too small for mini mode (420 × 180 minimum).".into(),
+            );
         }
         let mini_width = 560.min(width);
         let mini_height = 220.min(height);
         let x = monitor.x + monitor.reserved[0] + (width - mini_width) / 2;
         let y = monitor.y + monitor.reserved[1] + (height - mini_height - 24).max(0);
-        dispatch(socket, &format!("hl.dsp.window.float({{ action = 'on', window = '{target}' }})"))?;
-        dispatch(socket, &format!("hl.dsp.window.resize({{ x = {mini_width}, y = {mini_height}, window = '{target}' }})"))?;
-        dispatch(socket, &format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = '{target}' }})"))?;
+        dispatch(
+            socket,
+            &format!("hl.dsp.window.float({{ action = 'on', window = '{target}' }})"),
+        )?;
+        dispatch(
+            socket,
+            &format!(
+                "hl.dsp.window.resize({{ x = {mini_width}, y = {mini_height}, window = '{target}' }})"
+            ),
+        )?;
+        dispatch(
+            socket,
+            &format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = '{target}' }})"),
+        )?;
         // Wayland has no keep-above request. Raising a floating window is supported;
         // another floating window can still cover it when the user focuses that window.
-        dispatch(socket, &format!("hl.dsp.window.alter_zorder({{ mode = 'top', window = '{target}' }})"))?;
+        dispatch(
+            socket,
+            &format!("hl.dsp.window.alter_zorder({{ mode = 'top', window = '{target}' }})"),
+        )?;
         let placed = own_client(socket, Some(&current.address))?;
         if !placed.floating {
             return Err("Hyprland did not allow this window to float.".into());
@@ -182,39 +228,86 @@ mod hyprland {
     fn restore(socket: &Path, snapshot: &Snapshot) -> Result<(), String> {
         let current = own_client(socket, Some(&snapshot.client.address))?;
         let target = format!("address:{}", current.address);
-        dispatch(socket, &format!(
-            "hl.dsp.window.fullscreen_state({{ internal = 0, client = 0, action = 'set', window = '{target}' }})"
-        ))?;
+        dispatch(
+            socket,
+            &format!(
+                "hl.dsp.window.fullscreen_state({{ internal = 0, client = 0, action = 'set', window = '{target}' }})"
+            ),
+        )?;
         let (at, size) = if snapshot.client.fullscreen == 0 {
             (snapshot.client.at, snapshot.client.size)
         } else {
-            snapshot.normal_bounds.unwrap_or((snapshot.client.at, snapshot.client.size))
+            snapshot
+                .normal_bounds
+                .unwrap_or((snapshot.client.at, snapshot.client.size))
         };
         if snapshot.client.floating {
-            dispatch(socket, &format!("hl.dsp.window.float({{ action = 'on', window = '{target}' }})"))?;
-            dispatch(socket, &format!("hl.dsp.window.resize({{ x = {}, y = {}, window = '{target}' }})", size[0], size[1]))?;
-            dispatch(socket, &format!("hl.dsp.window.move({{ x = {}, y = {}, window = '{target}' }})", at[0], at[1]))?;
+            dispatch(
+                socket,
+                &format!("hl.dsp.window.float({{ action = 'on', window = '{target}' }})"),
+            )?;
+            dispatch(
+                socket,
+                &format!(
+                    "hl.dsp.window.resize({{ x = {}, y = {}, window = '{target}' }})",
+                    size[0], size[1]
+                ),
+            )?;
+            dispatch(
+                socket,
+                &format!(
+                    "hl.dsp.window.move({{ x = {}, y = {}, window = '{target}' }})",
+                    at[0], at[1]
+                ),
+            )?;
         } else {
-            dispatch(socket, &format!("hl.dsp.window.float({{ action = 'off', window = '{target}' }})"))?;
-            dispatch(socket, &format!("hl.dsp.window.resize({{ x = {}, y = {}, window = '{target}' }})", size[0], size[1]))?;
+            dispatch(
+                socket,
+                &format!("hl.dsp.window.float({{ action = 'off', window = '{target}' }})"),
+            )?;
+            dispatch(
+                socket,
+                &format!(
+                    "hl.dsp.window.resize({{ x = {}, y = {}, window = '{target}' }})",
+                    size[0], size[1]
+                ),
+            )?;
         }
-        dispatch(socket, &format!(
-            "hl.dsp.window.fullscreen_state({{ internal = {}, client = {}, action = 'set', window = '{target}' }})",
-            snapshot.client.fullscreen, snapshot.client.fullscreen_client
-        ))?;
+        dispatch(
+            socket,
+            &format!(
+                "hl.dsp.window.fullscreen_state({{ internal = {}, client = {}, action = 'set', window = '{target}' }})",
+                snapshot.client.fullscreen, snapshot.client.fullscreen_client
+            ),
+        )?;
         Ok(())
     }
 
-    pub(super) fn transition(state: &Mutex<Option<Snapshot>>, action: &str) -> Result<bool, String> {
-        let Some(socket) = socket_path()? else { return Ok(false) };
-        let mut saved = state.lock().map_err(|_| "Mini mode window state is unavailable.")?;
+    pub(super) fn transition(
+        state: &Mutex<Option<Snapshot>>,
+        action: &str,
+    ) -> Result<bool, String> {
+        let Some(socket) = socket_path()? else {
+            return Ok(false);
+        };
+        let mut saved = state
+            .lock()
+            .map_err(|_| "Mini mode window state is unavailable.")?;
         match action {
             "capture" => {
                 if saved.is_none() {
-                    *saved = Some(Snapshot { client: own_client(&socket, None)?, normal_bounds: None });
+                    *saved = Some(Snapshot {
+                        client: own_client(&socket, None)?,
+                        normal_bounds: None,
+                    });
                 }
             }
-            "mini" => enter(&socket, saved.as_mut().ok_or("Full window state was not captured.")?)?,
+            "mini" => enter(
+                &socket,
+                saved
+                    .as_mut()
+                    .ok_or("Full window state was not captured.")?,
+            )?,
             "restore" => {
                 if let Some(snapshot) = saved.as_ref() {
                     restore(&socket, snapshot)?;

@@ -18,26 +18,27 @@ import { missingRequiredKey } from "./store/health";
 import { useStore, type Screen } from "./store/store";
 import shell from "./styles/shell.module.css";
 
-const TABS: { id: Screen; label: string }[] = [
-  { id: "chat", label: "Chat" },
-  { id: "runs", label: "Runs" },
-  { id: "projects", label: "Projects" },
-  { id: "inspect", label: "Inspect" },
+const TABS: { id: Screen; label: string; icon: string }[] = [
+  { id: "chat", label: "Chat", icon: "M4 4h16v12H9l-5 4V4Z" },
+  { id: "runs", label: "Runs", icon: "M3 12h4l3-8 4 16 3-8h4" },
+  { id: "projects", label: "Projects", icon: "M3 6h7l2 2h9v12H3V6Z" },
+  { id: "inspect", label: "Inspect", icon: "M10 17a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 6 6" },
   // Its own rail entry rather than the thirteenth tab inside Settings: this
   // is where a key is typed and a subscription signed in, and a fresh
   // install cannot do anything at all until someone finds it.
-  { id: "connections", label: "Connections" },
-  { id: "settings", label: "Settings" },
+  { id: "connections", label: "Connections", icon: "m9 15 6-6M8 10l-3 3a4 4 0 0 0 6 6l3-3m-4-8 3-3a4 4 0 0 1 6 6l-3 3" },
+  { id: "settings", label: "Settings", icon: "M4 7h16M4 17h16M8 4v6m8 4v6" },
 ];
 
-function Screens({ screen, projectsEpoch, composer }: {
+function Screens({ screen, projectsEpoch, chatEpoch, composer }: {
   screen: Screen;
   projectsEpoch: number;
+  chatEpoch: number;
   composer: ReactNode;
 }) {
   switch (screen) {
     case "chat":
-      return <Chat composer={composer} />;
+      return <Chat key={chatEpoch} composer={composer} />;
     case "runs":
       return <Runs />;
     case "projects":
@@ -59,6 +60,8 @@ interface ModeResult {
 export function App() {
   useAppEvents();
   const [projectsEpoch, setProjectsEpoch] = useState(0);
+  const [chatEpoch, setChatEpoch] = useState(0);
+  const [collapsed, setCollapsed] = useState(false);
   const [mini, setMini] = useState(false);
   const [switching, setSwitching] = useState(false);
   const currentMode = useRef<WindowMode>("full");
@@ -120,6 +123,7 @@ export function App() {
 
   const openFull = (target?: Screen) => {
     if (target !== undefined) useStore.getState().setScreen(target);
+    if (target === "chat") setChatEpoch((value) => value + 1);
     void changeMode("full");
   };
 
@@ -217,14 +221,27 @@ export function App() {
         switching={switching} notice={notices}
         onError={(error) => setModeError(errorOf(error).message)} />
     )}
-    <div className={shell.shell} hidden={mini}>
+    <div className={`${shell.shell} ${collapsed ? shell.collapsed : ""}`} hidden={mini}>
       <nav className={shell.rail} aria-label="Screens">
-        <div className={shell.wordmark}>Starkbot Neo</div>
+        <div className={shell.railHeader}>
+          <div className={shell.wordmark}>Starkbot Neo</div>
+          <button className={shell.collapseToggle} aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed((value) => !value)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 4h18v16H3V4Zm5 0v16" />
+              <path d={collapsed ? "m12 9 3 3-3 3" : "m16 9-3 3 3 3"} />
+            </svg>
+          </button>
+        </div>
         {TABS.map((tab) => (
           <button
             key={tab.id}
             className={shell.tab}
             aria-current={screen === tab.id ? "page" : undefined}
+            aria-label={tab.label}
+            title={collapsed ? tab.label : undefined}
             onClick={() => {
               if (tab.id !== "chat") void dictation.cancel();
               setScreen(tab.id);
@@ -233,22 +250,25 @@ export function App() {
               }
             }}
           >
-            <span>{tab.label}</span>
+            <svg className={shell.navIcon} viewBox="0 0 24 24" aria-hidden="true"><path d={tab.icon} /></svg>
+            <span className={shell.navLabel}>{tab.label}</span>
             {/* The count is a second reading of the same state the Runs
                 screen shows; it is never the only one. */}
             {tab.id === "runs" && running > 0 && (
-              <span className={shell.count}>{running} running</span>
+              <span className={shell.count} aria-label={`${running} running`}>
+                {collapsed ? running : `${running} running`}
+              </span>
             )}
           </button>
         ))}
         <div className={shell.railFoot}>
         <button className={shell.miniToggle} disabled={switching || !ready}
-          onClick={() => void changeMode("mini")} title="Mini mode (Ctrl+Shift+M)">
-          Mini mode <span aria-hidden="true">↙</span>
+          aria-label="Mini mode" onClick={() => void changeMode("mini")} title="Mini mode (Ctrl+Shift+M)">
+          <span className={shell.navLabel}>Mini mode</span><span aria-hidden="true">↙</span>
         </button>
-          <span>bridge v{catalog.bridgeVersion}</span>
-          <span>{catalog.storePath}</span>
-          {gaps > 0 && <span>{gaps} event gaps repaired</span>}
+          <span title={`bridge v${catalog.bridgeVersion}`}>{collapsed ? "v" : "bridge v"}{catalog.bridgeVersion}</span>
+          <span className={shell.navLabel}>{catalog.storePath}</span>
+          {gaps > 0 && <span className={shell.navLabel}>{gaps} event gaps repaired</span>}
         </div>
       </nav>
 
@@ -256,7 +276,8 @@ export function App() {
         {notices}
         <div className={shell.screen}>
           {ready ? (
-            <Screens screen={screen} projectsEpoch={projectsEpoch} composer={mini ? null : composer} />
+            <Screens screen={screen} projectsEpoch={projectsEpoch} chatEpoch={chatEpoch}
+              composer={mini ? null : composer} />
           ) : (
             <p className={shell.loading}>opening the store…</p>
           )}

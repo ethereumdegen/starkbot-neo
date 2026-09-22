@@ -82,6 +82,8 @@ export function Chat({ composer }: { composer: ReactNode }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [showTurn, setShowTurn] = useState(false);
+  const [indexFor, setIndexFor] = useState<string | null | undefined>(undefined);
+  const showIndex = indexFor === activeId || (activeId === null && conversations.length > 0);
   const tail = useRef<HTMLDivElement | null>(null);
 
   const current: RunRecord | null = useMemo(
@@ -143,7 +145,8 @@ export function Chat({ composer }: { composer: ReactNode }) {
 
 
   return (
-    <div className={`${panes.columns} ${showTurn ? panes.chat : panes.chatWide}`}>
+    <div className={`${panes.columns} ${showTurn && !showIndex ? panes.chat : panes.chatWide}`}>
+      {showIndex ? (
       <section className={panes.pane} aria-label="Conversations">
         <div className={panes.head}>
           <h2>Threads</h2>
@@ -166,7 +169,12 @@ export function Chat({ composer }: { composer: ReactNode }) {
                 <button
                   className={panes.row}
                   aria-selected={row.id === activeId}
-                  onClick={() => void select(row.id)}
+                  disabled={busy}
+                  onClick={() => {
+                    void select(row.id).then(() => {
+                      if (useStore.getState().conversation.activeId === row.id) setIndexFor(undefined);
+                    });
+                  }}
                 >
                   <span className={panes.rowTitle}>{row.title ?? "Untitled"}</span>
                   <span className={panes.rowMeta}>{when(row.updated_at)}</span>
@@ -185,12 +193,17 @@ export function Chat({ composer }: { composer: ReactNode }) {
           })}
         </div>
       </section>
+      ) : (
+      <>
 
       <section className={panes.pane} aria-label="Conversation">
         <div className={panes.head}>
+          <button onClick={() => setIndexFor(activeId)} aria-label="Back to threads">
+            ‹ Threads
+          </button>
           {renaming === null ? (
             <>
-              <h2>{active?.title ?? "No thread"}</h2>
+              <h2>{active?.title ?? "New thread"}</h2>
               {active !== null && (
                 <button
                   className={panes.spacer}
@@ -371,6 +384,8 @@ export function Chat({ composer }: { composer: ReactNode }) {
           )}
         </div>
       </section>
+      )}
+      </>
       )}
     </div>
   );

@@ -665,14 +665,25 @@ async fn a_malformed_control_line_is_answered_not_fatal() {
         r#"{"say":"do not send this","window_mode":"mini"}"#,
     ] {
         let answer = crate::control::handle(
-            line, desktop.runtime(), desktop.runs(), app.handle().clone(),
-        ).await;
+            line,
+            desktop.runtime(),
+            desktop.runs(),
+            app.handle().clone(),
+        )
+        .await;
         let answer = serde_json::to_value(&answer).expect("the response is JSON");
-        assert_eq!(answer.get("ok").and_then(serde_json::Value::as_bool), Some(false));
+        assert_eq!(
+            answer.get("ok").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
     }
     let rows = commands::list_conversations(app.state(), None)
-        .await.expect("threads are listable");
-    assert!(rows.is_empty(), "a rejected request must not create a conversation");
+        .await
+        .expect("threads are listable");
+    assert!(
+        rows.is_empty(),
+        "a rejected request must not create a conversation"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -151,3 +151,83 @@
   color: var(--text-2);
 }
 
+
+.railHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.railHeader .wordmark {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-3) var(--space-2);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.collapseToggle {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  background: none;
+  border-color: transparent;
+  flex: 0 0 28px;
+}
+
+.navIcon,
+.collapseToggle svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.tab .navLabel {
+  flex: 1;
+}
+
+.collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+
+.collapsed .navLabel,
+.collapsed .wordmark {
+  display: none;
+}
+
+.collapsed .railHeader {
+  justify-content: center;
+}
+
+.collapsed .tab {
+  position: relative;
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.collapsed .count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 9px;
+  background: var(--surface-solid);
+  border-radius: var(--radius-pill);
+  padding: 0 3px;
+}
+
+.collapsed .railFoot {
+  align-items: center;
+  padding-inline: 0;
+}
+
+.collapsed .miniToggle {
+  justify-content: center;
+  padding-inline: 0;
+}
