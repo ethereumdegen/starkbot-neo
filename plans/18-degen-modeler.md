@@ -24,9 +24,25 @@ orbit + turntable, auto-framing). fal generation in degen-paint is wired
 and one credential away (`FAL_KEY`; `dpaint doctor` confirms) — no
 software gap. Known rule gaps for a later pass: `uv.waste` is per-object
 and over-reports on multi-object shared atlases (should judge per atlas);
-the gate resolves `File` texture sizes against process CWD, not the
-project root (serve-from-root is the workaround); no UV translate/rotate
-op yet, so fine placement leans on `uv_assign_rect` + density.
+the CWD gap and the placement gap below were closed the same day.
+
+**2026-09-27, one-shot upgrade round.** Driven by a real `dgm critique`
+run (new tool: `POST /critique` / `dgm critique` — renders + atlas +
+digest to the vision model, OPENAI_API_KEY required, suggestions answer
+in op names): primitives now ship **meter-scaled default UVs with
+fan/cap seams and non-overlapping island lanes**, killing the
+cylindrical-projection-of-a-cone failure class at the source;
+`uv_assign_rect` gained an optional `texels_per_meter` cap so rect
+fitting can never leave the pack band; `File` textures resolve against
+the project root (pack parent), not the CWD; the agent SKILL gained a
+"one-shot playbook" section encoding the session's learned recipes
+(material-early ordering, owned-atlas partitioning with gutters,
+revolved-shape fan handling, cutout foliage, density-fix guidance).
+Critique v1→v2 on the tree confirmed the fixes: the false "missing
+textures" high-severity issue vanished once renders resolved textures.
+Still open: `uv.waste` should judge per shared atlas, not per object
+(both the gate and the critique model over-flag it); a UV
+translate/rotate op remains the missing fine-placement tool.
 
 Dated 2026-09-26. Drafted for decision:
 
